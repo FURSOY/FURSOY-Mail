@@ -11,6 +11,8 @@ pub struct NotificationPayload {
     pub title: String,
     pub body: String,
     pub code: Option<String>,
+    #[serde(rename = "emailId")]
+    pub email_id: Option<String>,
     pub duration: Option<u32>,
 }
 
@@ -70,13 +72,14 @@ pub async fn show_custom_notification(
     title: String,
     body: String,
     code: Option<String>,
+    email_id: Option<String>,
     duration: Option<u32>,
 ) {
     if is_fullscreen() {
         return;
     }
 
-    let payload = NotificationPayload { title, body, code, duration };
+    let payload = NotificationPayload { title, body, code, email_id, duration };
 
     // If window already exists (hidden or visible), just send new notification
     if let Some(window) = app.get_webview_window("notification") {

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useTransition, type ReactNode
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Inbox, Send, Archive, Search, CornerUpLeft, Trash2, RefreshCw, LogOut, X, Minus, Square, Settings, ShieldAlert, Edit3, AlertTriangle, CheckCircle, XCircle, Copy, RotateCcw, DownloadCloud } from "lucide-react";
+import { Inbox, Send, Archive, Search, CornerUpLeft, Trash2, RefreshCw, LogOut, X, Minus, Square, Settings, ShieldAlert, Edit3, AlertTriangle, CheckCircle, XCircle, Copy, RotateCcw, DownloadCloud, Menu } from "lucide-react";
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import "./index.css";
@@ -183,6 +183,7 @@ function App() {
   const [replyText, setReplyText] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [composeTo, setComposeTo] = useState("");
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
@@ -288,22 +289,33 @@ function App() {
   };
 
   useEffect(() => {
-    const unlistenPromise = listen<{ actionId: string, notification: { title: string, body: string } }>('notification-action', async (event) => {
+    const openNotificationMail = async (emailId: string) => {
+      if (!emailId) return;
+      setMobileMenuOpen(false);
+      startTabTransition(() => setActiveTab("inbox"));
+      setSelectedMail(emailId);
+      await loadEmails("inbox");
+      await getCurrentWindow().show();
+      await getCurrentWindow().unminimize();
+      await getCurrentWindow().setFocus();
+    };
+
+    const unlistenCustomPromise = listen<{ emailId?: string }>('open-notification-mail', async (event) => {
+      await openNotificationMail(event.payload?.emailId || "");
+    });
+
+    const unlistenPluginPromise = listen<{ actionId: string, notification: { title: string, body: string } }>('notification-action', async (event) => {
       const payload = event.payload?.notification;
       if (!payload) return;
       
       const key = (payload.title || "") + (payload.body || "");
       const emailId = recentNotificationsRef.current[key];
-      
-      if (emailId) {
-        setSelectedMail(emailId);
-        await getCurrentWindow().unminimize();
-        await getCurrentWindow().setFocus();
-      }
+      await openNotificationMail(emailId || "");
     });
 
     return () => {
-      unlistenPromise.then(unlisten => unlisten());
+      unlistenCustomPromise.then(unlisten => unlisten());
+      unlistenPluginPromise.then(unlisten => unlisten());
     };
   }, []);
 
@@ -382,6 +394,7 @@ function App() {
           title: notifTitle,
           body: notifBody,
           code: code || null,
+          emailId: email.id,
           duration: notifInfiniteRef.current ? 0 : notifDurationRef.current * 1000
         });
       }
@@ -519,7 +532,7 @@ function App() {
     const handleIframeMessage = (e: MessageEvent) => {
       if (e.data && e.data.type === "open_url" && e.data.url) {
         import("@tauri-apps/plugin-opener").then(opener => {
-          opener.open(e.data.url).catch(console.error);
+          opener.openUrl(e.data.url).catch(console.error);
         });
       }
     };
@@ -544,6 +557,7 @@ function App() {
   const goToTab = (tab: typeof activeTab) => {
     setSelectedMail(null);
     setShowReply(false);
+    setMobileMenuOpen(false);
     startTabTransition(() => setActiveTab(tab));
   };
 
@@ -765,6 +779,15 @@ function App() {
       {/* CUSTOM TITLEBAR */}
       <div data-tauri-drag-region className="h-9 shrink-0 flex items-center justify-between pl-2 pr-0 border-b border-white/5 bg-[#09090b]" style={{ WebkitAppRegion: 'drag' } as any}>
         <div data-tauri-drag-region className="flex items-center gap-2 text-xs font-medium text-zinc-500 pl-1">
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            className="md:hidden -ml-1 mr-1 flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+            style={{ WebkitAppRegion: 'no-drag' } as any}
+            aria-label="Menüyü aç"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
           <img src="/logo.svg" className="w-4 h-4 object-contain" alt="MailApp Logo" />
           <span className="text-zinc-400">FURSOY Mail</span>
         </div>
@@ -794,8 +817,19 @@ function App() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
+        {mobileMenuOpen && (
+          <div className="fixed inset-x-0 bottom-0 top-9 z-40 md:hidden">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/55"
+              onClick={() => setMobileMenuOpen(false)}
+              aria-label="Menüyü kapat"
+            />
+          </div>
+        )}
+
         {/* SIDEBAR */}
-        <aside className="hidden md:flex w-56 bg-[#0c0c0e] border-r border-white/5 flex-col">
+        <aside className={`${mobileMenuOpen ? 'fixed left-0 top-9 bottom-0 z-50 flex shadow-2xl shadow-black/40' : 'hidden'} md:static md:z-auto md:flex w-56 bg-[#0c0c0e] border-r border-white/5 flex-col`}>
           <nav className="flex-1 p-2 pt-3 space-y-0.5">
             <button 
               onClick={() => goToTab("inbox")}

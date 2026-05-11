@@ -24,6 +24,9 @@
 
     #wrapper {
       width: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     #stack {
@@ -191,6 +194,7 @@
       height: 2px;
       background: rgba(59, 130, 246, 0.4);
       transition: width linear;
+      flex-shrink: 0;
     }
   </style>
 </head>
@@ -209,7 +213,7 @@
     import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
     const win = getCurrentWindow();
-    const notifications = [];  // { id, title, body, code }
+    const notifications = [];  // { id, title, body, code, emailId }
     let nextId = 0;
     let screenW = 1920, screenH = 1080;
     const WIN_W = 340;
@@ -235,7 +239,7 @@
 
       await new Promise(r => requestAnimationFrame(r));
       const wrapper = document.getElementById('wrapper');
-      const contentH = wrapper.scrollHeight + 2; // +2 for progress bar
+      const contentH = wrapper.scrollHeight;
 
       const x = screenW - WIN_W - 16;
       const y = screenH - contentH - BOTTOM_MARGIN;
@@ -346,7 +350,7 @@
     function addNotification(data) {
       if (!data) return;
       const id = nextId++;
-      notifications.push({ id, title: data.title, body: data.body, code: data.code || null });
+      notifications.push({ id, title: data.title, body: data.body, code: data.code || null, emailId: data.emailId || null });
       render();
       resizeWindow();
       win.show();
@@ -397,7 +401,13 @@
 
     // ── Open mail + dismiss that card ──
     function openMailAndDismiss(id) {
-      emitTo('main', 'focus-main-window').catch(() => {});
+      const notification = notifications.find(n => n.id === id);
+      if (notification && notification.emailId) {
+        emitTo('main', 'open-notification-mail', { emailId: notification.emailId }).catch(() => {});
+      } else {
+        invoke('focus_main_window').catch(() => {});
+        emitTo('main', 'focus-main-window').catch(() => {});
+      }
       dismissById(id);
     }
 
