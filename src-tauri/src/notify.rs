@@ -148,3 +148,13 @@ pub fn get_screen_info(app: AppHandle) -> (f64, f64) {
         (1920.0, 1080.0)
     }
 }
+
+/// Called by notification window to focus the main window reliably via Rust
+#[tauri::command]
+pub fn focus_main_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
