@@ -207,6 +207,7 @@ function App() {
     (tokenOverride?: string | null, opts?: { userInitiated?: boolean }) => Promise<boolean>
   >(async () => false);
   const knownEmailIdsRef = useRef<Set<string>>(new Set());
+  const recentlyReadRef = useRef<Set<string>>(new Set());
   const isFirstSyncRef = useRef(true);
   const tabEmailCacheRef = useRef<Partial<Record<string, Email[]>>>({});
   const [, startTabTransition] = useTransition();
@@ -316,8 +317,14 @@ function App() {
     try {
       const label = tab || activeTabRef.current;
       const result = await invoke<Email[]>("get_emails_by_label", { label });
-      tabEmailCacheRef.current[label] = result;
-      startDataTransition(() => setEmails(result));
+      
+      // Override unread status if it was recently marked as read locally
+      const adjusted = result.map(m => 
+        recentlyReadRef.current.has(m.id) ? { ...m, unread: false } : m
+      );
+      
+      tabEmailCacheRef.current[label] = adjusted;
+      startDataTransition(() => setEmails(adjusted));
     } catch (e) {
       console.error("Failed to load emails:", e);
     }
@@ -509,8 +516,18 @@ function App() {
       await win.setFocus();
     });
 
+    const handleIframeMessage = (e: MessageEvent) => {
+      if (e.data && e.data.type === "open_url" && e.data.url) {
+        import("@tauri-apps/plugin-opener").then(opener => {
+          opener.open(e.data.url).catch(console.error);
+        });
+      }
+    };
+    window.addEventListener("message", handleIframeMessage);
+
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("message", handleIframeMessage);
       clearPeriodicSync();
       unlistenFocus.then(f => f());
     };
@@ -591,6 +608,7 @@ function App() {
     setShowReply(false);
     setReplyText("");
     if (mail.unread) {
+      recentlyReadRef.current.add(mail.id);
       setEmails(prev => prev.map(m => m.id === mail.id ? { ...m, unread: false } : m));
       try {
         await invoke("mark_as_read", { 
@@ -1311,11 +1329,24 @@ function App() {
                           </style>
                         </head>
                         <body>
-                          ${activeMail.body_html || activeMail.snippet}
+                          ${(activeMail.body_html || activeMail.snippet).replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")}
+                          <script>
+                            document.addEventListener("click", function(e) {
+                              var target = e.target.closest("a");
+                              if (target) {
+                                var url = target.getAttribute("href") || target.href;
+                                if (url && !url.startsWith("#")) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  window.parent.postMessage({ type: "open_url", url: target.href }, "*");
+                                }
+                              }
+                            }, true);
+                          </script>
                         </body>
                       </html>
                     `}
-                    sandbox="allow-popups allow-popups-to-escape-sandbox"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin"
                     className="w-full border-none flex-1"
                   />
                 </div>

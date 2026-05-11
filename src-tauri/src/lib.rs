@@ -93,7 +93,8 @@ pub fn run() {
             notify::show_custom_notification,
             notify::get_pending_notification,
             notify::get_screen_info,
-            notify::is_system_fullscreen
+            notify::is_system_fullscreen,
+            notify::focus_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
