@@ -2,6 +2,7 @@ mod auth;
 mod db;
 mod gmail;
 mod notify;
+mod settings;
 
 use std::sync::Mutex;
 
@@ -95,7 +96,9 @@ pub fn run() {
             notify::get_pending_notification,
             notify::get_screen_info,
             notify::is_system_fullscreen,
-            notify::focus_main_window
+            notify::focus_main_window,
+            settings::get_launch_at_startup,
+            settings::set_launch_at_startup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
