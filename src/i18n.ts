@@ -57,6 +57,14 @@ export const tr = {
     checkFailed: "Güncelleme kontrolü başarısız",
     installFailed: "Güncelleme yüklenirken hata",
   },
+  startup: {
+    title: "Başlangıç",
+    description: "Bilgisayar açıldığında FURSOY Mail'in otomatik çalışıp çalışmayacağını belirleyin.",
+    launchAtStartup: "Bilgisayar açılınca otomatik başlat",
+    enabled: "Otomatik başlatma açıldı.",
+    disabled: "Otomatik başlatma kapatıldı.",
+    failed: "Otomatik başlatma ayarı değiştirilemedi.",
+  },
   actions: {
     refresh: "Yenile",
     logout: "Çıkış",

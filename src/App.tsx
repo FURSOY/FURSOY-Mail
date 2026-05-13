@@ -354,6 +354,8 @@ function App() {
   const [pauseOnFullscreen, setPauseOnFullscreen] = useState(() => {
     return localStorage.getItem("fursoy_pause_on_fullscreen") === "true";
   });
+  const [launchAtStartup, setLaunchAtStartup] = useState(false);
+  const [startupSettingLoading, setStartupSettingLoading] = useState(false);
   const [lazyBodyLoading, setLazyBodyLoading] = useState(() => {
     return localStorage.getItem("fursoy_lazy_body_loading") !== "false";
   });
@@ -434,6 +436,12 @@ function App() {
       .then(setCurrentVersion)
       .catch((err) => {
         console.error("Failed to read app version:", err);
+      });
+
+    invoke<boolean>("get_launch_at_startup")
+      .then(setLaunchAtStartup)
+      .catch((err) => {
+        console.error("Failed to read startup setting:", err);
       });
   }, []);
 
@@ -619,6 +627,23 @@ function App() {
     });
     void loadEmails(activeTabRef.current);
     showToast(tr.actions.clearCacheSuccess, "success");
+  };
+
+  const handleLaunchAtStartupChange = async (checked: boolean) => {
+    setStartupSettingLoading(true);
+    const previous = launchAtStartup;
+    setLaunchAtStartup(checked);
+    try {
+      const actual = await invoke<boolean>("set_launch_at_startup", { enabled: checked });
+      setLaunchAtStartup(actual);
+      showToast(actual ? tr.startup.enabled : tr.startup.disabled, "success");
+    } catch (e) {
+      console.error("Failed to update startup setting:", e);
+      setLaunchAtStartup(previous);
+      showToast(`${tr.startup.failed}: ${e}`, "error");
+    } finally {
+      setStartupSettingLoading(false);
+    }
   };
 
   // Auto-refresh token and retry on 401
@@ -1297,6 +1322,25 @@ function App() {
                     />
                     <span className="text-sm text-zinc-400">saniye</span>
                   </div>
+                </div>
+
+                {/* Startup */}
+                <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
+                  <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.startup.title}</h3>
+                  <p className="text-xs text-zinc-500 mb-4">{tr.startup.description}</p>
+
+                  <label className={`flex items-center gap-2 ${startupSettingLoading ? "opacity-60" : "cursor-pointer"}`}>
+                    <input
+                      type="checkbox"
+                      checked={launchAtStartup}
+                      disabled={startupSettingLoading}
+                      onChange={(e) => {
+                        void handleLaunchAtStartupChange(e.target.checked);
+                      }}
+                      className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-50"
+                    />
+                    <span className="text-sm text-zinc-300">{tr.startup.launchAtStartup}</span>
+                  </label>
                 </div>
 
                 {/* Notification Duration */}
