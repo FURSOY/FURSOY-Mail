@@ -10,6 +10,10 @@ pub struct PersistedWindowState {
     height: u32,
     x: i32,
     y: i32,
+    #[serde(default)]
+    maximized: bool,
+    #[serde(default)]
+    fullscreen: bool,
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -43,7 +47,17 @@ pub fn restore_window_state(app: &AppHandle) {
     }
 
     let _ = window.set_size(PhysicalSize::new(state.width, state.height));
-    let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    if saved_position_is_visible(app, &state) {
+        let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    } else {
+        let _ = window.center();
+    }
+
+    if state.fullscreen {
+        let _ = window.set_fullscreen(true);
+    } else if state.maximized {
+        let _ = window.maximize();
+    }
 }
 
 pub fn save_window_state(window: &Window) {
@@ -57,6 +71,9 @@ pub fn save_window_state(window: &Window) {
     if is_minimized {
         return;
     }
+
+    let maximized = window.is_maximized().unwrap_or(false);
+    let fullscreen = window.is_fullscreen().unwrap_or(false);
 
     let Ok(size) = window.outer_size() else {
         return;
@@ -74,6 +91,8 @@ pub fn save_window_state(window: &Window) {
         height: size.height,
         x: position.x,
         y: position.y,
+        maximized,
+        fullscreen,
     };
 
     let app = window.app_handle();
@@ -85,4 +104,27 @@ pub fn save_window_state(window: &Window) {
     };
 
     let _ = fs::write(path, json);
+}
+
+fn saved_position_is_visible(app: &AppHandle, state: &PersistedWindowState) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return true;
+    };
+
+    if monitors.is_empty() {
+        return true;
+    }
+
+    let center_x = state.x + (state.width as i32 / 2);
+    let center_y = state.y + (state.height as i32 / 2);
+
+    monitors.iter().any(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        let left = position.x;
+        let top = position.y;
+        let right = left + size.width as i32;
+        let bottom = top + size.height as i32;
+        center_x >= left && center_x <= right && center_y >= top && center_y <= bottom
+    })
 }

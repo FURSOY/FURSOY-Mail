@@ -41,15 +41,20 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            let background_launch = is_background_launch();
+
             // Load .env file for OAuth credentials
             let _ = dotenvy::dotenv();
 
             // Initialize database on startup
             db::init_db(app.handle()).expect("Failed to initialize database");
             window_state::restore_window_state(app.handle());
-            if is_background_launch() {
-                if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview_window("main") {
+                if background_launch {
                     let _ = window.hide();
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
 
