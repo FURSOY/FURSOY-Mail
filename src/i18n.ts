@@ -71,6 +71,16 @@ export const tr = {
     disabled: "Otomatik başlatma kapatıldı.",
     failed: "Otomatik başlatma ayarı değiştirilemedi.",
   },
+  notifications: {
+    title: "Bildirim ve senkronizasyon",
+    description: "Bildirimleri sessize alın veya arka planda mail çekmeyi geçici olarak durdurun.",
+    muteNotifications: "Bildirimleri sessize al",
+    pauseMailSync: "Mail çekmeyi durdur",
+    quietHours: "Sessiz saatler",
+    quietHoursHint: "Bu saat aralığında yeni mail bildirimi gösterilmez.",
+    start: "Başlangıç",
+    end: "Bitiş",
+  },
   appearance: {
     title: "Görünüm",
     description: "Uygulamanın ana rengini ve genel hissini özelleştirin.",

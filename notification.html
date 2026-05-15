@@ -57,6 +57,15 @@
       border-top: 1px solid rgba(255, 255, 255, 0.06);
     }
 
+    .card.update {
+      background: #1f1808;
+    }
+
+    .card.update+.card,
+    .card+.card.update {
+      border-top-color: rgba(245, 158, 11, 0.18);
+    }
+
     @keyframes fadeIn {
       from {
         opacity: 0;
@@ -80,10 +89,16 @@
       height: 30px;
       border-radius: 50%;
       background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
+    }
+
+    .card.update .icon-circle {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fbbf24;
     }
 
     .text-area {
@@ -101,6 +116,10 @@
       color: #f4f4f5;
     }
 
+    .card.update .title {
+      color: #fff7ed;
+    }
+
     .body {
       font-size: 11.5px;
       color: #a1a1aa;
@@ -108,6 +127,10 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .card.update .body {
+      color: #fcd9a8;
     }
 
     /* Close button */
@@ -196,6 +219,10 @@
       transition: width linear;
       flex-shrink: 0;
     }
+
+    #progressBar.update {
+      background: rgba(245, 158, 11, 0.8);
+    }
   </style>
 </head>
 
@@ -213,7 +240,7 @@
     import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
     const win = getCurrentWindow();
-    const notifications = [];  // { id, title, body, code, emailId }
+    const notifications = [];  // { id, title, body, code, emailId, kind }
     let nextId = 0;
     let screenW = 1920, screenH = 1080;
     const WIN_W = 340;
@@ -255,8 +282,9 @@
     }
 
     // ── Progress bar ──
-    function startProgressBar(durationMs) {
+    function startProgressBar(durationMs, kind = 'mail') {
       const bar = document.getElementById('progressBar');
+      bar.className = kind === 'update' ? 'update' : '';
       // Reset to full width instantly
       bar.style.transition = 'none';
       bar.style.width = '100%';
@@ -267,7 +295,7 @@
     }
 
     // ── Global timer: start or extend ──
-    function extendTimer(addMs) {
+    function extendTimer(addMs, kind = 'mail') {
       const now = Date.now();
       let remaining = 0;
       if (globalTimer) {
@@ -280,7 +308,7 @@
       timerDuration = newDuration;
       timerStartedAt = now;
       globalTimer = setTimeout(dismissAll, newDuration);
-      startProgressBar(newDuration);
+      startProgressBar(newDuration, kind);
     }
 
     function clearGlobalTimer() {
@@ -299,17 +327,24 @@
 
       notifications.forEach((n) => {
         const card = document.createElement('div');
-        card.className = 'card';
+        card.className = `card ${n.kind === 'update' ? 'update' : ''}`;
         card.dataset.id = n.id;
+        const iconSvg = n.kind === 'update'
+          ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12"/>
+              <path d="m7 10 5 5 5-5"/>
+              <path d="M5 21h14"/>
+            </svg>`
+          : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+              <polyline points="22,6 12,13 2,6"/>
+            </svg>`;
 
         card.innerHTML = `
           <button class="close-btn" data-id="${n.id}">&times;</button>
           <div class="card-top">
             <div class="icon-circle">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                <polyline points="22,6 12,13 2,6"/>
-              </svg>
+              ${iconSvg}
             </div>
             <div class="text-area">
               <div class="title">${esc(n.title)}</div>
@@ -356,7 +391,8 @@
     async function addNotification(data) {
       if (!data) return;
       const id = nextId++;
-      notifications.push({ id, title: data.title, body: data.body, code: data.code || null, emailId: data.emailId || null });
+      const kind = data.kind === 'update' ? 'update' : 'mail';
+      notifications.push({ id, title: data.title, body: data.body, code: data.code || null, emailId: data.emailId || null, kind });
       render();
 
       const duration = data.duration !== undefined ? data.duration : 5000;
@@ -366,7 +402,7 @@
         if (bar) bar.style.display = 'none';
       } else {
         if (bar) bar.style.display = 'block';
-        extendTimer(duration);
+        extendTimer(duration, kind);
       }
 
       await resizeWindow();
@@ -409,7 +445,10 @@
     // ── Open mail + dismiss that card ──
     function openMailAndDismiss(id) {
       const notification = notifications.find(n => n.id === id);
-      if (notification && notification.emailId) {
+      if (notification && notification.kind === 'update') {
+        invoke('focus_main_window').catch(() => {});
+        emitTo('main', 'open-update-settings').catch(() => {});
+      } else if (notification && notification.emailId) {
         emitTo('main', 'open-notification-mail', { emailId: notification.emailId }).catch(() => {});
       } else {
         invoke('focus_main_window').catch(() => {});

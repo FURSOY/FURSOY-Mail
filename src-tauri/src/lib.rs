@@ -6,11 +6,16 @@ mod settings;
 mod window_state;
 
 use std::sync::Mutex;
+use tauri::Emitter;
 
 /// Global sync lock — prevents concurrent syncs; coalesces overlapping requests into one follow-up sync
 pub struct SyncState {
     pub is_syncing: Mutex<bool>,
     pub resync_requested: Mutex<bool>,
+}
+
+fn is_background_launch() -> bool {
+    std::env::args().any(|arg| arg == "--background" || arg == "--hidden" || arg == "--minimized")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,20 +47,56 @@ pub fn run() {
             // Initialize database on startup
             db::init_db(app.handle()).expect("Failed to initialize database");
             window_state::restore_window_state(app.handle());
+            if is_background_launch() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             // Setup System Tray
-            use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder, Manager};
+            use tauri::{menu::{CheckMenuItem, Menu, MenuItem}, tray::TrayIconBuilder, Manager};
+            let controls = settings::read_app_controls(app.handle());
+            let mute_i = CheckMenuItem::with_id(
+                app,
+                "toggle_mute_notifications",
+                "Bildirimleri sessize al",
+                true,
+                controls.notifications_muted,
+                None::<&str>,
+            )?;
+            let pause_i = CheckMenuItem::with_id(
+                app,
+                "toggle_pause_sync",
+                "Mail çekmeyi durdur",
+                true,
+                controls.mail_sync_paused,
+                None::<&str>,
+            )?;
             let quit_i = MenuItem::with_id(app, "quit", "Kapat", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit_i])?;
+            let menu = Menu::with_items(app, &[&mute_i, &pause_i, &quit_i])?;
+            let mute_item = mute_i.clone();
+            let pause_item = pause_i.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                        app.exit(0);
+                .on_menu_event(move |app, event| match event.id.as_ref() {
+                    "toggle_mute_notifications" => {
+                        let mut controls = settings::read_app_controls(app);
+                        controls.notifications_muted = !controls.notifications_muted;
+                        let _ = settings::write_app_controls(app, &controls);
+                        let _ = mute_item.set_checked(controls.notifications_muted);
+                        let _ = app.emit("app-controls-changed", controls);
                     }
+                    "toggle_pause_sync" => {
+                        let mut controls = settings::read_app_controls(app);
+                        controls.mail_sync_paused = !controls.mail_sync_paused;
+                        let _ = settings::write_app_controls(app, &controls);
+                        let _ = pause_item.set_checked(controls.mail_sync_paused);
+                        let _ = app.emit("app-controls-changed", controls);
+                    }
+                    "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -104,7 +145,11 @@ pub fn run() {
             notify::is_system_fullscreen,
             notify::focus_main_window,
             settings::get_launch_at_startup,
-            settings::set_launch_at_startup
+            settings::set_launch_at_startup,
+            settings::get_app_controls,
+            settings::set_app_controls,
+            settings::set_notifications_muted,
+            settings::set_mail_sync_paused
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
