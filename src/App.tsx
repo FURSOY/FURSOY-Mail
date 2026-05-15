@@ -78,6 +78,8 @@ function sanitizeEmailHtml(html: string, fallback: string): string {
 
 const LARGE_BODY_RENDER_LIMIT = 750_000;
 const MAX_LABEL_CACHE = 5;
+const STARTUP_NETWORK_DELAY_MS = 5000;
+const STARTUP_UPDATE_DELAY_MS = 9000;
 
 function isNoUpdateError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
@@ -733,7 +735,11 @@ function App() {
 
   // Check update on startup
   useEffect(() => {
-    void checkForUpdates(false);
+    const timer = window.setTimeout(() => {
+      void checkForUpdates(false);
+    }, STARTUP_UPDATE_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   // Load emails by current tab from local DB
@@ -966,34 +972,47 @@ function App() {
   backgroundSyncRef.current = backgroundSync;
 
   useEffect(() => {
+    let cancelled = false;
+    let startupSyncTimer: number | null = null;
+
     refreshUnreadCount();
 
     invoke<AuthInfo | null>("get_auth_info")
-      .then(async (info) => {
+      .then((info) => {
         if (!info) return;
 
         setUserInfo(info);
         setAccessToken(info.access_token);
         accessTokenRef.current = info.access_token;
 
-        if (await shouldDeferNetworkForGameMode(false)) {
-          console.log("System in fullscreen/game mode, delaying startup token refresh and sync.");
-        } else {
-          let activeToken = info.access_token;
-          try {
-            const refreshed = await invoke<AuthInfo>("refresh_access_token");
-            setUserInfo(refreshed);
-            setAccessToken(refreshed.access_token);
-            accessTokenRef.current = refreshed.access_token;
-            activeToken = refreshed.access_token;
-          } catch {
-            console.log("Token refresh skipped, using existing token");
-          }
+        startupSyncTimer = window.setTimeout(() => {
+          void (async () => {
+            if (cancelled) return;
+            if (await shouldDeferNetworkForGameMode(false)) {
+              console.log("System in fullscreen/game mode, delaying startup token refresh and sync.");
+            } else {
+              let activeToken = info.access_token;
+              try {
+                const refreshed = await invoke<AuthInfo>("refresh_access_token");
+                if (cancelled) return;
+                setUserInfo(refreshed);
+                setAccessToken(refreshed.access_token);
+                accessTokenRef.current = refreshed.access_token;
+                activeToken = refreshed.access_token;
+              } catch {
+                console.log("Token refresh skipped, using existing token");
+              }
 
-          await backgroundSyncRef.current(activeToken);
-        }
+              if (!cancelled) {
+                await backgroundSyncRef.current(activeToken);
+              }
+            }
 
-        startPeriodicSync();
+            if (!cancelled) {
+              startPeriodicSync();
+            }
+          })();
+        }, STARTUP_NETWORK_DELAY_MS);
       })
       .catch(console.error);
 
@@ -1024,6 +1043,10 @@ function App() {
     window.addEventListener("message", handleIframeMessage);
 
     return () => {
+      cancelled = true;
+      if (startupSyncTimer !== null) {
+        window.clearTimeout(startupSyncTimer);
+      }
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("message", handleIframeMessage);
       clearPeriodicSync();

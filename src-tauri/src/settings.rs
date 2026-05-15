@@ -97,10 +97,39 @@ fn startup_command() -> Result<String, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn startup_value_has_background_arg(value: &str) -> bool {
+    value.contains("--background") || value.contains("--hidden") || value.contains("--minimized")
+}
+
+#[cfg(target_os = "windows")]
 fn startup_value_matches_current_app(value: &str) -> Result<bool, String> {
     let exe = app_exe_path()?;
     let trimmed = value.trim();
     Ok(trimmed.trim_matches('"') == exe || trimmed.starts_with(&format!("\"{exe}\"")))
+}
+
+#[cfg(target_os = "windows")]
+fn write_startup_value(command: &str) -> Result<(), String> {
+    let status = std::process::Command::new("reg")
+        .args([
+            "add",
+            STARTUP_REG_PATH,
+            "/v",
+            STARTUP_VALUE_NAME,
+            "/t",
+            "REG_SZ",
+            "/d",
+            command,
+            "/f",
+        ])
+        .status()
+        .map_err(|e| format!("Baslangic kaydi eklenemedi: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Baslangic kaydi eklenemedi.".into())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -130,8 +159,14 @@ fn read_startup_value() -> Result<Option<String>, String> {
 pub fn get_launch_at_startup() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        let registered = read_startup_value()?.unwrap_or_default();
-        startup_value_matches_current_app(&registered)
+        let Some(registered) = read_startup_value()? else {
+            return Ok(false);
+        };
+        let matches = startup_value_matches_current_app(&registered)?;
+        if matches && !startup_value_has_background_arg(&registered) {
+            let _ = write_startup_value(&startup_command()?);
+        }
+        Ok(matches)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -146,24 +181,7 @@ pub fn set_launch_at_startup(enabled: bool) -> Result<bool, String> {
     {
         if enabled {
             let command = startup_command()?;
-            let status = std::process::Command::new("reg")
-                .args([
-                    "add",
-                    STARTUP_REG_PATH,
-                    "/v",
-                    STARTUP_VALUE_NAME,
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &command,
-                    "/f",
-                ])
-                .status()
-                .map_err(|e| format!("Baslangic kaydi eklenemedi: {e}"))?;
-
-            if !status.success() {
-                return Err("Baslangic kaydi eklenemedi.".into());
-            }
+            write_startup_value(&command)?;
         } else {
             let status = std::process::Command::new("reg")
                 .args(["delete", STARTUP_REG_PATH, "/v", STARTUP_VALUE_NAME, "/f"])
