@@ -10,6 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub struct NotificationPayload {
     pub title: String,
     pub body: String,
+    pub kind: Option<String>,
     pub code: Option<String>,
     #[serde(rename = "emailId")]
     pub email_id: Option<String>,
@@ -71,15 +72,20 @@ pub async fn show_custom_notification(
     app: AppHandle,
     title: String,
     body: String,
+    kind: Option<String>,
     code: Option<String>,
     email_id: Option<String>,
     duration: Option<u32>,
 ) {
+    if crate::settings::read_app_controls(&app).notifications_muted {
+        return;
+    }
+
     if is_fullscreen() {
         return;
     }
 
-    let payload = NotificationPayload { title, body, code, email_id, duration };
+    let payload = NotificationPayload { title, body, kind, code, email_id, duration };
 
     // If window already exists (hidden or visible), just send new notification
     if let Some(window) = app.get_webview_window("notification") {

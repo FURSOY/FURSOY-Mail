@@ -371,6 +371,39 @@ interface AuthInfo {
   picture: string;
 }
 
+interface AppControls {
+  notificationsMuted: boolean;
+  mailSyncPaused: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+}
+
+const DEFAULT_APP_CONTROLS: AppControls = {
+  notificationsMuted: false,
+  mailSyncPaused: false,
+  quietHoursEnabled: false,
+  quietHoursStart: "22:00",
+  quietHoursEnd: "08:00",
+};
+
+function minutesFromTime(value: string): number {
+  const [hours, minutes] = value.split(":").map(part => parseInt(part, 10));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0;
+  return Math.max(0, Math.min(23, hours)) * 60 + Math.max(0, Math.min(59, minutes));
+}
+
+function isInQuietHours(controls: AppControls): boolean {
+  if (!controls.quietHoursEnabled) return false;
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  const start = minutesFromTime(controls.quietHoursStart);
+  const end = minutesFromTime(controls.quietHoursEnd);
+  if (start === end) return true;
+  if (start < end) return current >= start && current < end;
+  return current >= start || current < end;
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<'inbox' | 'sent' | 'archive' | 'spam' | 'trash' | 'settings'>('inbox');
   const [selectedMail, setSelectedMail] = useState<string | null>(null);
@@ -393,7 +426,7 @@ function App() {
     return localStorage.getItem("fursoy_notif_infinite") === "true";
   });
   const [pauseOnFullscreen, setPauseOnFullscreen] = useState(() => {
-    return localStorage.getItem("fursoy_pause_on_fullscreen") === "true";
+    return localStorage.getItem("fursoy_pause_on_fullscreen") !== "false";
   });
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
   const [startupSettingLoading, setStartupSettingLoading] = useState(false);
@@ -406,6 +439,7 @@ function App() {
   const [fitMailToWidth, setFitMailToWidth] = useState(() => {
     return localStorage.getItem("fursoy_fit_mail_to_width") !== "false";
   });
+  const [appControls, setAppControls] = useState<AppControls>(DEFAULT_APP_CONTROLS);
   const [otpMode, setOtpMode] = useState<OtpMode>(() => {
     const saved = localStorage.getItem("fursoy_otp_mode");
     return saved === "off" || saved === "strict" ? saved : "balanced";
@@ -454,6 +488,7 @@ function App() {
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recentNotificationsRef = useRef<Record<string, string>>({});
+  const notifiedUpdateVersionRef = useRef<string | null>(null);
   /** Latest access token for interval/manual sync (avoids stale closure + matches React state). */
   const accessTokenRef = useRef<string | null>(null);
   const backgroundSyncRef = useRef<
@@ -475,6 +510,8 @@ function App() {
   notifInfiniteRef.current = notifInfinite;
   const pauseOnFullscreenRef = useRef(pauseOnFullscreen);
   pauseOnFullscreenRef.current = pauseOnFullscreen;
+  const appControlsRef = useRef(appControls);
+  appControlsRef.current = appControls;
 
   useEffect(() => {
     accessTokenRef.current = accessToken;
@@ -501,6 +538,22 @@ function App() {
       .catch((err) => {
         console.error("Failed to read startup setting:", err);
       });
+
+    invoke<AppControls>("get_app_controls")
+      .then((controls) => setAppControls({ ...DEFAULT_APP_CONTROLS, ...controls }))
+      .catch((err) => {
+        console.error("Failed to read app controls:", err);
+      });
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromise = listen<AppControls>("app-controls-changed", (event) => {
+      setAppControls({ ...DEFAULT_APP_CONTROLS, ...event.payload });
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
   }, []);
 
   // Toast helper
@@ -531,17 +584,43 @@ function App() {
     });
   }, [showToast]);
 
+  const shouldDeferNetworkForGameMode = useCallback(async (userInitiated = false) => {
+    if (userInitiated || !pauseOnFullscreenRef.current) return false;
+    try {
+      return await invoke<boolean>("is_system_fullscreen");
+    } catch (e) {
+      console.error("Fullscreen check failed:", e);
+      return false;
+    }
+  }, []);
+
   const checkForUpdates = async (showUIMessages = false) => {
     try {
       if (showUIMessages) setIsCheckingUpdate(true);
       setUpdateError(null);
       setUpdateStatus("");
+      if (await shouldDeferNetworkForGameMode(showUIMessages)) {
+        console.log("System in fullscreen/game mode, skipping automatic update check.");
+        return;
+      }
       const update = await check();
 
       if (update) {
         setUpdateAvailable({ version: update.version, date: update.date || '', body: update.body || '' });
         setUpdateStatus(tr.update.available.replace("{version}", update.version));
-        showToast(`Yeni bir güncelleme mevcut: v${update.version}`, "info");
+        if (showUIMessages) {
+          showToast(`Yeni bir güncelleme mevcut: v${update.version}`, "info");
+        } else if (notifiedUpdateVersionRef.current !== update.version) {
+          notifiedUpdateVersionRef.current = update.version;
+          await invoke("show_custom_notification", {
+            title: "FURSOY Mail güncellemesi hazır",
+            body: `v${update.version} sürümü indirilebilir. Güncelleme ekranını açmak için tıklayın.`,
+            kind: "update",
+            code: null,
+            emailId: null,
+            duration: 10000,
+          });
+        }
       } else {
         setUpdateAvailable(null);
         setUpdateStatus(tr.update.upToDate);
@@ -634,9 +713,21 @@ function App() {
       await openNotificationMail(emailId || "");
     });
 
+    const unlistenUpdatePromise = listen('open-update-settings', async () => {
+      setMobileMenuOpen(false);
+      startTabTransition(() => setActiveTab("settings"));
+      await getCurrentWindow().show();
+      await getCurrentWindow().unminimize();
+      await getCurrentWindow().setFocus();
+      window.setTimeout(() => {
+        document.getElementById("settings-updates")?.scrollIntoView({ block: "center", behavior: "smooth" });
+      }, 100);
+    });
+
     return () => {
       unlistenCustomPromise.then(unlisten => unlisten());
       unlistenPluginPromise.then(unlisten => unlisten());
+      unlistenUpdatePromise.then(unlisten => unlisten());
     };
   }, []);
 
@@ -704,6 +795,20 @@ function App() {
     }
   };
 
+  const updateAppControls = async (next: AppControls) => {
+    const previous = appControlsRef.current;
+    const merged = { ...DEFAULT_APP_CONTROLS, ...next };
+    setAppControls(merged);
+    try {
+      const saved = await invoke<AppControls>("set_app_controls", { controls: merged });
+      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved });
+    } catch (e) {
+      console.error("Failed to update app controls:", e);
+      setAppControls(previous);
+      showToast(`Ayar kaydedilemedi: ${e}`, "error");
+    }
+  };
+
   // Auto-refresh token and retry on 401
   const syncWithAutoRefresh = useCallback(async (token: string): Promise<string> => {
     try {
@@ -741,6 +846,8 @@ function App() {
 
   const notifyNewEmails = useCallback(async (newEmails: EmailSummary[]) => {
     if (newEmails.length === 0) return;
+    const controls = appControlsRef.current;
+    if (controls.notificationsMuted || isInQuietHours(controls)) return;
 
     try {
       for (const email of newEmails.slice(0, 5)) {
@@ -756,6 +863,7 @@ function App() {
         await invoke("show_custom_notification", {
           title: notifTitle,
           body: notifBody,
+          kind: "mail",
           code: code || null,
           emailId: email.id,
           duration: notifInfiniteRef.current ? 0 : notifDurationRef.current * 1000
@@ -796,23 +904,31 @@ function App() {
     const token = tokenOverride ?? accessTokenRef.current;
     if (!token) return false;
 
-    // Check for fullscreen if setting is enabled
-    if (pauseOnFullscreenRef.current) {
-      try {
-        const isFullscreen = await invoke<boolean>("is_system_fullscreen");
-        if (isFullscreen) {
-          console.log("System in fullscreen/game mode, skipping background sync.");
-          return false;
-        }
-      } catch (e) {
-        console.error("Fullscreen check failed:", e);
-      }
+    const userInitiated = opts?.userInitiated ?? false;
+    if (appControlsRef.current.mailSyncPaused && !userInitiated) {
+      return false;
     }
 
-    const userInitiated = opts?.userInitiated ?? false;
+    if (await shouldDeferNetworkForGameMode(userInitiated)) {
+      console.log("System in fullscreen/game mode, skipping background sync.");
+      return false;
+    }
+
     try {
       if (userInitiated) setIsUserSyncing(true);
       else setIsBackgroundSyncing(true);
+
+      let hadLocalInboxSnapshot = knownEmailIdsRef.current.size > 0;
+      if (isFirstSyncRef.current && !hadLocalInboxSnapshot) {
+        try {
+          const localInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox" });
+          knownEmailIdsRef.current = new Set(localInbox.map(e => e.id));
+          hadLocalInboxSnapshot = localInbox.length > 0;
+        } catch (snapshotError) {
+          console.error("Initial inbox snapshot failed:", snapshotError);
+        }
+      }
+
       const newToken = await syncWithAutoRefresh(token);
       accessTokenRef.current = newToken;
 
@@ -826,6 +942,9 @@ function App() {
 
       if (isFirstSyncRef.current) {
         isFirstSyncRef.current = false;
+        if (hadLocalInboxSnapshot) {
+          notifyNewEmails(newUnreadEmails);
+        }
       } else {
         notifyNewEmails(newUnreadEmails);
       }
@@ -857,18 +976,23 @@ function App() {
         setAccessToken(info.access_token);
         accessTokenRef.current = info.access_token;
 
-        let activeToken = info.access_token;
-        try {
-          const refreshed = await invoke<AuthInfo>("refresh_access_token");
-          setUserInfo(refreshed);
-          setAccessToken(refreshed.access_token);
-          accessTokenRef.current = refreshed.access_token;
-          activeToken = refreshed.access_token;
-        } catch {
-          console.log("Token refresh skipped, using existing token");
+        if (await shouldDeferNetworkForGameMode(false)) {
+          console.log("System in fullscreen/game mode, delaying startup token refresh and sync.");
+        } else {
+          let activeToken = info.access_token;
+          try {
+            const refreshed = await invoke<AuthInfo>("refresh_access_token");
+            setUserInfo(refreshed);
+            setAccessToken(refreshed.access_token);
+            accessTokenRef.current = refreshed.access_token;
+            activeToken = refreshed.access_token;
+          } catch {
+            console.log("Token refresh skipped, using existing token");
+          }
+
+          await backgroundSyncRef.current(activeToken);
         }
 
-        await backgroundSyncRef.current(activeToken);
         startPeriodicSync();
       })
       .catch(console.error);
@@ -905,7 +1029,7 @@ function App() {
       clearPeriodicSync();
       unlistenFocus.then(f => f());
     };
-  }, [openExternalMailUrl]);
+  }, [openExternalMailUrl, shouldDeferNetworkForGameMode]);
 
   useEffect(() => {
     const cached = tabEmailCacheRef.current[activeTab];
@@ -913,6 +1037,15 @@ function App() {
       setEmails(cached);
     }
     void loadEmails(activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "settings") return;
+    invoke<boolean>("get_launch_at_startup")
+      .then(setLaunchAtStartup)
+      .catch((err) => {
+        console.error("Failed to refresh startup setting:", err);
+      });
   }, [activeTab]);
 
   const goToTab = (tab: typeof activeTab) => {
@@ -1456,6 +1589,79 @@ function App() {
                   </label>
                 </div>
 
+                {/* Notification and Sync Controls */}
+                <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
+                  <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.notifications.title}</h3>
+                  <p className="text-xs text-zinc-500 mb-4">{tr.notifications.description}</p>
+
+                  <div className="space-y-5">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={appControls.notificationsMuted}
+                        onChange={(e) => {
+                          void updateAppControls({ ...appControlsRef.current, notificationsMuted: e.target.checked });
+                        }}
+                        className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
+                      />
+                      <span className="text-sm text-zinc-300">{tr.notifications.muteNotifications}</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={appControls.mailSyncPaused}
+                        onChange={(e) => {
+                          void updateAppControls({ ...appControlsRef.current, mailSyncPaused: e.target.checked });
+                        }}
+                        className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
+                      />
+                      <span className="text-sm text-zinc-300">{tr.notifications.pauseMailSync}</span>
+                    </label>
+
+                    <div className="rounded-lg border border-white/5 bg-[#09090b] p-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={appControls.quietHoursEnabled}
+                          onChange={(e) => {
+                            void updateAppControls({ ...appControlsRef.current, quietHoursEnabled: e.target.checked });
+                          }}
+                          className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
+                        />
+                        <span className="text-sm text-zinc-300">{tr.notifications.quietHours}</span>
+                      </label>
+                      <p className="mt-1 text-[10px] text-zinc-600">{tr.notifications.quietHoursHint}</p>
+                      <div className={`mt-3 grid grid-cols-2 gap-3 transition-opacity ${appControls.quietHoursEnabled ? "" : "opacity-40"}`}>
+                        <label className="space-y-1">
+                          <span className="text-[10px] text-zinc-500">{tr.notifications.start}</span>
+                          <input
+                            type="time"
+                            value={appControls.quietHoursStart}
+                            disabled={!appControls.quietHoursEnabled}
+                            onChange={(e) => {
+                              void updateAppControls({ ...appControlsRef.current, quietHoursStart: e.target.value });
+                            }}
+                            className="w-full rounded-lg border border-white/10 bg-[#0c0c0e] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 disabled:cursor-not-allowed"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[10px] text-zinc-500">{tr.notifications.end}</span>
+                          <input
+                            type="time"
+                            value={appControls.quietHoursEnd}
+                            disabled={!appControls.quietHoursEnabled}
+                            onChange={(e) => {
+                              void updateAppControls({ ...appControlsRef.current, quietHoursEnd: e.target.value });
+                            }}
+                            className="w-full rounded-lg border border-white/10 bg-[#0c0c0e] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 disabled:cursor-not-allowed"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Notification Duration */}
                 <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-zinc-200 mb-1">Bildirim Ekranda Kalma Süresi</h3>
@@ -1571,7 +1777,7 @@ function App() {
                         }}
                         className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                       />
-                      <span className="text-sm text-zinc-300">Oyun veya tam ekranda iken senkronizasyonu durdur</span>
+                      <span className="text-sm text-zinc-300">Oyun/tam ekran sırasında arka plan internet işlemlerini durdur</span>
                     </label>
 
                     <div className="rounded-lg border border-white/5 bg-[#09090b] p-3">
@@ -1614,7 +1820,7 @@ function App() {
                 </div>
 
                 {/* Updates */}
-                <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
+                <div id="settings-updates" className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
                   <h3 className={`${typography.sectionTitle} mb-1`}>{tr.update.title}</h3>
                   <p className={`${typography.bodyMuted} mb-4`}>{tr.update.description}</p>
                   <div className="mb-4 flex items-center justify-between rounded-lg border border-white/5 bg-[#09090b] px-3 py-2">
