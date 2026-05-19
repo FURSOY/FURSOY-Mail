@@ -80,6 +80,7 @@ const LARGE_BODY_RENDER_LIMIT = 750_000;
 const MAX_LABEL_CACHE = 5;
 const STARTUP_NETWORK_DELAY_MS = 5000;
 const STARTUP_UPDATE_DELAY_MS = 9000;
+const MAIL_TABS = new Set(["inbox", "sent", "archive", "spam", "trash"]);
 
 function isNoUpdateError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
@@ -746,6 +747,11 @@ function App() {
   const loadEmails = async (tab?: string) => {
     try {
       const label = tab || activeTabRef.current;
+      if (!MAIL_TABS.has(label)) {
+        startDataTransition(() => setEmails([]));
+        return;
+      }
+
       const result = await invoke<EmailSummary[]>("get_emails_by_label", { label });
 
       // Override unread status if it was recently marked as read locally
@@ -955,7 +961,9 @@ function App() {
         notifyNewEmails(newUnreadEmails);
       }
 
-      await loadEmails();
+      if (MAIL_TABS.has(activeTabRef.current)) {
+        await loadEmails();
+      }
       await refreshUnreadCount();
       return true;
     } catch (e) {
@@ -1055,6 +1063,11 @@ function App() {
   }, [openExternalMailUrl, shouldDeferNetworkForGameMode]);
 
   useEffect(() => {
+    if (!MAIL_TABS.has(activeTab)) {
+      startDataTransition(() => setEmails([]));
+      return;
+    }
+
     const cached = tabEmailCacheRef.current[activeTab];
     if (cached !== undefined) {
       setEmails(cached);
@@ -1064,11 +1077,15 @@ function App() {
 
   useEffect(() => {
     if (activeTab !== "settings") return;
-    invoke<boolean>("get_launch_at_startup")
-      .then(setLaunchAtStartup)
-      .catch((err) => {
-        console.error("Failed to refresh startup setting:", err);
-      });
+    const timer = window.setTimeout(() => {
+      invoke<boolean>("get_launch_at_startup")
+        .then(setLaunchAtStartup)
+        .catch((err) => {
+          console.error("Failed to refresh startup setting:", err);
+        });
+    }, 250);
+
+    return () => window.clearTimeout(timer);
   }, [activeTab]);
 
   const goToTab = (tab: typeof activeTab) => {

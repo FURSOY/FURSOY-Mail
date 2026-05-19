@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes"
+        required: false
+        default: "Stability, updater, mail rendering, and performance improvements."
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read package version
+        id: version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Validate tag version
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_name }}" -ne "${{ steps.version.outputs.tag }}") {
+            throw "Git tag ${{ github.ref_name }} does not match package version ${{ steps.version.outputs.version }}"
+          }
+
+      - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build
+
+      - name: Generate latest.json
+        run: npm run generate-latest
+
+      - name: Prepare release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $src = "src-tauri/target/release/bundle/nsis/FURSOY Mail_${version}_x64-setup.exe"
+          $sig = "$src.sig"
+          if (!(Test-Path $src)) { throw "Installer not found: $src" }
+          if (!(Test-Path $sig)) { throw "Signature not found: $sig" }
+
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $asset = "release-assets/FURSOY.Mail_${version}_x64-setup.exe"
+          Copy-Item $src $asset -Force
+          Copy-Item $sig "$asset.sig" -Force
+          Copy-Item latest.json "release-assets/latest.json" -Force
+
+          "asset=$asset" >> $env:GITHUB_OUTPUT
+
+      - name: Write release notes
+        env:
+          RELEASE_NOTES_INPUT: ${{ github.event.inputs.notes }}
+        shell: pwsh
+        run: |
+          $notes = $env:RELEASE_NOTES_INPUT
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "Stability, updater, mail rendering, and performance improvements."
+          }
+          Set-Content -Path RELEASE_NOTES.md -Value $notes -Encoding UTF8
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $existing = gh release view $tag --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag release-assets/* --clobber
+          } else {
+            gh release create $tag release-assets/* --target "${{ github.sha }}" --title $tag --notes-file RELEASE_NOTES.md --latest
+          }
