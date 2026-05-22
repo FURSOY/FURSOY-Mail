@@ -1,8 +1,11 @@
 use std::{env, fs, path::PathBuf};
 
 fn emit_env_from_dotenv(key: &str) {
-    if env::var(key).is_ok() {
+    if let Ok(value) = env::var(key) {
         println!("cargo:rerun-if-env-changed={key}");
+        if !value.trim().is_empty() {
+            println!("cargo:rustc-env={key}={value}");
+        }
         return;
     }
 
