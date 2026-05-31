@@ -1,11 +1,13 @@
 {
   "name": "fursoy-mail",
   "private": true,
-  "version": "1.2.15",
+  "version": "1.2.16",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "dist:windows": "tauri build --bundles nsis",
+    "release:windows": "npm run dist:windows && npm run generate-latest",
     "generate-latest": "node generate-latest.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
