@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Inbox, Send, Archive, Search, CornerUpLeft, Trash2, RefreshCw, LogOut, X, Minus, Square, Settings, ShieldAlert, Edit3, AlertTriangle, CheckCircle, XCircle, Copy, RotateCcw, DownloadCloud, Menu } from "lucide-react";
+import { Inbox, Send, Archive, Search, CornerUpLeft, Trash2, RefreshCw, LogOut, X, Minus, Square, Settings, ShieldAlert, Edit3, AlertTriangle, CheckCircle, XCircle, Copy, RotateCcw, DownloadCloud, Menu, Columns2, PanelLeft, Rows3 } from "lucide-react";
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { tr } from "./i18n";
@@ -141,6 +141,13 @@ const YEAR_OR_STANDARD_RE = /^(?:19|20)\d{2}$|^27001$|^27701$|^22301$|^9001$|^42
 type OtpMode = "off" | "balanced" | "strict";
 type RenderMode = "full" | "simple";
 type DensityMode = "comfortable" | "compact";
+type MailViewMode = "split" | "single-toggle" | "inbox-first";
+type MailViewPreference = "auto" | MailViewMode;
+
+function getAutoMailViewMode(width: number): MailViewMode {
+  if (width < 900) return "inbox-first";
+  return "split";
+}
 
 function readThemePreset(): ThemePresetName {
   const saved = localStorage.getItem("fursoy_theme_preset");
@@ -268,10 +275,11 @@ function EmailHtmlView({ html, fitWidth, onOpenUrl }: { html: string; fitWidth: 
     root.innerHTML = `
       <style>
         * { box-sizing: border-box; }
-        :host { display: block; width: 100%; height: 100%; min-width: 0; background: #fff; color: #1a1a1a; overflow: auto; }
+        :host { display: block; width: 100%; height: 100%; min-width: 0; background: #fff; color: #1a1a1a; overflow: auto; user-select: text; }
+        ::selection { background: rgba(59, 130, 246, 0.25); color: inherit; }
         .email-fit-shell { width: 100%; min-height: 100%; overflow-x: hidden; }
         .email-scale-stage { width: 100%; min-width: 0; transform-origin: top left; }
-        .email-content { width: 100%; max-width: 100%; min-height: 100%; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: clamp(13px, 1.1vw, 15px); line-height: 1.6; overflow-x: hidden; overflow-wrap: anywhere; word-break: break-word; }
+        .email-content { width: 100%; max-width: 100%; min-height: 100%; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: clamp(13px, 1.1vw, 15px); line-height: 1.6; overflow-x: hidden; overflow-wrap: anywhere; word-break: break-word; user-select: text; cursor: text; }
         .email-content * { box-sizing: border-box; max-width: 100% !important; }
         img, video, canvas, svg { max-width: 100% !important; height: auto !important; }
         table { width: auto !important; max-width: 100% !important; table-layout: fixed !important; border-collapse: collapse; }
@@ -371,7 +379,7 @@ function EmailHtmlView({ html, fitWidth, onOpenUrl }: { html: string; fitWidth: 
     };
   }, [html, fitWidth, onOpenUrl]);
 
-  return <div ref={hostRef} className="h-full w-full min-w-0 overflow-auto overscroll-contain bg-white" />;
+  return <div ref={hostRef} className="h-full w-full min-w-0 overflow-auto overscroll-contain bg-white select-text" />;
 }
 
 interface AuthInfo {
@@ -457,6 +465,12 @@ function App() {
   const [densityMode, setDensityMode] = useState<DensityMode>(() => {
     return localStorage.getItem("fursoy_density_mode") === "compact" ? "compact" : "comfortable";
   });
+  const [mailViewPreference, setMailViewPreference] = useState<MailViewPreference>(() => {
+    const saved = localStorage.getItem("fursoy_mail_view_mode");
+    return saved === "split" || saved === "single-toggle" || saved === "inbox-first" ? saved : "auto";
+  });
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  const [singlePanelView, setSinglePanelView] = useState<"list" | "reader">("list");
   const [emails, setEmails] = useState<EmailSummary[]>([]);
   const [selectedMailBody, setSelectedMailBody] = useState("");
   const [selectedMailBodyId, setSelectedMailBodyId] = useState<string | null>(null);
@@ -477,6 +491,7 @@ function App() {
   const [showCompose, setShowCompose] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [readingToolsOpen, setReadingToolsOpen] = useState(false);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [composeTo, setComposeTo] = useState("");
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
@@ -499,6 +514,7 @@ function App() {
   const recentNotificationsRef = useRef<Record<string, string>>({});
   const notifiedUpdateVersionRef = useRef<string | null>(null);
   const lastToastRef = useRef<{ msg: string; type: "error" | "success" | "info"; at: number } | null>(null);
+  const previousAutoMailViewModeRef = useRef<MailViewMode | null>(null);
   const tokenExpiredRef = useRef(tokenExpired);
   /** Latest access token for interval/manual sync (avoids stale closure + matches React state). */
   const accessTokenRef = useRef<string | null>(null);
@@ -528,6 +544,54 @@ function App() {
   useEffect(() => {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowWidth(window.innerWidth);
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    const window = getCurrentWindow();
+    let disposed = false;
+    let unlistenResize: (() => void) | undefined;
+
+    const syncMaximizedState = async () => {
+      try {
+        const maximized = await window.isMaximized();
+        if (!disposed) {
+          setIsWindowMaximized(maximized);
+        }
+      } catch (err) {
+        console.error("Failed to read window maximized state:", err);
+      }
+    };
+
+    void syncMaximizedState();
+    window
+      .onResized(() => {
+        void syncMaximizedState();
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenResize = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to listen for window resize:", err);
+      });
+
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+    };
+  }, []);
 
   useEffect(() => {
     const preset = themePresets[themePreset];
@@ -1142,6 +1206,7 @@ function App() {
   const goToTab = (tab: typeof activeTab) => {
     setSelectedMail(null);
     setShowReply(false);
+    setSinglePanelView("list");
     setMobileMenuOpen(false);
     startTabTransition(() => setActiveTab(tab));
   };
@@ -1210,6 +1275,9 @@ function App() {
 
   const handleMailClick = async (mail: EmailSummary) => {
     setSelectedMail(mail.id);
+    if (mailViewMode !== "split") {
+      setSinglePanelView("reader");
+    }
     setShowReply(false);
     setReplyText("");
     if (mail.unread) {
@@ -1328,6 +1396,33 @@ function App() {
   };
 
   const activeMail = emails.find(m => m.id === selectedMail);
+  const selectedMailViewMode = mailViewPreference === "auto" ? getAutoMailViewMode(windowWidth) : mailViewPreference;
+  const mailViewMode = selectedMailViewMode === "single-toggle" ? "split" : selectedMailViewMode;
+
+  useEffect(() => {
+    if (mailViewPreference !== "auto") {
+      previousAutoMailViewModeRef.current = null;
+      return;
+    }
+
+    const previousMode = previousAutoMailViewModeRef.current;
+    if (previousMode && previousMode !== mailViewMode) {
+      if (mailViewMode === "split" || !selectedMail) {
+        setSinglePanelView("list");
+      } else {
+        setSinglePanelView("reader");
+      }
+    }
+    previousAutoMailViewModeRef.current = mailViewMode;
+  }, [mailViewMode, mailViewPreference, selectedMail]);
+
+  const closeReader = () => {
+    if (selectedMailViewMode !== "single-toggle") {
+      setSelectedMail(null);
+    }
+    setShowReply(false);
+    setSinglePanelView("list");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1401,6 +1496,22 @@ function App() {
   const showRestoreBtn = activeTab === "trash" || activeTab === "spam" || activeTab === "archive";
   const showTrashToBinBtn = activeTab !== "trash";
   const showDeleteForeverBtn = activeTab === "trash";
+  const isCompactSidebarMode = mailViewPreference === "single-toggle" || (mailViewPreference === "auto" && windowWidth >= 900 && windowWidth < 1280);
+  const usesOverlaySidebar = windowWidth < 900 || isCompactSidebarMode;
+  const showMailList = mailViewMode === "split" || !selectedMail || singlePanelView === "list";
+  const showMailReader = !!activeMail && (mailViewMode === "split" || singlePanelView === "reader");
+  const mailListClassName = mailViewMode === "split"
+    ? `flex flex-col border-r border-white/5 bg-[#09090b] ${selectedMail ? "hidden md:flex md:w-80 lg:w-96" : "flex-1 md:w-80 lg:w-96 md:flex-none"}`
+    : showMailList
+      ? "flex flex-1 flex-col border-r border-white/5 bg-[#09090b]"
+      : "hidden";
+  const mailReaderClassName = showMailReader
+    ? "flex-1 flex flex-col bg-[#0a0a0c] relative z-10 select-text"
+    : "hidden";
+  const sidebarBackdropClassName = `fixed inset-x-0 bottom-0 top-9 z-40 bg-black/55 transition-opacity duration-200 ${usesOverlaySidebar && mobileMenuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`;
+  const sidebarClassName = usesOverlaySidebar
+    ? `fixed left-0 top-9 bottom-0 z-50 flex w-56 flex-col border-r border-white/5 bg-[#0c0c0e]/95 shadow-2xl shadow-black/40 backdrop-blur-xl transition-transform duration-200 ease-out ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"}`
+    : "static z-auto flex w-56 flex-col border-r border-white/5 bg-[#0c0c0e] shadow-none";
 
   return (
     <div className="flex flex-col h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden select-none">
@@ -1420,7 +1531,7 @@ function App() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen(open => !open)}
-            className="md:hidden -ml-1 mr-1 flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+            className="hidden"
             style={{ WebkitAppRegion: 'no-drag' } as any}
             aria-label="Menüyü aç"
           >
@@ -1437,10 +1548,16 @@ function App() {
             <Minus className="w-4 h-4" />
           </button>
           <button
-            onClick={() => getCurrentWindow().toggleMaximize()}
+            aria-label={isWindowMaximized ? "Asagi geri yukle" : "Ekrani kapla"}
+            title={isWindowMaximized ? "Asagi geri yukle" : "Ekrani kapla"}
+            onClick={async () => {
+              const window = getCurrentWindow();
+              await window.toggleMaximize();
+              setIsWindowMaximized(await window.isMaximized());
+            }}
             className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 transition-colors"
           >
-            <Square className="w-3 h-3" />
+            {isWindowMaximized ? <Copy className="w-3.5 h-3.5" /> : <Square className="w-3 h-3" />}
           </button>
           <button
             onClick={async () => {
@@ -1456,13 +1573,13 @@ function App() {
 
       <div className="flex flex-1 overflow-hidden">
         <div
-          className={`fixed inset-x-0 bottom-0 top-9 z-40 bg-black/55 transition-opacity duration-200 md:hidden ${mobileMenuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
+          className={sidebarBackdropClassName}
           onClick={() => setMobileMenuOpen(false)}
           aria-hidden={!mobileMenuOpen}
         />
 
         {/* SIDEBAR */}
-        <aside className={`fixed left-0 top-9 bottom-0 z-50 flex w-56 flex-col border-r border-white/5 bg-[#0c0c0e]/95 shadow-2xl shadow-black/40 backdrop-blur-xl transition-transform duration-200 ease-out md:static md:z-auto md:flex md:translate-x-0 md:shadow-none ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none md:pointer-events-auto"}`}>
+        <aside className={sidebarClassName}>
           <nav className="flex-1 p-2 pt-3 space-y-0.5">
             <button
               onClick={() => goToTab("inbox")}
@@ -1586,6 +1703,17 @@ function App() {
           <section className="flex-1 overflow-y-auto bg-[#0a0a0c] p-8">
             <div className="max-w-2xl mx-auto">
               <h2 className={`${typography.pageTitle} mb-6 flex items-center gap-2`}>
+                {usesOverlaySidebar && (
+                  <button
+                    type="button"
+                    onClick={() => setMobileMenuOpen(open => !open)}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+                    aria-label="Menuyu ac"
+                    title="Menuyu ac"
+                  >
+                    <Menu className="h-4 w-4" />
+                  </button>
+                )}
                 <Settings className="w-6 h-6" />
                 {tr.nav.settings}
               </h2>
@@ -1979,10 +2107,21 @@ function App() {
         ) : (
           <>
             {/* MAIL LIST */}
-            <section className={`flex flex-col border-r border-white/5 bg-[#09090b] ${selectedMail ? 'hidden md:flex md:w-80 lg:w-96' : 'flex-1 md:w-80 lg:w-96 md:flex-none'}`}>
+            <section className={mailListClassName}>
               <div className="h-12 flex items-center px-4 border-b border-white/5 justify-between shrink-0">
-                <div className="flex items-center gap-2.5">
-                  <h2 className="font-semibold text-zinc-100 text-sm capitalize">{activeTab}</h2>
+                <div className="flex min-w-0 items-center gap-2.5">
+                  {usesOverlaySidebar && (
+                    <button
+                      type="button"
+                      onClick={() => setMobileMenuOpen(open => !open)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+                      aria-label="Menuyu ac"
+                      title="Menuyu ac"
+                    >
+                      <Menu className="h-4 w-4" />
+                    </button>
+                  )}
+                  <h2 className="min-w-0 truncate font-semibold text-zinc-100 text-sm capitalize" title={activeTab}>{activeTab}</h2>
                   {isUserSyncing && (
                     <span className="text-[10px] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">Senkronize…</span>
                   )}
@@ -1990,7 +2129,31 @@ function App() {
                     <span className="text-[10px] text-zinc-600 font-medium">Arka planda güncelleniyor</span>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center gap-1">
+                  <div className="inline-flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+                    {([
+                      ["auto", Settings, "Otomatik"],
+                      ["split", Columns2, "Yan yana"],
+                      ["single-toggle", PanelLeft, "Dar menu"],
+                      ["inbox-first", Rows3, "Liste odakli"],
+                    ] as const).map(([mode, Icon, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        title={label}
+                        aria-label={label}
+                        onClick={() => {
+                          setMailViewPreference(mode);
+                          localStorage.setItem("fursoy_mail_view_mode", mode);
+                          const nextMode = mode === "auto" ? getAutoMailViewMode(windowWidth) : mode;
+                          setSinglePanelView(nextMode === "split" || nextMode === "inbox-first" || !selectedMail ? "list" : singlePanelView);
+                        }}
+                        className={`flex h-7 w-7 items-center justify-center rounded text-zinc-500 transition-colors ${mailViewPreference === mode ? "bg-white/10 text-zinc-100" : "hover:bg-white/5 hover:text-zinc-300"}`}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </button>
+                    ))}
+                  </div>
                   <ToolbarTip label="Gelen kutusunu sunucudan yenile">
                     <button
                       type="button"
@@ -2044,8 +2207,11 @@ function App() {
                       }`}
                   >
                     {mail.unread && <div className="absolute left-1 top-4 w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
-                    <div className="flex justify-between items-baseline mb-0.5 gap-2">
-                      <span className={`text-xs truncate ${mail.unread ? 'font-semibold text-zinc-100' : 'text-zinc-400'}`}>
+                    <div className="flex justify-between items-baseline mb-0.5 gap-2 min-w-0">
+                      <span
+                        className={`min-w-0 truncate text-xs ${mail.unread ? 'font-semibold text-zinc-100' : 'text-zinc-400'}`}
+                        title={mail.label === 'sent' ? mail.recipient : mail.sender}
+                      >
                         {mail.label === 'sent'
                           ? `To: ${(mail.recipient || '').split('<')[0].replace(/"/g, '').trim() || mail.recipient}`
                           : mail.sender.split('<')[0].replace(/"/g, '').trim()
@@ -2053,8 +2219,13 @@ function App() {
                       </span>
                       <span className="text-[10px] text-zinc-600 shrink-0">{formatDate(mail.date)}</span>
                     </div>
-                    <h3 className={`text-xs truncate ${mail.unread ? 'text-zinc-200 font-medium' : 'text-zinc-500'}`}>{mail.subject}</h3>
-                    <p className="text-[11px] text-zinc-600 mt-0.5 truncate">{mail.snippet}</p>
+                    <h3
+                      className={`min-w-0 truncate text-xs ${mail.unread ? 'text-zinc-200 font-medium' : 'text-zinc-500'}`}
+                      title={mail.subject}
+                    >
+                      {mail.subject}
+                    </h3>
+                    <p className="mt-0.5 min-w-0 truncate text-[11px] text-zinc-600" title={mail.snippet}>{mail.snippet}</p>
                   </div>
                 ))}
               </div>
@@ -2062,10 +2233,10 @@ function App() {
 
             {/* MAIL DETAIL */}
             {activeMail ? (
-              <main className="flex-1 flex flex-col bg-[#0a0a0c] relative z-10">
+              <main className={mailReaderClassName}>
                 {/* Mobile Back Button */}
                 <div className="md:hidden h-12 flex items-center px-4 border-b border-white/5 shrink-0">
-                  <button onClick={() => { setSelectedMail(null); setShowReply(false); }} className="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200">
+                  <button onClick={closeReader} className="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200">
                     <CornerUpLeft className="w-3.5 h-3.5" /> Back
                   </button>
                 </div>
@@ -2073,6 +2244,17 @@ function App() {
                 {/* Desktop Toolbar */}
                 <div className="hidden md:flex h-12 items-center justify-between px-5 border-b border-white/5 shrink-0">
                   <div className="flex items-center gap-1.5">
+                    {mailViewMode !== "split" && (
+                      <button
+                        type="button"
+                        onClick={closeReader}
+                        className="mr-1 rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
+                        aria-label="Listeye don"
+                        title="Listeye don"
+                      >
+                        <CornerUpLeft className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     <span className="text-xs text-zinc-500 flex items-center gap-1.5 capitalize">
                       {activeTab === 'inbox' && <Inbox className="w-3.5 h-3.5" />}
                       {activeTab === 'sent' && <Send className="w-3.5 h-3.5" />}
@@ -2347,7 +2529,7 @@ function App() {
                 </div>
               </main>
             ) : (
-              <main className="hidden md:flex flex-1 items-center justify-center bg-[#0a0a0c]">
+              <main className={`${mailViewMode === "split" ? "hidden md:flex" : "hidden"} flex-1 items-center justify-center bg-[#0a0a0c]`}>
                 <div className="text-center">
                   <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3">
                     <Inbox className="w-7 h-7 text-zinc-700" />
