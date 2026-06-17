@@ -25,24 +25,22 @@ fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(WINDOW_STATE_FILE))
 }
 
+fn read_window_state(app: &AppHandle) -> Option<PersistedWindowState> {
+    let path = state_path(app).ok()?;
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<PersistedWindowState>(&text).ok()
+}
+
 pub fn restore_window_state(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
 
-    let Ok(path) = state_path(app) else {
+    let Some(state) = read_window_state(app) else {
         return;
     };
 
-    let Ok(text) = fs::read_to_string(path) else {
-        return;
-    };
-
-    let Ok(state) = serde_json::from_str::<PersistedWindowState>(&text) else {
-        return;
-    };
-
-    if state.width < 640 || state.height < 420 {
+    if state.width < 600 || state.height < 600 {
         return;
     }
 
@@ -74,6 +72,7 @@ pub fn save_window_state(window: &Window) {
 
     let maximized = window.is_maximized().unwrap_or(false);
     let fullscreen = window.is_fullscreen().unwrap_or(false);
+    let previous_state = read_window_state(&window.app_handle());
 
     let Ok(size) = window.outer_size() else {
         return;
@@ -82,15 +81,23 @@ pub fn save_window_state(window: &Window) {
         return;
     };
 
-    if size.width < 640 || size.height < 420 {
+    if size.width < 600 || size.height < 600 {
         return;
     }
 
+    let (width, height, x, y) = if maximized || fullscreen {
+        previous_state
+            .map(|state| (state.width, state.height, state.x, state.y))
+            .unwrap_or((size.width, size.height, position.x, position.y))
+    } else {
+        (size.width, size.height, position.x, position.y)
+    };
+
     let state = PersistedWindowState {
-        width: size.width,
-        height: size.height,
-        x: position.x,
-        y: position.y,
+        width,
+        height,
+        x,
+        y,
         maximized,
         fullscreen,
     };
