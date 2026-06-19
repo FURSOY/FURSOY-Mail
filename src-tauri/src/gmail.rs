@@ -716,6 +716,40 @@ pub async fn permanently_delete(
     Ok(())
 }
 
+/// RFC 2047 encodes a header value containing non-ASCII characters.
+/// Uses UTF-8 base64 encoded-word format: =?UTF-8?B?<base64>?=
+fn mime_encode_header(value: &str) -> String {
+    if value.is_ascii() {
+        return value.to_string();
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+    format!("=?UTF-8?B?{}?=", encoded)
+}
+
+/// Base64-encodes a string body per RFC 2045 (wraps at 76 chars).
+fn mime_body_base64(body: &str) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+    encoded
+        .as_bytes()
+        .chunks(76)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// Builds a RFC 2822 raw email string with proper MIME headers for UTF-8 content.
+fn build_raw_mime(headers: &[(&str, String)], body: &str) -> String {
+    let mut lines = String::from("MIME-Version: 1.0\r\n");
+    for (name, value) in headers {
+        lines.push_str(&format!("{}: {}\r\n", name, value));
+    }
+    lines.push_str("Content-Type: text/html; charset=\"UTF-8\"\r\n");
+    lines.push_str("Content-Transfer-Encoding: base64\r\n");
+    lines.push_str("\r\n");
+    lines.push_str(&mime_body_base64(body));
+    lines
+}
+
 #[tauri::command]
 pub async fn send_reply(
     access_token: String,
@@ -727,17 +761,17 @@ pub async fn send_reply(
 ) -> Result<(), String> {
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
 
-    // Build RFC 2822 formatted email
-    let raw_email = format!(
-        "To: {}\r\nSubject: Re: {}\r\nIn-Reply-To: {}\r\nReferences: {}\r\nContent-Type: text/html; charset=\"UTF-8\"\r\n\r\n{}",
-        to,
-        subject.trim_start_matches("Re: "),
-        message_id,
-        message_id,
-        body
+    let clean_subject = subject.trim_start_matches("Re: ").trim_start_matches("re: ");
+    let raw_email = build_raw_mime(
+        &[
+            ("To", to),
+            ("Subject", format!("Re: {}", mime_encode_header(clean_subject))),
+            ("In-Reply-To", message_id.clone()),
+            ("References", message_id),
+        ],
+        &body,
     );
 
-    // Encode to base64url
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_email.as_bytes());
 
     let send_body = serde_json::json!({
@@ -774,9 +808,12 @@ pub async fn send_email(
 ) -> Result<(), String> {
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
 
-    let raw_email = format!(
-        "To: {}\r\nSubject: {}\r\nContent-Type: text/html; charset=\"UTF-8\"\r\n\r\n{}",
-        to, subject, body
+    let raw_email = build_raw_mime(
+        &[
+            ("To", to),
+            ("Subject", mime_encode_header(&subject)),
+        ],
+        &body,
     );
 
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_email.as_bytes());
