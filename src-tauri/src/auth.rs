@@ -1,4 +1,6 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -6,7 +8,27 @@ use tokio::time::{timeout, Duration};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8123/callback";
 
-/// Read OAuth credentials from environment variables (loaded from .env)
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn generate_random_string(len: usize) -> String {
+    use rand::{distributions::Alphanumeric, Rng};
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+/// Returns (code_verifier, code_challenge) for PKCE-S256 (RFC 7636).
+fn generate_pkce_pair() -> (String, String) {
+    let verifier = generate_random_string(64);
+    let hash = Sha256::digest(verifier.as_bytes());
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
+    (verifier, challenge)
+}
+
+// ── Credentials ──────────────────────────────────────────────────────────────
+
 fn read_credential(name: &str, embedded: Option<&str>) -> Result<String, String> {
     std::env::var(name)
         .ok()
@@ -23,7 +45,9 @@ fn get_client_secret() -> Result<String, String> {
     read_credential("GOOGLE_CLIENT_SECRET", option_env!("GOOGLE_CLIENT_SECRET"))
 }
 
-fn build_auth_url(client_id: &str) -> Result<String, String> {
+// ── OAuth URL ─────────────────────────────────────────────────────────────────
+
+fn build_auth_url(client_id: &str, state: &str, code_challenge: &str) -> Result<String, String> {
     let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
         .map_err(|e| e.to_string())?;
     url.query_pairs_mut()
@@ -32,9 +56,15 @@ fn build_auth_url(client_id: &str) -> Result<String, String> {
         .append_pair("response_type", "code")
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent")
+        .append_pair("state", state)
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", "S256")
         .append_pair(
             "scope",
-            "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/gmail.modify \
+             https://www.googleapis.com/auth/gmail.send \
+             https://www.googleapis.com/auth/userinfo.profile \
+             https://www.googleapis.com/auth/userinfo.email",
         );
     Ok(url.to_string())
 }
@@ -62,6 +92,8 @@ fn open_auth_url(app: &tauri::AppHandle, auth_url: String) -> Result<(), String>
     }
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AuthResponse {
     pub access_token: String,
@@ -77,12 +109,29 @@ struct UserInfo {
     picture: Option<String>,
 }
 
+// ── Callback HTML ─────────────────────────────────────────────────────────────
+
+const SUCCESS_HTML: &str = "\
+<html><body style='display:flex;justify-content:center;align-items:center;\
+height:100vh;background:#09090b;color:#fff;font-family:sans-serif;'>\
+<h2>Giriş başarılı! Bu sekmeyi kapatabilirsiniz.</h2>\
+<script>window.close();</script></body></html>";
+
+const CSRF_HTML: &str = "\
+<html><body style='display:flex;justify-content:center;align-items:center;\
+height:100vh;background:#09090b;color:#f87171;font-family:sans-serif;'>\
+<h2>Güvenlik hatası tespit edildi. Bu sekmeyi kapatın.</h2></body></html>";
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::AuthInfo, String> {
     let client_id = get_client_id()?;
 
-    // Build the URL first, then start the local callback listener before opening the browser.
-    let auth_url = build_auth_url(&client_id)?;
+    // Generate CSRF state and PKCE pair before opening the browser
+    let expected_state = generate_random_string(32);
+    let (code_verifier, code_challenge) = generate_pkce_pair();
+    let auth_url = build_auth_url(&client_id, &expected_state, &code_challenge)?;
 
     let listener = TcpListener::bind("127.0.0.1:8123")
         .await
@@ -90,45 +139,85 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
 
     open_auth_url(&app, auth_url)?;
 
-    let code_result = timeout(Duration::from_secs(120), async {
-        // Only accept connections until we get the code, then exit
-        loop {
-            if let Ok((mut stream, _)) = listener.accept().await {
+    // Wait up to 120s for the browser to redirect back with the auth code.
+    // expected_state and listener are moved into the async block; code_verifier stays outside.
+    let code_result: Result<Result<String, String>, _> =
+        timeout(Duration::from_secs(120), async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    continue;
+                };
+
                 let mut reader = BufReader::new(&mut stream);
                 let mut request_line = String::new();
-                
-                if reader.read_line(&mut request_line).await.is_ok() {
-                    if request_line.starts_with("GET /callback") && request_line.contains("code=") {
-                        let code_start = request_line.find("code=").unwrap() + 5;
-                        let code_end = request_line.find(" HTTP").unwrap_or(request_line.len());
-                        
-                        let mut parsed_code = request_line[code_start..code_end].to_string();
-                        
-                        if let Some(amp) = parsed_code.find('&') {
-                            parsed_code = parsed_code[..amp].to_string();
-                        }
-                        
-                        parsed_code = parsed_code.replace("%2F", "/").replace("%2f", "/");
 
-                        let response = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body style='display:flex;justify-content:center;align-items:center;height:100vh;background:#09090b;color:#fff;font-family:sans-serif;'><h2>Giris basarili! Bu sekmeyi kapatabilirsiniz.</h2><script>window.close();</script></body></html>";
-                        let _ = stream.write_all(response.as_bytes()).await;
-                        let _ = stream.flush().await;
+                if reader.read_line(&mut request_line).await.is_err() {
+                    continue;
+                }
 
-                        // Drop the listener explicitly — stop accepting connections
-                        drop(listener);
-                        return Some(parsed_code);
-                    } else {
-                        // Respond to non-callback requests (favicon, etc.) and continue
-                        let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-                        let _ = stream.write_all(response.as_bytes()).await;
+                if !request_line.starts_with("GET /callback") {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                        .await;
+                    continue;
+                }
+
+                // Parse query params from "GET /callback?code=…&state=… HTTP/1.1"
+                let after_get = &request_line[4..];
+                let path_end = after_get.find(' ').unwrap_or(after_get.len());
+                let full_url = format!("http://localhost:8123{}", &after_get[..path_end]);
+
+                let url = match reqwest::Url::parse(&full_url) {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+
+                let mut code_val = String::new();
+                let mut state_val = String::new();
+                for (k, v) in url.query_pairs() {
+                    match k.as_ref() {
+                        "code" => code_val = v.into_owned(),
+                        "state" => state_val = v.into_owned(),
+                        _ => {}
                     }
                 }
+
+                if code_val.is_empty() {
+                    continue;
+                }
+
+                // Verify CSRF state before accepting the code
+                if state_val != expected_state {
+                    let resp = format!(
+                        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\r\n{}",
+                        CSRF_HTML
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.flush().await;
+                    drop(listener);
+                    return Err(
+                        "Güvenlik hatası: Oturum doğrulaması başarısız. Lütfen tekrar deneyin."
+                            .to_string(),
+                    );
+                }
+
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\
+                     Content-Type: text/html; charset=utf-8\r\n\r\n{}",
+                    SUCCESS_HTML
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                drop(listener);
+                return Ok(code_val);
             }
-        }
-    }).await;
+        })
+        .await;
 
     let code = match code_result {
-        Ok(Some(c)) => c,
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => return Err(e),
         _ => return Err("Giris islemi zaman asimina ugradi.".into()),
     };
 
@@ -136,11 +225,13 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         return Err("Auth code bulunamadi".into());
     }
 
-    // 4. Code'u Access Token ile takas et
-    let auth_resp = exchange_code_for_token(&code).await?;
+    // code_verifier was NOT captured by the async block — still owned here
+    let auth_resp = exchange_code_for_token(&code, &code_verifier).await?;
 
-    // 5. Google'dan Kullanıcı Profilini Çek
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let user_res = client
         .get("https://www.googleapis.com/oauth2/v2/userinfo")
         .bearer_auth(&auth_resp.access_token)
@@ -166,23 +257,26 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         picture: user_info.picture.unwrap_or_default(),
     };
 
-    // 6. Veritabanına kaydet
     crate::db::save_auth(&app, auth_info.clone())?;
 
     Ok(auth_info)
 }
 
-async fn exchange_code_for_token(code: &str) -> Result<AuthResponse, String> {
+async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<AuthResponse, String> {
     let client_id = get_client_id()?;
     let client_secret = get_client_secret()?;
 
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
         ("client_secret", client_secret.as_str()),
         ("code", code),
         ("grant_type", "authorization_code"),
         ("redirect_uri", REDIRECT_URI),
+        ("code_verifier", code_verifier),
     ];
 
     let res = client
@@ -214,7 +308,10 @@ pub async fn refresh_access_token(app: tauri::AppHandle) -> Result<crate::db::Au
     let client_id = get_client_id()?;
     let client_secret = get_client_secret()?;
 
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
         ("client_secret", client_secret.as_str()),

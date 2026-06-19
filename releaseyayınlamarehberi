@@ -1,6 +1,0 @@
-npm version 1.2.19 --no-git-tag-version
-git add .
-git commit -m "v1.2.18"
-git push origin main
-git tag -a v1.2.18 -m "v1.2.18"
-git push origin v1.2.18

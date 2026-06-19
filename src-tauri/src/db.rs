@@ -1,7 +1,44 @@
+use keyring::Entry;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tauri::{AppHandle, Manager};
+
+// ── Windows Credential Manager ────────────────────────────────────────────────
+
+const KEYRING_SERVICE: &str = "fursoy-mail";
+const KEYRING_ACCOUNT: &str = "oauth-tokens";
+
+fn save_tokens_to_keyring(access_token: &str, refresh_token: &str) -> Result<(), String> {
+    let data = serde_json::json!({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    })
+    .to_string();
+    Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .and_then(|e| e.set_password(&data))
+        .map_err(|e| format!("Token güvenli depoya kaydedilemedi: {e}"))
+}
+
+fn load_tokens_from_keyring() -> Option<(String, String)> {
+    let json = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .ok()?
+        .get_password()
+        .ok()?;
+    let val: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let access = val["access_token"].as_str()?.to_string();
+    let refresh = val["refresh_token"].as_str()?.to_string();
+    if access.is_empty() {
+        return None;
+    }
+    Some((access, refresh))
+}
+
+fn delete_tokens_from_keyring() {
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        let _ = entry.delete_credential();
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Email {
@@ -264,23 +301,20 @@ pub fn delete_email_from_db(app: &AppHandle, id: &str) -> Result<(), String> {
 }
 
 pub fn save_auth(app: &AppHandle, auth: AuthInfo) -> Result<(), String> {
+    // Tokens go to Windows Credential Manager; only non-sensitive fields in SQLite.
+    save_tokens_to_keyring(&auth.access_token, &auth.refresh_token)?;
+
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute(
-        "INSERT INTO auth (id, access_token, refresh_token, email, picture) 
-         VALUES (1, ?1, ?2, ?3, ?4)
-         ON CONFLICT(id) DO UPDATE SET 
-            access_token=excluded.access_token,
-            refresh_token=excluded.refresh_token,
-            email=excluded.email,
-            picture=excluded.picture",
-        params![
-            auth.access_token,
-            auth.refresh_token,
-            auth.email,
-            auth.picture
-        ],
+        "INSERT INTO auth (id, access_token, refresh_token, email, picture)
+         VALUES (1, '', '', ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET
+            access_token = '',
+            refresh_token = '',
+            email = excluded.email,
+            picture = excluded.picture",
+        params![auth.email, auth.picture],
     )
     .map_err(|e| e.to_string())?;
 
@@ -292,29 +326,62 @@ pub fn get_auth_info(app: tauri::AppHandle) -> Result<Option<AuthInfo>, String> 
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
-    let mut stmt = conn
-        .prepare("SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1")
-        .map_err(|e| e.to_string())?;
+    // Read SQLite row first; drop all statement borrows before touching conn again.
+    let row_data: Option<(String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            Some((
+                row.get(0).unwrap_or_default(),
+                row.get(1).unwrap_or_default(),
+                row.get(2).unwrap_or_default(),
+                row.get(3).unwrap_or_default(),
+            ))
+        } else {
+            None
+        }
+    }; // stmt and rows dropped here
 
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let (sql_access, sql_refresh, email, picture) = match row_data {
+        Some(d) => d,
+        None => return Ok(None),
+    };
 
-    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        Ok(Some(AuthInfo {
-            access_token: row.get(0).unwrap_or_default(),
-            refresh_token: row.get(1).unwrap_or_default(),
-            email: row.get(2).unwrap_or_default(),
-            picture: row.get(3).unwrap_or_default(),
-        }))
-    } else {
-        Ok(None)
+    if email.is_empty() {
+        return Ok(None);
     }
+
+    let (access_token, refresh_token) = if let Some(tokens) = load_tokens_from_keyring() {
+        tokens
+    } else if !sql_access.is_empty() {
+        // One-time migration: tokens still in SQLite → move to Credential Manager.
+        let _ = save_tokens_to_keyring(&sql_access, &sql_refresh);
+        conn.execute(
+            "UPDATE auth SET access_token = '', refresh_token = '' WHERE id = 1",
+            [],
+        )
+        .ok();
+        (sql_access, sql_refresh)
+    } else {
+        return Ok(None);
+    };
+
+    Ok(Some(AuthInfo {
+        access_token,
+        refresh_token,
+        email,
+        picture,
+    }))
 }
 
 #[tauri::command]
 pub fn logout(app: tauri::AppHandle) -> Result<(), String> {
+    delete_tokens_from_keyring();
+
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute("DELETE FROM auth WHERE id = 1", [])
         .map_err(|e| e.to_string())?;
 
