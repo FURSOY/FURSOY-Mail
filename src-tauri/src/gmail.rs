@@ -1,4 +1,4 @@
-use crate::db::{delete_emails_by_ids, get_history_id, set_history_id, upsert_emails, Email};
+use crate::db::{delete_emails_by_ids, get_history_id, load_tokens, set_history_id, upsert_emails, Email};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
@@ -171,7 +171,12 @@ async fn fetch_history(
 }
 
 // ── Incremental sync using History API ──
-async fn do_incremental_sync(app: &AppHandle, access_token: &str, start_history_id: &str) -> Result<(), String> {
+async fn do_incremental_sync(
+    app: &AppHandle,
+    account_id: &str,
+    access_token: &str,
+    start_history_id: &str,
+) -> Result<(), String> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -181,7 +186,8 @@ async fn do_incremental_sync(app: &AppHandle, access_token: &str, start_history_
         fetch_history(&client, access_token, start_history_id).await?;
 
     eprintln!(
-        "[SYNC] incremental: {} to fetch, {} to delete, new historyId={}",
+        "[SYNC:{}] incremental: {} to fetch, {} to delete, new historyId={}",
+        account_id,
         fetch_ids.len(),
         delete_ids.len(),
         new_history_id
@@ -191,11 +197,9 @@ async fn do_incremental_sync(app: &AppHandle, access_token: &str, start_history_
     if !delete_ids.is_empty() {
         let app_clone = app.clone();
         let ids = delete_ids.clone();
-        tokio::task::spawn_blocking(move || {
-            delete_emails_by_ids(&app_clone, &ids)
-        })
-        .await
-        .map_err(|e| format!("DB delete task failed: {}", e))??;
+        tokio::task::spawn_blocking(move || delete_emails_by_ids(&app_clone, &ids))
+            .await
+            .map_err(|e| format!("DB delete task failed: {}", e))??;
     }
 
     // Fetch details for new/changed messages
@@ -218,25 +222,27 @@ async fn do_incremental_sync(app: &AppHandle, access_token: &str, start_history_
 
         if !parsed_emails.is_empty() {
             let app_clone = app.clone();
+            let acct = account_id.to_string();
             tokio::task::spawn_blocking(move || {
-                upsert_emails(&app_clone, parsed_emails).map_err(|e| e.to_string())
+                upsert_emails(&app_clone, &acct, parsed_emails).map_err(|e| e.to_string())
             })
             .await
             .map_err(|e| format!("DB upsert task failed: {}", e))??;
         }
     }
 
-    // Save new history ID
-    set_history_id(app, &new_history_id)?;
+    set_history_id(app, account_id, &new_history_id)?;
 
     Ok(())
 }
 
-// ── Full sync (existing logic, now saves historyId at the end) ──
-async fn do_sync(app: &AppHandle, access_token: &str) -> Result<(), String> {
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+// ── Full sync ──
+async fn do_sync(app: &AppHandle, account_id: &str, access_token: &str) -> Result<(), String> {
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
-    // Get current historyId BEFORE fetching messages (to not miss anything)
     let profile_history_id = get_profile_history_id(&client, access_token).await.ok();
 
     let mut all_ids = Vec::new();
@@ -247,10 +253,9 @@ async fn do_sync(app: &AppHandle, access_token: &str) -> Result<(), String> {
         ("in:sent", 200),
         ("in:spam", 50),
         ("in:trash", 50),
-        ("-in:inbox -in:sent -in:spam -in:trash -in:drafts", 100), // Archive
+        ("-in:inbox -in:sent -in:spam -in:trash -in:drafts", 100),
     ];
 
-    // Collect all unique message IDs first
     for (query, max) in queries {
         if let Ok(ids) = fetch_message_ids(&client, access_token, query, max).await {
             for msg in ids {
@@ -261,9 +266,8 @@ async fn do_sync(app: &AppHandle, access_token: &str) -> Result<(), String> {
         }
     }
 
-    eprintln!("[SYNC] full sync: {} messages to fetch", all_ids.len());
+    eprintln!("[SYNC:{}] full sync: {} messages to fetch", account_id, all_ids.len());
 
-    // Fetch all message details in parallel (max 10 concurrent)
     let parsed_emails: Vec<Email> = stream::iter(all_ids)
         .map(|id| {
             let client = &client;
@@ -280,18 +284,17 @@ async fn do_sync(app: &AppHandle, access_token: &str) -> Result<(), String> {
         .collect()
         .await;
 
-    // Save to database (spawn_blocking to avoid blocking tokio)
     let app_clone = app.clone();
+    let acct = account_id.to_string();
     tokio::task::spawn_blocking(move || {
-        upsert_emails(&app_clone, parsed_emails).map_err(|e| e.to_string())
+        upsert_emails(&app_clone, &acct, parsed_emails).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("DB task failed: {}", e))??;
 
-    // Save historyId for future incremental syncs
     if let Some(hid) = profile_history_id {
-        eprintln!("[SYNC] full sync done, saving historyId={}", hid);
-        set_history_id(app, &hid)?;
+        eprintln!("[SYNC:{}] full sync done, historyId={}", account_id, hid);
+        set_history_id(app, account_id, &hid)?;
     }
 
     Ok(())
@@ -513,40 +516,41 @@ async fn fetch_message_detail(
 }
 
 #[tauri::command]
-pub async fn sync_emails(app: AppHandle, access_token: String) -> Result<(), String> {
+pub async fn sync_emails(
+    app: AppHandle,
+    account_id: String,
+    access_token: String,
+) -> Result<(), String> {
     let state = app.state::<crate::SyncState>();
 
     {
         let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-        if *syncing {
+        if syncing.contains(&account_id) {
             let mut pending = state
                 .resync_requested
                 .lock()
                 .map_err(|_| "Sync lock poisoned")?;
-            *pending = true;
+            pending.insert(account_id);
             return Ok(());
         }
-        *syncing = true;
+        syncing.insert(account_id.clone());
     }
 
     let mut token = access_token;
     loop {
-        // Try incremental sync first, fall back to full sync
         let result = {
-            let history_id = get_history_id(&app);
+            let history_id = get_history_id(&app, &account_id);
             if let Some(hid) = history_id {
-                eprintln!("[SYNC] attempting incremental sync from historyId={}", hid);
-                match do_incremental_sync(&app, &token, &hid).await {
+                match do_incremental_sync(&app, &account_id, &token, &hid).await {
                     Ok(()) => Ok(()),
                     Err(e) if e == "HISTORY_EXPIRED" => {
-                        eprintln!("[SYNC] history expired, falling back to full sync");
-                        do_sync(&app, &token).await
+                        eprintln!("[SYNC:{}] history expired, full sync", account_id);
+                        do_sync(&app, &account_id, &token).await
                     }
                     Err(e) => Err(e),
                 }
             } else {
-                eprintln!("[SYNC] no historyId found, doing full sync");
-                do_sync(&app, &token).await
+                do_sync(&app, &account_id, &token).await
             }
         };
 
@@ -555,14 +559,14 @@ pub async fn sync_emails(app: AppHandle, access_token: String) -> Result<(), Str
                 .resync_requested
                 .lock()
                 .map_err(|_| "Sync lock poisoned")?;
-            let v = *pending;
-            *pending = false;
-            v
+            let had = pending.contains(&account_id);
+            pending.remove(&account_id);
+            had
         };
 
         if let Err(e) = result {
             let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-            *syncing = false;
+            syncing.remove(&account_id);
             return Err(e);
         }
 
@@ -570,15 +574,14 @@ pub async fn sync_emails(app: AppHandle, access_token: String) -> Result<(), Str
             break;
         }
 
-        // Refresh token in case the previous run renewed it
-        token = match crate::db::get_auth_info(app.clone()) {
-            Ok(Some(info)) => info.access_token,
-            _ => token,
-        };
+        // Use latest stored token in case it was refreshed
+        if let Some((fresh_access, _)) = load_tokens(&account_id) {
+            token = fresh_access;
+        }
     }
 
     let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-    *syncing = false;
+    syncing.remove(&account_id);
     Ok(())
 }
 

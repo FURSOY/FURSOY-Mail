@@ -5,6 +5,13 @@ export type DensityMode = "comfortable" | "compact";
 export type MailViewMode = "split" | "single-toggle" | "inbox-first";
 export type MailViewPreference = "auto" | MailViewMode;
 
+export interface Account {
+  id: string;       // same as email
+  email: string;
+  picture: string;
+  display_order: number;
+}
+
 export interface EmailSummary {
   id: string;
   thread_id: string;
@@ -16,6 +23,7 @@ export interface EmailSummary {
   date: number;
   unread: boolean;
   label: string;
+  account_id: string;
 }
 
 export interface MailDebugMetrics {

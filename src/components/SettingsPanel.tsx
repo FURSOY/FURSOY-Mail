@@ -1,7 +1,8 @@
-import { RefreshCw, DownloadCloud, Menu } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical } from "lucide-react";
 import { tr } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
-import type { AppControls, DensityMode, MailDebugMetrics, OtpMode, RenderMode } from "../types";
+import type { Account, AppControls, DensityMode, MailDebugMetrics, OtpMode, RenderMode } from "../types";
 
 interface SettingsPanelProps {
   isVisible: boolean;
@@ -48,6 +49,11 @@ interface SettingsPanelProps {
   updateStatus: string;
   onCheckForUpdates: (showUI: boolean) => void;
   onInstallUpdate: () => void;
+  // multi-account
+  accounts: Account[];
+  onAddAccount: () => void;
+  onLogoutAccount: (accountId: string) => void;
+  onReorderAccounts: (orderedIds: string[]) => void;
 }
 
 export function SettingsPanel({
@@ -62,11 +68,58 @@ export function SettingsPanel({
   debugMetrics, onClearCaches,
   currentVersion, isCheckingUpdate, updateAvailable, updateProgress, updateError, updateStatus,
   onCheckForUpdates, onInstallUpdate,
+  accounts, onAddAccount, onLogoutAccount, onReorderAccounts,
 }: SettingsPanelProps) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragStateRef = useRef({ from: null as number | null, over: null as number | null });
+
+  const startDrag = useCallback((index: number) => {
+    dragStateRef.current = { from: index, over: null };
+    setDragIndex(index);
+    setDragOverIndex(null);
+  }, []);
+
+  useEffect(() => {
+    if (dragIndex === null) return;
+    const handleMove = (e: PointerEvent) => {
+      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+        const idx = (el as HTMLElement).dataset?.accountIdx;
+        if (idx !== undefined) {
+          const n = parseInt(idx);
+          dragStateRef.current.over = n;
+          setDragOverIndex(n);
+          break;
+        }
+      }
+    };
+    const handleUp = () => {
+      const { from, over } = dragStateRef.current;
+      if (from !== null && over !== null && from !== over) {
+        const reordered = [...accounts];
+        const [moved] = reordered.splice(from, 1);
+        reordered.splice(over, 0, moved);
+        onReorderAccounts(reordered.map(a => a.id));
+      }
+      dragStateRef.current = { from: null, over: null };
+      setDragIndex(null);
+      setDragOverIndex(null);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+  }, [dragIndex, accounts, onReorderAccounts]);
+
   return (
     <section
       className="flex-1 overflow-y-scroll overscroll-contain bg-[#0a0a0c] p-8"
-      style={{ contain: "layout paint", display: isVisible ? undefined : "none" }}
+      style={isVisible
+        ? { contain: "paint", willChange: "scroll-position" }
+        : { contain: "paint", visibility: "hidden" as const, position: "absolute" as const, width: 0, height: 0, overflow: "hidden", padding: 0 }
+      }
     >
       <div className="max-w-2xl mx-auto">
         <h2 className={`${typography.pageTitle} mb-6 flex items-center gap-2`}>
@@ -85,6 +138,58 @@ export function SettingsPanel({
         </h2>
 
         <div className="space-y-8">
+          {/* Accounts */}
+          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Hesaplar</h3>
+            <p className="text-xs text-zinc-500 mb-4">Hesapları sürükleyerek sıralayabilirsiniz. En üstteki hesap uygulama açılışında otomatik seçilir.</p>
+            <div className="space-y-1.5">
+              {accounts.map((acc, i) => (
+                <div
+                  key={acc.id}
+                  data-account-idx={i}
+                  onPointerDown={(e) => { e.preventDefault(); startDrag(i); }}
+                  className={`flex items-center gap-3 p-3 rounded-lg border transition-all select-none ${
+                    dragOverIndex === i && dragIndex !== i
+                      ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
+                      : dragIndex === i
+                      ? "border-white/10 bg-white/[0.05] opacity-50"
+                      : "border-white/5 bg-white/[0.02]"
+                  }`}
+                >
+                  <GripVertical className={`w-4 h-4 text-zinc-600 shrink-0 ${dragIndex === i ? "cursor-grabbing" : "cursor-grab"}`} />
+                  {acc.picture ? (
+                    <img src={acc.picture} alt={acc.email} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-sm font-bold text-zinc-300 shrink-0">
+                      {acc.email[0]?.toUpperCase() ?? "?"}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-zinc-200 truncate">{acc.email.split("@")[0]}</div>
+                    <div className="text-xs text-zinc-500 truncate">{acc.email}</div>
+                    {i === 0 && (
+                      <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">Birincil hesap</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => onLogoutAccount(acc.id)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors shrink-0"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Çıkış
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={onAddAccount}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-dashed border-white/10 text-zinc-500 hover:text-zinc-300 hover:border-white/20 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span className="text-sm">Hesap ekle</span>
+              </button>
+            </div>
+          </div>
+
           {/* Appearance */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
             <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.appearance.title}</h3>

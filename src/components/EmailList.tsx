@@ -1,6 +1,6 @@
 import { Search, X, RefreshCw, Settings, Columns2, PanelLeft, Rows3, Menu } from "lucide-react";
 import { tr } from "../i18n";
-import type { EmailSummary, MailViewPreference } from "../types";
+import type { Account, EmailSummary, MailViewPreference } from "../types";
 import { formatDate } from "../utils";
 import { ToolbarTip } from "./ToolbarTip";
 
@@ -21,6 +21,8 @@ interface EmailListProps {
   onViewPreferenceChange: (mode: MailViewPreference) => void;
   onRefresh: () => void;
   accessToken: string | null;
+  accounts?: Account[];
+  activeAccountId?: string | null;
 }
 
 export function EmailList({
@@ -30,7 +32,9 @@ export function EmailList({
   activeTab, usesOverlaySidebar, onMenuOpen,
   mailViewPreference, onViewPreferenceChange,
   onRefresh, accessToken,
+  accounts, activeAccountId,
 }: EmailListProps) {
+  const showAccountBadge = activeAccountId === null && (accounts?.length ?? 0) > 1;
   return (
     <section className={className}>
       <div className="h-12 flex items-center px-4 border-b border-white/5 justify-between shrink-0">
@@ -164,6 +168,22 @@ export function EmailList({
             <p className="mt-0.5 min-w-0 truncate text-[11px] text-zinc-600" title={mail.snippet}>
               {mail.snippet}
             </p>
+            {showAccountBadge && (() => {
+              const acc = accounts?.find(a => a.id === mail.account_id);
+              if (!acc) return null;
+              return (
+                <div className="mt-1 flex items-center gap-1">
+                  {acc.picture ? (
+                    <img src={acc.picture} className="w-3.5 h-3.5 rounded-full shrink-0" alt="" />
+                  ) : (
+                    <div className="w-3.5 h-3.5 rounded-full bg-zinc-700 flex items-center justify-center text-[8px] font-bold text-zinc-400 shrink-0">
+                      {acc.email[0]?.toUpperCase()}
+                    </div>
+                  )}
+                  <span className="text-[10px] text-zinc-600 truncate">{acc.email}</span>
+                </div>
+              );
+            })()}
           </div>
         ))}
       </div>

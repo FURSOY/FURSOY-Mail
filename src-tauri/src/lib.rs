@@ -6,13 +6,14 @@ mod notify;
 mod settings;
 mod window_state;
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::Emitter;
 
-/// Global sync lock — prevents concurrent syncs; coalesces overlapping requests into one follow-up sync
+/// Per-account sync lock — prevents concurrent syncs for the same account
 pub struct SyncState {
-    pub is_syncing: Mutex<bool>,
-    pub resync_requested: Mutex<bool>,
+    pub is_syncing: Mutex<HashSet<String>>,
+    pub resync_requested: Mutex<HashSet<String>>,
 }
 
 fn is_background_launch() -> bool {
@@ -48,8 +49,8 @@ pub fn run() {
             });
         })
         .manage(SyncState {
-            is_syncing: Mutex::new(false),
-            resync_requested: Mutex::new(false),
+            is_syncing: Mutex::new(HashSet::new()),
+            resync_requested: Mutex::new(HashSet::new()),
         })
         .manage(notify::PendingNotification(Mutex::new(None)))
         .on_window_event(|window, event| match event {
@@ -57,7 +58,6 @@ pub fn run() {
                 window_state::save_window_state(window);
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                // Only intercept close on main window; let notification window close normally
                 if window.label() == "main" {
                     window_state::save_window_state(window);
                     let _ = window.hide();
@@ -69,10 +69,8 @@ pub fn run() {
         .setup(|app| {
             let background_launch = is_background_launch();
 
-            // Load .env file for OAuth credentials
             let _ = dotenvy::dotenv();
 
-            // Initialize database on startup
             db::init_db(app.handle()).expect("Failed to initialize database");
             window_state::restore_window_state(app.handle());
             if let Some(window) = app.get_webview_window("main") {
@@ -84,8 +82,11 @@ pub fn run() {
                 }
             }
 
-            // Setup System Tray
-            use tauri::{menu::{CheckMenuItem, Menu, MenuItem}, tray::TrayIconBuilder, Manager};
+            use tauri::{
+                menu::{CheckMenuItem, Menu, MenuItem},
+                tray::TrayIconBuilder,
+                Manager,
+            };
             let controls = settings::read_app_controls(app.handle());
             let mute_i = CheckMenuItem::with_id(
                 app,
@@ -156,12 +157,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             auth::start_google_oauth,
             auth::refresh_access_token,
+            db::get_accounts,
+            db::get_account_auth,
+            db::remove_account,
+            db::reorder_accounts,
+            db::search_contacts,
             db::get_local_emails,
             db::get_emails_by_label,
             db::get_email_body,
             db::get_inbox_unread_count,
-            db::get_auth_info,
-            db::logout,
             gmail::sync_emails,
             gmail::mark_as_read,
             gmail::mark_as_unread,

@@ -14,7 +14,7 @@ import { themePresets, type ThemePresetName } from "./theme";
 import "./index.css";
 
 import {
-  type EmailSummary, type AuthInfo, type AppControls, type OtpMode, type RenderMode,
+  type Account, type EmailSummary, type AuthInfo, type AppControls, type OtpMode, type RenderMode,
   type MailZoom, type DensityMode, type MailViewMode, type MailViewPreference,
   type MailDebugMetrics, DEFAULT_APP_CONTROLS,
 } from "./types";
@@ -89,8 +89,11 @@ function App() {
   const [debugMetrics, setDebugMetrics] = useState<MailDebugMetrics>({
     openedCount: 0, lastBodyBytes: 0, cachedLabels: 0, cachedMessages: 0,
   });
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [userInfo, setUserInfo] = useState<AuthInfo | null>(null);
+  // multi-account
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountTokens, setAccountTokens] = useState<Record<string, string>>({});
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [showReply, setShowReply] = useState(false);
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all">("reply");
@@ -105,6 +108,8 @@ function App() {
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
   const [composeHtmlAppend, setComposeHtmlAppend] = useState("");
+  const [composeAccountId, setComposeAccountId] = useState<string | null>(null);
+  const [composeSendError, setComposeSendError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; msg: string; type: "error" | "success" | "info" }[]>([]);
   const [verificationCopyState, setVerificationCopyState] = useState<"idle" | "copied">("idle");
   const [inboxUnread, setInboxUnread] = useState(0);
@@ -128,9 +133,13 @@ function App() {
   const lastToastRef = useRef<{ msg: string; type: "error" | "success" | "info"; at: number } | null>(null);
   const previousAutoMailViewModeRef = useRef<MailViewMode | null>(null);
   const tokenExpiredRef = useRef(tokenExpired);
-  const accessTokenRef = useRef<string | null>(null);
+  // multi-account refs
+  const accountTokensRef = useRef<Record<string, string>>({});
+  const accountsRef = useRef<Account[]>([]);
+  const activeAccountIdRef = useRef<string | null>(null);
+  const expiredAccountsRef = useRef<Set<string>>(new Set());
   const backgroundSyncRef = useRef<
-    (tokenOverride?: string | null, opts?: { userInitiated?: boolean }) => Promise<boolean>
+    (opts?: { userInitiated?: boolean }) => Promise<boolean>
   >(async () => false);
   const knownEmailIdsRef = useRef<Set<string>>(new Set());
   const recentlyReadRef = useRef<Set<string>>(new Set());
@@ -152,9 +161,24 @@ function App() {
   appControlsRef.current = appControls;
   tokenExpiredRef.current = tokenExpired;
 
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
+  // Keep refs in sync
+  useEffect(() => { accountTokensRef.current = accountTokens; }, [accountTokens]);
+  useEffect(() => { accountsRef.current = accounts; }, [accounts]);
+  useEffect(() => { activeAccountIdRef.current = activeAccountId; }, [activeAccountId]);
+
+  // Derive a "current context" access token (for UI checks and email-less operations)
+  const accessToken = (() => {
+    if (activeAccountId && accountTokens[activeAccountId]) return accountTokens[activeAccountId];
+    const primary = accounts[0];
+    if (primary && accountTokens[primary.id]) return accountTokens[primary.id];
+    return null;
+  })();
+
+  // Look up the right token for a specific email's account
+  const getTokenForEmail = (email: EmailSummary | undefined): string => {
+    if (!email) return accessToken ?? "";
+    return accountTokens[email.account_id] ?? accessToken ?? "";
+  };
 
   useEffect(() => {
     const handleResize = () => setWindowWidth(window.innerWidth);
@@ -221,21 +245,29 @@ function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);
 
-  const markSessionExpired = useCallback((showMessage = true) => {
-    if (tokenExpiredRef.current) return;
-    tokenExpiredRef.current = true;
-    setTokenExpired(true);
-    setAccessToken(null);
-    accessTokenRef.current = null;
-    setIsUserSyncing(false);
-    setIsBackgroundSyncing(false);
-    syncChainIdRef.current++;
-    if (syncIntervalRef.current !== null) {
-      clearTimeout(syncIntervalRef.current);
-      syncIntervalRef.current = null;
+  const markAccountExpired = useCallback((accountId: string, showMessage = true) => {
+    expiredAccountsRef.current.add(accountId);
+    // All accounts expired → full session expired UI
+    const allExpired = accountsRef.current.every(a => expiredAccountsRef.current.has(a.id));
+    if (allExpired && !tokenExpiredRef.current) {
+      tokenExpiredRef.current = true;
+      setTokenExpired(true);
+      setIsUserSyncing(false);
+      setIsBackgroundSyncing(false);
+      syncChainIdRef.current++;
+      if (syncIntervalRef.current !== null) {
+        clearTimeout(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+      if (showMessage) showToast(AUTH_RELOGIN_MESSAGE, "error");
     }
-    if (showMessage) showToast(AUTH_RELOGIN_MESSAGE, "error");
   }, [showToast]);
+
+  // backward-compat alias used in a few places
+  const markSessionExpired = useCallback((showMessage = true) => {
+    accountsRef.current.forEach(a => markAccountExpired(a.id, false));
+    if (showMessage) showToast(AUTH_RELOGIN_MESSAGE, "error");
+  }, [markAccountExpired, showToast]);
 
   const openExternalMailUrl = useCallback((url: string) => {
     if (!url || url.startsWith("#")) return;
@@ -411,7 +443,8 @@ function App() {
         startDataTransition(() => setEmails([]));
         return;
       }
-      const result = await invoke<EmailSummary[]>("get_emails_by_label", { label });
+      const accountId = activeAccountIdRef.current; // null = all accounts
+      const result = await invoke<EmailSummary[]>("get_emails_by_label", { label, accountId });
       const adjusted = result.map(m =>
         recentlyReadRef.current.has(m.id) ? { ...m, unread: false } : m
       );
@@ -472,34 +505,36 @@ function App() {
     }
   };
 
-  const syncWithAutoRefresh = useCallback(async (token: string): Promise<string> => {
+  const syncAccountWithAutoRefresh = useCallback(async (accountId: string, token: string): Promise<string> => {
     try {
-      await invoke("sync_emails", { accessToken: token });
+      await invoke("sync_emails", { accountId, accessToken: token });
       return token;
     } catch (e: unknown) {
       if (isAuthFailure(e)) {
         try {
-          const refreshed = await invoke<AuthInfo>("refresh_access_token");
-          accessTokenRef.current = refreshed.access_token;
-          setUserInfo(refreshed);
-          setAccessToken(refreshed.access_token);
+          const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId });
+          const newToken = refreshed.access_token;
+          accountTokensRef.current = { ...accountTokensRef.current, [accountId]: newToken };
+          setAccountTokens(prev => ({ ...prev, [accountId]: newToken }));
+          expiredAccountsRef.current.delete(accountId);
           tokenExpiredRef.current = false;
           setTokenExpired(false);
-          await invoke("sync_emails", { accessToken: refreshed.access_token });
-          return refreshed.access_token;
+          await invoke("sync_emails", { accountId, accessToken: newToken });
+          return newToken;
         } catch (refreshError) {
-          console.error("Token refresh failed:", refreshError);
-          markSessionExpired();
+          console.error(`Token refresh failed for ${accountId}:`, refreshError);
+          markAccountExpired(accountId);
           throw new Error(AUTH_RELOGIN_MESSAGE);
         }
       }
       throw e;
     }
-  }, [markSessionExpired]);
+  }, [markAccountExpired]);
 
   const refreshUnreadCount = async () => {
     try {
-      const count = await invoke<number>("get_inbox_unread_count");
+      const accountId = activeAccountIdRef.current;
+      const count = await invoke<number>("get_inbox_unread_count", { accountId });
       startDataTransition(() => setInboxUnread(count));
       return count;
     } catch { return 0; }
@@ -543,7 +578,8 @@ function App() {
       if (syncChainIdRef.current !== chainId) return;
       syncIntervalRef.current = window.setTimeout(async () => {
         if (syncChainIdRef.current !== chainId) return;
-        if (accessTokenRef.current && !tokenExpiredRef.current) {
+        const hasAnyToken = Object.keys(accountTokensRef.current).length > 0;
+        if (hasAnyToken && !tokenExpiredRef.current) {
           await backgroundSyncRef.current();
         }
         scheduleNext();
@@ -553,56 +589,69 @@ function App() {
   };
 
   useEffect(() => {
-    if (accessToken) startPeriodicSync();
+    if (Object.keys(accountTokens).length > 0) startPeriodicSync();
   }, [syncIntervalValue]);
 
-  const backgroundSync = async (
-    tokenOverride?: string | null,
-    opts?: { userInitiated?: boolean }
-  ): Promise<boolean> => {
-    const token = tokenOverride ?? accessTokenRef.current;
-    if (!token) return false;
+  const backgroundSync = async (opts?: { userInitiated?: boolean }): Promise<boolean> => {
+    const accts = accountsRef.current;
+    const tokens = accountTokensRef.current;
+    if (accts.length === 0) return false;
+
     const userInitiated = opts?.userInitiated ?? false;
-    if (tokenExpiredRef.current) {
-      if (userInitiated) markSessionExpired();
-      return false;
-    }
     if (appControlsRef.current.mailSyncPaused && !userInitiated) return false;
     if (await shouldDeferNetworkForGameMode(userInitiated)) {
       console.log("System in fullscreen/game mode, skipping background sync.");
       return false;
     }
+
     try {
       if (userInitiated) setIsUserSyncing(true);
       else setIsBackgroundSyncing(true);
 
+      // Initial snapshot for new-email detection
       let hadLocalInboxSnapshot = knownEmailIdsRef.current.size > 0;
       if (isFirstSyncRef.current && !hadLocalInboxSnapshot) {
         try {
-          const localInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox" });
+          const localInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox", accountId: null });
           knownEmailIdsRef.current = new Set(localInbox.map(e => e.id));
           hadLocalInboxSnapshot = localInbox.length > 0;
-        } catch (snapshotError) {
-          console.error("Initial inbox snapshot failed:", snapshotError);
+        } catch (err) {
+          console.error("Initial inbox snapshot failed:", err);
         }
       }
 
-      const newToken = await syncWithAutoRefresh(token);
-      accessTokenRef.current = newToken;
-      const freshInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox" });
-      const newUnreadEmails = freshInbox.filter(e => e.unread && !knownEmailIdsRef.current.has(e.id));
-      knownEmailIdsRef.current = new Set(freshInbox.map(e => e.id));
-
-      if (isFirstSyncRef.current) {
-        isFirstSyncRef.current = false;
-        if (hadLocalInboxSnapshot) notifyNewEmails(newUnreadEmails);
-      } else {
-        notifyNewEmails(newUnreadEmails);
+      let anySuccess = false;
+      for (const account of accts) {
+        const token = tokens[account.id];
+        if (!token || expiredAccountsRef.current.has(account.id)) continue;
+        try {
+          await syncAccountWithAutoRefresh(account.id, token);
+          anySuccess = true;
+        } catch (e) {
+          if (!isAuthFailure(e)) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`Sync failed for ${account.id}:`, msg);
+          }
+        }
       }
 
-      if (MAIL_TABS.has(activeTabRef.current)) await loadEmails();
-      await refreshUnreadCount();
-      return true;
+      if (anySuccess) {
+        const freshInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox", accountId: null });
+        const newUnreadEmails = freshInbox.filter(e => e.unread && !knownEmailIdsRef.current.has(e.id));
+        knownEmailIdsRef.current = new Set(freshInbox.map(e => e.id));
+
+        if (isFirstSyncRef.current) {
+          isFirstSyncRef.current = false;
+          if (hadLocalInboxSnapshot) notifyNewEmails(newUnreadEmails);
+        } else {
+          notifyNewEmails(newUnreadEmails);
+        }
+
+        if (MAIL_TABS.has(activeTabRef.current)) await loadEmails();
+        await refreshUnreadCount();
+      }
+
+      return anySuccess;
     } catch (e) {
       console.error("Background sync failed:", e);
       if (isAuthFailure(e)) { markSessionExpired(); return false; }
@@ -623,32 +672,57 @@ function App() {
 
     refreshUnreadCount();
 
-    invoke<AuthInfo | null>("get_auth_info")
-      .then((info) => {
-        if (!info) return;
-        setUserInfo(info);
-        setAccessToken(info.access_token);
-        accessTokenRef.current = info.access_token;
+    // Multi-account startup: load all accounts and their tokens
+    invoke<Account[]>("get_accounts")
+      .then(async (loadedAccounts) => {
+        if (loadedAccounts.length === 0) return;
+
+        setAccounts(loadedAccounts);
+        accountsRef.current = loadedAccounts;
+
+        // Primary account (first by display_order) becomes active
+        const primary = loadedAccounts[0];
+        setActiveAccountId(primary.id);
+        activeAccountIdRef.current = primary.id;
+
+        // Load tokens for each account
+        const tokens: Record<string, string> = {};
+        for (const acc of loadedAccounts) {
+          try {
+            const auth = await invoke<AuthInfo | null>("get_account_auth", { accountId: acc.id });
+            if (auth?.access_token) tokens[acc.id] = auth.access_token;
+          } catch (e) {
+            console.error(`Failed to load auth for ${acc.id}:`, e);
+          }
+        }
+        setAccountTokens(tokens);
+        accountTokensRef.current = tokens;
+
+        if (Object.keys(tokens).length === 0) return;
 
         startupSyncTimer = window.setTimeout(() => {
           void (async () => {
             if (cancelled) return;
             if (await shouldDeferNetworkForGameMode(false)) {
-              console.log("System in fullscreen/game mode, delaying startup token refresh and sync.");
+              console.log("System in fullscreen/game mode, delaying startup sync.");
             } else {
-              let activeToken = info.access_token;
-              try {
-                const refreshed = await invoke<AuthInfo>("refresh_access_token");
-                if (cancelled) return;
-                setUserInfo(refreshed);
-                setAccessToken(refreshed.access_token);
-                accessTokenRef.current = refreshed.access_token;
-                activeToken = refreshed.access_token;
-              } catch (refreshError) {
-                if (isAuthFailure(refreshError)) { markSessionExpired(); return; }
-                console.log("Token refresh skipped, using existing token", refreshError);
+              // Refresh tokens for all accounts
+              for (const acc of loadedAccounts) {
+                if (!accountTokensRef.current[acc.id]) continue;
+                try {
+                  const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId: acc.id });
+                  if (cancelled) return;
+                  accountTokensRef.current = { ...accountTokensRef.current, [acc.id]: refreshed.access_token };
+                  setAccountTokens(prev => ({ ...prev, [acc.id]: refreshed.access_token }));
+                } catch (refreshError) {
+                  if (isAuthFailure(refreshError)) {
+                    expiredAccountsRef.current.add(acc.id);
+                  } else {
+                    console.log(`Token refresh skipped for ${acc.id}:`, refreshError);
+                  }
+                }
               }
-              if (!cancelled) await backgroundSyncRef.current(activeToken);
+              if (!cancelled) await backgroundSyncRef.current();
             }
             if (!cancelled) startPeriodicSync();
           })();
@@ -700,7 +774,7 @@ function App() {
     const cached = tabEmailCacheRef.current[activeTab];
     if (cached !== undefined) setEmails(cached);
     void loadEmails(activeTab);
-  }, [activeTab]);
+  }, [activeTab, activeAccountId]);
 
   useEffect(() => {
     if (activeTab !== "settings") return;
@@ -722,13 +796,27 @@ function App() {
     try {
       setAuthStatus(tr.auth.waitingForBrowser);
       const res = await invoke<AuthInfo>("start_google_oauth");
-      setUserInfo(res);
-      setAccessToken(res.access_token);
-      accessTokenRef.current = res.access_token;
+
+      // Update accounts list
+      const updatedAccounts = await invoke<Account[]>("get_accounts");
+      setAccounts(updatedAccounts);
+      accountsRef.current = updatedAccounts;
+
+      // Store new token
+      accountTokensRef.current = { ...accountTokensRef.current, [res.email]: res.access_token };
+      setAccountTokens(prev => ({ ...prev, [res.email]: res.access_token }));
+      expiredAccountsRef.current.delete(res.email);
+
+      // If this is the first account, set it active
+      if (updatedAccounts.length === 1) {
+        setActiveAccountId(res.email);
+        activeAccountIdRef.current = res.email;
+      }
+
       setAuthStatus(tr.auth.loggedInSyncing);
       tokenExpiredRef.current = false;
       setTokenExpired(false);
-      const ok = await backgroundSyncRef.current(res.access_token, { userInitiated: true });
+      const ok = await backgroundSyncRef.current({ userInitiated: true });
       if (ok) {
         setAuthStatus(tr.auth.syncComplete);
         showToast("Giriş başarılı!", "success");
@@ -743,33 +831,77 @@ function App() {
     }
   }
 
-  async function handleLogout() {
+  async function handleLogoutAccount(accountId: string) {
     try {
-      clearPeriodicSync();
-      await invoke("logout");
-      setUserInfo(null);
-      setAccessToken(null);
-      accessTokenRef.current = null;
-      tokenExpiredRef.current = false;
-      setTokenExpired(false);
-      setEmails([]);
-      setSelectedMail(null);
-      setSelectedMailBody("");
-      setSelectedMailBodyId(null);
-      setAuthStatus(tr.auth.loggedOut);
+      await invoke("remove_account", { accountId });
+
+      // Remove from local state
+      const newTokens = { ...accountTokensRef.current };
+      delete newTokens[accountId];
+      accountTokensRef.current = newTokens;
+      setAccountTokens(newTokens);
+      expiredAccountsRef.current.delete(accountId);
+
+      const updatedAccounts = await invoke<Account[]>("get_accounts");
+      setAccounts(updatedAccounts);
+      accountsRef.current = updatedAccounts;
+
+      // Switch active account if needed
+      if (activeAccountIdRef.current === accountId) {
+        const nextId = updatedAccounts.length > 0 ? updatedAccounts[0].id : null;
+        setActiveAccountId(nextId);
+        activeAccountIdRef.current = nextId;
+      }
+
+      if (updatedAccounts.length === 0) {
+        clearPeriodicSync();
+        tokenExpiredRef.current = false;
+        setTokenExpired(false);
+        setEmails([]);
+        setSelectedMail(null);
+        setSelectedMailBody("");
+        setSelectedMailBodyId(null);
+        setAuthStatus(tr.auth.loggedOut);
+      } else {
+        // Reload emails for remaining account context
+        tabEmailCacheRef.current = {};
+        await loadEmails(activeTabRef.current);
+        await refreshUnreadCount();
+      }
+      showToast("Hesaptan çıkış yapıldı", "success");
     } catch (e) {
       console.error("Logout failed:", e);
+      showToast("Çıkış başarısız: " + e, "error");
     }
   }
 
+  async function handleReorderAccounts(orderedIds: string[]) {
+    try {
+      await invoke("reorder_accounts", { orderedIds });
+      const updatedAccounts = await invoke<Account[]>("get_accounts");
+      setAccounts(updatedAccounts);
+      accountsRef.current = updatedAccounts;
+    } catch (e) {
+      console.error("Reorder failed:", e);
+    }
+  }
+
+  async function handleSwitchAccount(accountId: string | null) {
+    setActiveAccountId(accountId);
+    activeAccountIdRef.current = accountId;
+    tabEmailCacheRef.current = {};
+    setSelectedMail(null);
+    await loadEmails(activeTabRef.current);
+    await refreshUnreadCount();
+  }
+
   const handleRefresh = async () => {
-    const token = accessTokenRef.current ?? accessToken;
-    if (!token) {
+    if (Object.keys(accountTokensRef.current).length === 0) {
       showToast("Önce giriş yapın.", "error");
       return;
     }
     setAuthStatus("Senkronize ediliyor...");
-    const ok = await backgroundSyncRef.current(token, { userInitiated: true });
+    const ok = await backgroundSyncRef.current({ userInitiated: true });
     if (ok) {
       setAuthStatus("Güncel.");
       showToast("Mailler güncellendi", "success");
@@ -787,7 +919,7 @@ function App() {
       recentlyReadRef.current.add(mail.id);
       setEmails(prev => prev.map(m => m.id === mail.id ? { ...m, unread: false } : m));
       try {
-        await invoke("mark_as_read", { accessToken: accessToken || "", messageId: mail.id });
+        await invoke("mark_as_read", { accessToken: getTokenForEmail(mail), messageId: mail.id });
       } catch (e) {
         console.error("Failed to mark as read:", e);
       }
@@ -795,11 +927,13 @@ function App() {
   };
 
   const handleArchive = async (emailId: string) => {
-    if (!accessToken) return;
+    const mail = emails.find(e => e.id === emailId);
+    const token = getTokenForEmail(mail);
+    if (!token) return;
     setEmails(prev => prev.map(e => e.id === emailId ? { ...e, label: "archive" } : e));
     setSelectedMail(null);
     try {
-      await invoke("archive_email", { accessToken, messageId: emailId });
+      await invoke("archive_email", { accessToken: token, messageId: emailId });
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
@@ -809,11 +943,13 @@ function App() {
   };
 
   const handleTrash = async (emailId: string) => {
-    if (!accessToken) return;
+    const mail = emails.find(e => e.id === emailId);
+    const token = getTokenForEmail(mail);
+    if (!token) return;
     setEmails(prev => prev.map(e => e.id === emailId ? { ...e, label: "trash" } : e));
     setSelectedMail(null);
     try {
-      await invoke("trash_email", { accessToken, messageId: emailId });
+      await invoke("trash_email", { accessToken: token, messageId: emailId });
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
@@ -823,11 +959,13 @@ function App() {
   };
 
   const handleMoveToInbox = async (emailId: string) => {
-    if (!accessToken) return;
+    const mail = emails.find(e => e.id === emailId);
+    const token = getTokenForEmail(mail);
+    if (!token) return;
     setEmails(prev => prev.filter(e => e.id !== emailId));
     setSelectedMail(null);
     try {
-      await invoke("move_to_inbox", { accessToken, messageId: emailId });
+      await invoke("move_to_inbox", { accessToken: token, messageId: emailId });
       showToast("Gelen kutusuna taşındı", "success");
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
@@ -838,14 +976,16 @@ function App() {
   };
 
   const handlePermanentDelete = (emailId: string) => {
-    if (!accessToken) return;
+    const mail = emails.find(e => e.id === emailId);
+    const token = getTokenForEmail(mail);
+    if (!token) return;
     setConfirmModal({
       message: "Bu e-posta kalıcı olarak silinsin mi? Bu işlem geri alınamaz.",
       onConfirm: async () => {
         setEmails(prev => prev.filter(e => e.id !== emailId));
         setSelectedMail(null);
         try {
-          await invoke("permanently_delete", { accessToken, messageId: emailId });
+          await invoke("permanently_delete", { accessToken: token, messageId: emailId });
           showToast("Kalıcı olarak silindi", "success");
         } catch {
           showToast("Silme başarısız", "error");
@@ -856,7 +996,9 @@ function App() {
   };
 
   const handleReply = async () => {
-    if (!accessToken || !activeMail || !replyText.trim()) return;
+    if (!activeMail || !replyText.trim()) return;
+    const accessToken = getTokenForEmail(activeMail);
+    if (!accessToken) return;
     setIsSending(true);
     try {
       const extractAddress = (raw: string) => {
@@ -893,28 +1035,61 @@ function App() {
   };
 
   const handleComposeSend = async () => {
-    if (!accessToken || !composeTo.trim() || !composeSubject.trim()) return;
+    if (!composeTo.trim() || !composeSubject.trim()) return;
+    const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
+    if (!sendFromId) { setComposeSendError("Gönderecek hesap bulunamadı."); return; }
+
+    setComposeSendError(null);
     setIsSending(true);
+
+    // Resolve token — refresh if missing or stale
+    let token = accountTokens[sendFromId];
+    if (!token) {
+      try {
+        const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId: sendFromId });
+        token = refreshed.access_token;
+        accountTokensRef.current = { ...accountTokensRef.current, [sendFromId]: token };
+        setAccountTokens(prev => ({ ...prev, [sendFromId]: token }));
+        expiredAccountsRef.current.delete(sendFromId);
+      } catch {
+        setComposeSendError("Oturum süresi dolmuş. Lütfen hesabınıza tekrar giriş yapın.");
+        setIsSending(false);
+        return;
+      }
+    }
+
     try {
       const body = composeBody.replace(/\n/g, "<br/>") + composeHtmlAppend;
-      await invoke("send_email", { accessToken, to: composeTo, subject: composeSubject, body });
+      await invoke("send_email", { accessToken: token, to: composeTo, subject: composeSubject, body });
       setShowCompose(false);
       setComposeTo("");
       setComposeSubject("");
       setComposeBody("");
       setComposeHtmlAppend("");
-    } catch {
-      showToast("Gönderim başarısız", "error");
+      setComposeSendError(null);
+      showToast("E-posta gönderildi", "success");
+    } catch (e) {
+      const raw = String(e);
+      // Token expired mid-send → mark expired
+      if (isAuthFailure(raw)) {
+        markAccountExpired(sendFromId);
+        setComposeSendError("Oturum süresi doldu. Lütfen tekrar giriş yapın.");
+      } else {
+        const msg = raw.replace(/^Error:\s*/i, "").replace(/Gmail send error:\s*/i, "");
+        setComposeSendError(msg || "Gönderim başarısız. Lütfen tekrar deneyin.");
+      }
     }
     setIsSending(false);
   };
 
   const handleMarkAsUnread = async (emailId: string) => {
-    if (!accessToken) return;
+    const mail = emails.find(e => e.id === emailId);
+    const token = getTokenForEmail(mail);
+    if (!token) return;
     recentlyReadRef.current.delete(emailId);
     setEmails(prev => prev.map(m => m.id === emailId ? { ...m, unread: true } : m));
     try {
-      await invoke("mark_as_unread", { accessToken, messageId: emailId });
+      await invoke("mark_as_unread", { accessToken: token, messageId: emailId });
       await refreshUnreadCount();
     } catch {
       showToast("İşlem başarısız", "error");
@@ -928,6 +1103,7 @@ function App() {
     setComposeSubject(`Fwd: ${mail.subject.replace(/^(Fwd:\s*)+/i, "")}`);
     setComposeBody("");
     setComposeHtmlAppend(fwdHeader + (selectedMailBody || mail.snippet));
+    setComposeAccountId(mail.account_id ?? activeAccountId ?? accounts[0]?.id ?? null);
     setShowCompose(true);
   };
 
@@ -1114,24 +1290,27 @@ function App() {
         <Sidebar
           activeTab={activeTab}
           goToTab={goToTab}
-          userInfo={userInfo}
           mobileMenuOpen={mobileMenuOpen}
           setMobileMenuOpen={setMobileMenuOpen}
           authStatus={authStatus}
           isUserSyncing={isUserSyncing}
           unreadCount={unreadCount}
-          onLogout={handleLogout}
           onLogin={loginWithGoogle}
           usesOverlaySidebar={usesOverlaySidebar}
+          accounts={accounts}
+          activeAccountId={activeAccountId}
+          onSwitchAccount={handleSwitchAccount}
+          onAddAccount={loginWithGoogle}
+          onLogoutAccount={handleLogoutAccount}
         />
 
         {/* Compose FAB */}
-        {userInfo && (
+        {accounts.length > 0 && (
           <div className="fixed bottom-6 right-6 z-50">
             <ToolbarTip label="Yeni e-posta">
               <button
                 type="button"
-                onClick={() => setShowCompose(true)}
+                onClick={() => { setComposeAccountId(activeAccountId ?? accounts[0]?.id ?? null); setShowCompose(true); }}
                 className="w-12 h-12 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/25 transition-all hover:scale-105 active:scale-95"
               >
                 <Edit3 className="w-5 h-5" />
@@ -1147,8 +1326,12 @@ function App() {
             composeBody={composeBody} setComposeBody={setComposeBody}
             composeHtmlAppend={composeHtmlAppend}
             isSending={isSending}
+            sendError={composeSendError}
             onSend={handleComposeSend}
-            onClose={() => { setShowCompose(false); setComposeHtmlAppend(""); }}
+            onClose={() => { setShowCompose(false); setComposeHtmlAppend(""); setComposeSendError(null); }}
+            accounts={accounts}
+            composeAccountId={composeAccountId}
+            setComposeAccountId={setComposeAccountId}
           />
         )}
 
@@ -1178,6 +1361,10 @@ function App() {
           updateStatus={updateStatus}
           onCheckForUpdates={checkForUpdates}
           onInstallUpdate={installUpdate}
+          accounts={accounts}
+          onAddAccount={loginWithGoogle}
+          onLogoutAccount={handleLogoutAccount}
+          onReorderAccounts={handleReorderAccounts}
         />
 
         {activeTab !== "settings" && (
@@ -1199,6 +1386,8 @@ function App() {
               onViewPreferenceChange={handleMailViewPreferenceChange}
               onRefresh={handleRefresh}
               accessToken={accessToken}
+              accounts={accounts}
+              activeAccountId={activeAccountId}
             />
             {activeMail ? (
               <EmailReader
