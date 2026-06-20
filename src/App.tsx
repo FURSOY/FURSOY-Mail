@@ -86,6 +86,7 @@ function App() {
   const [selectedMailBodyId, setSelectedMailBodyId] = useState<string | null>(null);
   const [isBodyLoading, setIsBodyLoading] = useState(false);
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const [threadEmails, setThreadEmails] = useState<EmailSummary[]>([]);
   const [debugMetrics, setDebugMetrics] = useState<MailDebugMetrics>({
     openedCount: 0, lastBodyBytes: 0, cachedLabels: 0, cachedMessages: 0,
   });
@@ -114,6 +115,7 @@ function App() {
   const [verificationCopyState, setVerificationCopyState] = useState<"idle" | "copied">("idle");
   const [inboxUnread, setInboxUnread] = useState(0);
   const [tokenExpired, setTokenExpired] = useState(false);
+  const [expiredAccountIds, setExpiredAccountIds] = useState<Set<string>>(new Set());
 
   // Updater
   const [currentVersion, setCurrentVersion] = useState<string>("");
@@ -246,8 +248,17 @@ function App() {
   }, []);
 
   const markAccountExpired = useCallback((accountId: string, showMessage = true) => {
+    if (expiredAccountsRef.current.has(accountId)) return;
     expiredAccountsRef.current.add(accountId);
-    // All accounts expired → full session expired UI
+    setExpiredAccountIds(new Set(expiredAccountsRef.current));
+
+    // Per-account notification (only when single account expires, not via markSessionExpired)
+    if (showMessage) {
+      const email = accountsRef.current.find(a => a.id === accountId)?.email ?? accountId;
+      showToast(`${email} oturumu sona erdi. Yeniden giriş yapın.`, "error");
+    }
+
+    // All accounts expired → banner + stop sync
     const allExpired = accountsRef.current.every(a => expiredAccountsRef.current.has(a.id));
     if (allExpired && !tokenExpiredRef.current) {
       tokenExpiredRef.current = true;
@@ -259,7 +270,6 @@ function App() {
         clearTimeout(syncIntervalRef.current);
         syncIntervalRef.current = null;
       }
-      if (showMessage) showToast(AUTH_RELOGIN_MESSAGE, "error");
     }
   }, [showToast]);
 
@@ -517,6 +527,7 @@ function App() {
           accountTokensRef.current = { ...accountTokensRef.current, [accountId]: newToken };
           setAccountTokens(prev => ({ ...prev, [accountId]: newToken }));
           expiredAccountsRef.current.delete(accountId);
+          setExpiredAccountIds(new Set(expiredAccountsRef.current));
           tokenExpiredRef.current = false;
           setTokenExpired(false);
           await invoke("sync_emails", { accountId, accessToken: newToken });
@@ -698,31 +709,42 @@ function App() {
         setAccountTokens(tokens);
         accountTokensRef.current = tokens;
 
-        if (Object.keys(tokens).length === 0) return;
-
         startupSyncTimer = window.setTimeout(() => {
           void (async () => {
             if (cancelled) return;
             if (await shouldDeferNetworkForGameMode(false)) {
               console.log("System in fullscreen/game mode, delaying startup sync.");
             } else {
-              // Refresh tokens for all accounts
+              // Refresh tokens for all accounts — even those with no cached access token,
+              // since refresh_access_token reads the refresh token directly from keyring.
               for (const acc of loadedAccounts) {
-                if (!accountTokensRef.current[acc.id]) continue;
                 try {
                   const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId: acc.id });
                   if (cancelled) return;
                   accountTokensRef.current = { ...accountTokensRef.current, [acc.id]: refreshed.access_token };
                   setAccountTokens(prev => ({ ...prev, [acc.id]: refreshed.access_token }));
+                  expiredAccountsRef.current.delete(acc.id);
+                  setExpiredAccountIds(new Set(expiredAccountsRef.current));
                 } catch (refreshError) {
                   if (isAuthFailure(refreshError)) {
-                    expiredAccountsRef.current.add(acc.id);
+                    // Only force re-login if we also have no cached token.
+                    // If there IS a cached token, the keyring failure may be transient
+                    // (Windows Credential Manager timing issue in dev mode).
+                    // The sync will naturally detect expiry when the cached token stops working.
+                    if (!accountTokensRef.current[acc.id]) {
+                      markAccountExpired(acc.id);
+                    } else {
+                      console.warn(`Startup refresh failed for ${acc.id} (cached token in use):`, refreshError);
+                    }
                   } else {
                     console.log(`Token refresh skipped for ${acc.id}:`, refreshError);
                   }
                 }
               }
-              if (!cancelled) await backgroundSyncRef.current();
+
+              if (!cancelled && Object.keys(accountTokensRef.current).length > 0) {
+                await backgroundSyncRef.current();
+              }
             }
             if (!cancelled) startPeriodicSync();
           })();
@@ -806,6 +828,7 @@ function App() {
       accountTokensRef.current = { ...accountTokensRef.current, [res.email]: res.access_token };
       setAccountTokens(prev => ({ ...prev, [res.email]: res.access_token }));
       expiredAccountsRef.current.delete(res.email);
+      setExpiredAccountIds(new Set(expiredAccountsRef.current));
 
       // If this is the first account, set it active
       if (updatedAccounts.length === 1) {
@@ -814,8 +837,9 @@ function App() {
       }
 
       setAuthStatus(tr.auth.loggedInSyncing);
-      tokenExpiredRef.current = false;
-      setTokenExpired(false);
+      const stillExpired = expiredAccountsRef.current.size > 0;
+      tokenExpiredRef.current = stillExpired;
+      if (!stillExpired) setTokenExpired(false);
       const ok = await backgroundSyncRef.current({ userInitiated: true });
       if (ok) {
         setAuthStatus(tr.auth.syncComplete);
@@ -841,6 +865,7 @@ function App() {
       accountTokensRef.current = newTokens;
       setAccountTokens(newTokens);
       expiredAccountsRef.current.delete(accountId);
+      setExpiredAccountIds(new Set(expiredAccountsRef.current));
 
       const updatedAccounts = await invoke<Account[]>("get_accounts");
       setAccounts(updatedAccounts);
@@ -1051,6 +1076,7 @@ function App() {
         accountTokensRef.current = { ...accountTokensRef.current, [sendFromId]: token };
         setAccountTokens(prev => ({ ...prev, [sendFromId]: token }));
         expiredAccountsRef.current.delete(sendFromId);
+        setExpiredAccountIds(new Set(expiredAccountsRef.current));
       } catch {
         setComposeSendError("Oturum süresi dolmuş. Lütfen hesabınıza tekrar giriş yapın.");
         setIsSending(false);
@@ -1185,6 +1211,20 @@ function App() {
 
   useEffect(() => { setVerificationCopyState("idle"); }, [selectedMail]);
 
+  const selectedMailThreadId = activeMail?.thread_id;
+  const selectedMailAccountId = activeMail?.account_id;
+  useEffect(() => {
+    if (!selectedMail || !selectedMailThreadId) { setThreadEmails([]); return; }
+    let cancelled = false;
+    invoke<EmailSummary[]>("get_thread_emails", {
+      threadId: selectedMailThreadId,
+      accountId: selectedMailAccountId ?? "",
+    })
+      .then(all => { if (!cancelled) setThreadEmails(all.filter(e => e.id !== selectedMail)); })
+      .catch(() => { if (!cancelled) setThreadEmails([]); });
+    return () => { cancelled = true; };
+  }, [selectedMail, selectedMailThreadId, selectedMailAccountId]);
+
   const displayEmails = emails.filter(email => {
     if (!searchQuery) return true;
     return (
@@ -1302,6 +1342,7 @@ function App() {
           onSwitchAccount={handleSwitchAccount}
           onAddAccount={loginWithGoogle}
           onLogoutAccount={handleLogoutAccount}
+          expiredAccountIds={expiredAccountIds}
         />
 
         {/* Compose FAB */}
@@ -1428,6 +1469,7 @@ function App() {
                 onOpenUrl={openExternalMailUrl}
                 mailScrollRef={mailScrollRef}
                 relayoutKey={`${mailViewMode}|${singlePanelView}|${windowWidth}`}
+                threadEmails={threadEmails}
               />
             ) : (
               <main
@@ -1451,7 +1493,9 @@ function App() {
         <div className="absolute top-9 left-0 right-0 bg-red-500/90 backdrop-blur-sm px-4 py-2 flex items-center justify-between z-50">
           <div className="flex items-center gap-2 text-white text-xs font-medium">
             <AlertTriangle className="w-3.5 h-3.5" />
-            {AUTH_RELOGIN_MESSAGE}
+            {accounts.length > 1
+              ? `${[...expiredAccountIds].map(id => accounts.find(a => a.id === id)?.email ?? id).join(", ")} oturumu sona erdi — hangi hesapla giriş yaparsanız o hesap yenilenir`
+              : AUTH_RELOGIN_MESSAGE}
           </div>
           <button
             onClick={loginWithGoogle}

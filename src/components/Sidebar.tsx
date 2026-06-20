@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw, Plus, Users } from "lucide-react";
+import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw, Plus, Users, AlertTriangle } from "lucide-react";
 import { tr } from "../i18n";
 import type { Account } from "../types";
 
@@ -21,12 +21,14 @@ interface SidebarProps {
   onSwitchAccount: (id: string | null) => void;
   onAddAccount: () => void;
   onLogoutAccount: (accountId: string) => void;
+  expiredAccountIds: Set<string>;
 }
 
 export function Sidebar({
   activeTab, goToTab, mobileMenuOpen, setMobileMenuOpen,
   authStatus, isUserSyncing, unreadCount, onLogin, usesOverlaySidebar,
   accounts, activeAccountId, onSwitchAccount, onAddAccount, onLogoutAccount,
+  expiredAccountIds,
 }: SidebarProps) {
   const [hoveredAccount, setHoveredAccount] = useState<string | null>(null);
 
@@ -55,6 +57,13 @@ export function Sidebar({
   const accountItem = (accountId: string | null, picture: string | null, email: string, isAll = false) => {
     const isActive = accountId === null ? activeAccountId === null : activeAccountId === accountId;
     const isHovered = accountId !== null && hoveredAccount === accountId;
+    const isExpired = accountId !== null && expiredAccountIds.has(accountId);
+
+    const avatarRingCls = isExpired
+      ? "ring-2 ring-orange-500 ring-offset-1 ring-offset-[#0c0c0e]"
+      : isActive
+      ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]"
+      : "";
 
     return (
       <div
@@ -71,45 +80,71 @@ export function Sidebar({
               : "hover:bg-white/5"
           }`}
         >
-          {isAll ? (
-            <div className={`w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
-              <Users className="w-3.5 h-3.5 text-zinc-400" />
-            </div>
-          ) : picture ? (
-            <img
-              src={picture}
-              alt={email}
-              className={`w-7 h-7 rounded-full object-cover shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}
-            />
-          ) : (
-            <div className={`w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-zinc-300 shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
-              {email[0]?.toUpperCase() ?? "?"}
-            </div>
-          )}
+          {/* Avatar with optional expired indicator */}
+          <div className="relative shrink-0">
+            {isAll ? (
+              <div className={`w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
+                <Users className="w-3.5 h-3.5 text-zinc-400" />
+              </div>
+            ) : picture ? (
+              <img
+                src={picture}
+                alt={email}
+                className={`w-7 h-7 rounded-full object-cover ${avatarRingCls}`}
+              />
+            ) : (
+              <div className={`w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-zinc-300 ${avatarRingCls}`}>
+                {email[0]?.toUpperCase() ?? "?"}
+              </div>
+            )}
+            {isExpired && (
+              <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-orange-500 flex items-center justify-center">
+                <AlertTriangle className="w-2 h-2 text-white" />
+              </span>
+            )}
+          </div>
+
           <div className="flex-1 min-w-0">
-            <div className={`text-xs font-medium truncate ${isActive ? "text-zinc-100" : "text-zinc-300"}`}>
+            <div className={`text-xs font-medium truncate ${isExpired ? "text-orange-400" : isActive ? "text-zinc-100" : "text-zinc-300"}`}>
               {isAll ? "Tüm hesaplar" : email.split("@")[0]}
             </div>
             {!isAll && (
-              <div className="text-[10px] text-zinc-600 truncate">{email}</div>
+              <div className={`text-[10px] truncate ${isExpired ? "text-orange-600" : "text-zinc-600"}`}>
+                {isExpired ? "Oturum sona erdi" : email}
+              </div>
             )}
           </div>
         </button>
 
-        {/* Hover logout button */}
+        {/* Hover action button */}
         {!isAll && accountId && isHovered && (
-          <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/logout">
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onLogoutAccount(accountId); }}
-              className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-red-400 transition-all"
-            >
-              <LogOut className="w-3 h-3" />
-            </button>
-            <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/logout:opacity-100">
-              Hesaptan çıkış
-            </span>
-          </div>
+          isExpired ? (
+            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/relogin">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onLogin(); }}
+                className="p-1 rounded hover:bg-white/10 text-orange-500 hover:text-orange-300 transition-all"
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+              <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/relogin:opacity-100">
+                Yeniden giriş yap
+              </span>
+            </div>
+          ) : (
+            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/logout">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onLogoutAccount(accountId); }}
+                className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-red-400 transition-all"
+              >
+                <LogOut className="w-3 h-3" />
+              </button>
+              <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/logout:opacity-100">
+                Hesaptan çıkış
+              </span>
+            </div>
+          )
         )}
       </div>
     );

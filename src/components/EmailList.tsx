@@ -35,6 +35,14 @@ export function EmailList({
   accounts, activeAccountId,
 }: EmailListProps) {
   const showAccountBadge = activeAccountId === null && (accounts?.length ?? 0) > 1;
+
+  const threadCountMap: Record<string, number> = {};
+  for (const mail of displayEmails) {
+    if (mail.thread_id) {
+      threadCountMap[mail.thread_id] = (threadCountMap[mail.thread_id] || 0) + 1;
+    }
+  }
+
   return (
     <section className={className}>
       <div className="h-12 flex items-center px-4 border-b border-white/5 justify-between shrink-0">
@@ -157,7 +165,14 @@ export function EmailList({
                   ? `To: ${(mail.recipient || "").split("<")[0].replace(/"/g, "").trim() || mail.recipient}`
                   : mail.sender.split("<")[0].replace(/"/g, "").trim()}
               </span>
-              <span className="text-[10px] text-zinc-600 shrink-0">{formatDate(mail.date)}</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {mail.thread_id && (threadCountMap[mail.thread_id] ?? 1) > 1 && (
+                  <span className="text-[10px] text-zinc-700 tabular-nums">
+                    {threadCountMap[mail.thread_id]}
+                  </span>
+                )}
+                <span className="text-[10px] text-zinc-600">{formatDate(mail.date)}</span>
+              </div>
             </div>
             <h3
               className={`min-w-0 truncate text-xs ${mail.unread ? "text-zinc-200 font-medium" : "text-zinc-500"}`}

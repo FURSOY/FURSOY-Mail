@@ -21,7 +21,7 @@ export function isNoUpdateError(error: unknown): boolean {
 
 export function isAuthFailure(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return /401|unauthorized|invalid_grant|invalid credentials|unauthenticated|autherror|expected oauth 2 access token|no refresh token|oturum yenilenemedi/.test(message);
+  return /401|unauthorized|invalid_grant|invalid credentials|unauthenticated|autherror|expected oauth 2 access token|no refresh token|oturum yenilenemedi|oturum bilgisi bulunamad/.test(message);
 }
 
 export function byteLength(text: string): number {
