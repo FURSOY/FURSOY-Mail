@@ -4,24 +4,27 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use tauri::{AppHandle, Manager};
 
-// ── Windows Credential Manager ────────────────────────────────────────────────
+// ── Per-account keyring ────────────────────────────────────────────────────────
 
 const KEYRING_SERVICE: &str = "fursoy-mail";
-const KEYRING_ACCOUNT: &str = "oauth-tokens";
 
-fn save_tokens_to_keyring(access_token: &str, refresh_token: &str) -> Result<(), String> {
+fn account_key(email: &str) -> String {
+    format!("oauth-{}", email)
+}
+
+pub fn save_tokens(email: &str, access_token: &str, refresh_token: &str) -> Result<(), String> {
     let data = serde_json::json!({
         "access_token": access_token,
         "refresh_token": refresh_token,
     })
     .to_string();
-    Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    Entry::new(KEYRING_SERVICE, &account_key(email))
         .and_then(|e| e.set_password(&data))
-        .map_err(|e| format!("Token güvenli depoya kaydedilemedi: {e}"))
+        .map_err(|e| format!("Token kaydedilemedi: {e}"))
 }
 
-fn load_tokens_from_keyring() -> Option<(String, String)> {
-    let json = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+pub fn load_tokens(email: &str) -> Option<(String, String)> {
+    let json = Entry::new(KEYRING_SERVICE, &account_key(email))
         .ok()?
         .get_password()
         .ok()?;
@@ -34,10 +37,41 @@ fn load_tokens_from_keyring() -> Option<(String, String)> {
     Some((access, refresh))
 }
 
-fn delete_tokens_from_keyring() {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+pub fn delete_tokens(email: &str) {
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, &account_key(email)) {
         let _ = entry.delete_credential();
     }
+}
+
+// Legacy single-account keyring (for one-time migration)
+fn load_legacy_tokens() -> Option<(String, String)> {
+    let json = Entry::new(KEYRING_SERVICE, "oauth-tokens")
+        .ok()?
+        .get_password()
+        .ok()?;
+    let val: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let access = val["access_token"].as_str()?.to_string();
+    let refresh = val["refresh_token"].as_str()?.to_string();
+    if access.is_empty() {
+        return None;
+    }
+    Some((access, refresh))
+}
+
+fn delete_legacy_tokens() {
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, "oauth-tokens") {
+        let _ = entry.delete_credential();
+    }
+}
+
+// ── Structs ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Account {
+    pub id: String, // same as email
+    pub email: String,
+    pub picture: String,
+    pub display_order: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -67,6 +101,7 @@ pub struct EmailSummary {
     pub date: i64,
     pub unread: bool,
     pub label: String,
+    pub account_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -77,6 +112,8 @@ pub struct AuthInfo {
     pub picture: String,
 }
 
+// ── DB path ────────────────────────────────────────────────────────────────────
+
 pub fn get_db_path(app: &AppHandle) -> std::path::PathBuf {
     let app_dir = app.path().app_data_dir().unwrap();
     if !app_dir.exists() {
@@ -85,10 +122,24 @@ pub fn get_db_path(app: &AppHandle) -> std::path::PathBuf {
     app_dir.join("mailapp.db")
 }
 
+// ── init_db ────────────────────────────────────────────────────────────────────
+
 pub fn init_db(app: &AppHandle) -> Result<()> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path)?;
 
+    // accounts table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            picture TEXT NOT NULL DEFAULT '',
+            display_order INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )?;
+
+    // emails table
     conn.execute(
         "CREATE TABLE IF NOT EXISTS emails (
             id TEXT PRIMARY KEY,
@@ -101,102 +152,383 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
             body_html TEXT NOT NULL,
             date INTEGER NOT NULL,
             unread BOOLEAN NOT NULL,
-            label TEXT NOT NULL DEFAULT 'inbox'
+            label TEXT NOT NULL DEFAULT 'inbox',
+            account_id TEXT NOT NULL DEFAULT ''
         )",
         [],
     )?;
 
-    // Migration: add columns if they don't exist (for existing databases)
-    let has_label: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name='label'")
+    // Migration: add missing columns to emails
+    for (col, ddl) in [
+        ("label", "ALTER TABLE emails ADD COLUMN label TEXT NOT NULL DEFAULT 'inbox'"),
+        ("recipient", "ALTER TABLE emails ADD COLUMN recipient TEXT NOT NULL DEFAULT ''"),
+        ("thread_id", "ALTER TABLE emails ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''"),
+        ("cc", "ALTER TABLE emails ADD COLUMN cc TEXT NOT NULL DEFAULT ''"),
+        ("account_id", "ALTER TABLE emails ADD COLUMN account_id TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let exists: bool = conn
+            .prepare(&format!(
+                "SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name='{}'",
+                col
+            ))
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !exists {
+            conn.execute(ddl, [])?;
+        }
+    }
+
+    // sync_state: migrate to per-account schema
+    let sync_has_account_id: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('sync_state') WHERE name='account_id'")
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
         .map(|c| c > 0)
         .unwrap_or(false);
-    if !has_label {
-        conn.execute(
-            "ALTER TABLE emails ADD COLUMN label TEXT NOT NULL DEFAULT 'inbox'",
-            [],
-        )?;
+    if !sync_has_account_id {
+        conn.execute("DROP TABLE IF EXISTS sync_state", [])?;
     }
-
-    let has_recipient: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name='recipient'")
-        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-        .map(|c| c > 0)
-        .unwrap_or(false);
-    if !has_recipient {
-        conn.execute(
-            "ALTER TABLE emails ADD COLUMN recipient TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-
-    let has_thread_id: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name='thread_id'")
-        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-        .map(|c| c > 0)
-        .unwrap_or(false);
-    if !has_thread_id {
-        conn.execute(
-            "ALTER TABLE emails ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-
-    let has_cc: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name='cc'")
-        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-        .map(|c| c > 0)
-        .unwrap_or(false);
-    if !has_cc {
-        conn.execute(
-            "ALTER TABLE emails ADD COLUMN cc TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS auth (
-            id INTEGER PRIMARY KEY,
-            access_token TEXT NOT NULL,
-            refresh_token TEXT NOT NULL,
-            email TEXT NOT NULL,
-            picture TEXT NOT NULL
-        )",
-        [],
-    )?;
-
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sync_state (
-            id INTEGER PRIMARY KEY DEFAULT 1,
+            account_id TEXT PRIMARY KEY,
             history_id TEXT
         )",
         [],
     )?;
 
+    // Legacy auth table (kept for migration only)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS auth (
+            id INTEGER PRIMARY KEY,
+            access_token TEXT NOT NULL DEFAULT '',
+            refresh_token TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            picture TEXT NOT NULL DEFAULT ''
+        )",
+        [],
+    )?;
+
+    // One-time migration: auth row → accounts table
+    let accounts_empty: bool = conn
+        .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get::<_, i64>(0))
+        .map(|c| c == 0)
+        .unwrap_or(true);
+
+    if accounts_empty {
+        let legacy: Option<(String, String, String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1",
+                )
+                .ok();
+            stmt.as_mut().and_then(|s| {
+                s.query_row([], |r| {
+                    Ok((
+                        r.get::<_, String>(0).unwrap_or_default(),
+                        r.get::<_, String>(1).unwrap_or_default(),
+                        r.get::<_, String>(2).unwrap_or_default(),
+                        r.get::<_, String>(3).unwrap_or_default(),
+                    ))
+                })
+                .ok()
+            })
+        };
+
+        if let Some((sql_access, sql_refresh, email, picture)) = legacy {
+            if !email.is_empty() {
+                conn.execute(
+                    "INSERT OR IGNORE INTO accounts (id, email, picture, display_order) VALUES (?1, ?2, ?3, 0)",
+                    params![email, email, picture],
+                )?;
+
+                let (access, refresh) = if let Some(tokens) = load_legacy_tokens() {
+                    delete_legacy_tokens();
+                    tokens
+                } else if !sql_access.is_empty() {
+                    (sql_access, sql_refresh)
+                } else {
+                    (String::new(), String::new())
+                };
+
+                if !access.is_empty() {
+                    let _ = save_tokens(&email, &access, &refresh);
+                }
+
+                conn.execute(
+                    "UPDATE emails SET account_id = ?1 WHERE account_id = ''",
+                    params![email],
+                )?;
+            }
+        }
+    }
+
     Ok(())
 }
 
-pub fn upsert_emails(app: &AppHandle, emails: Vec<Email>) -> Result<()> {
+// ── Account CRUD ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_accounts(app: tauri::AppHandle) -> Result<Vec<Account>, String> {
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, email, picture, display_order \
+             FROM accounts ORDER BY display_order ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let iter = stmt
+        .query_map([], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                picture: row.get(2)?,
+                display_order: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(iter.filter_map(|r| r.ok()).collect())
+}
+
+pub fn upsert_account(app: &AppHandle, email: &str, picture: &str) -> Result<Account, String> {
+    let db_path = get_db_path(app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+
+    let max_order: i32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(display_order), -1) FROM accounts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+
+    conn.execute(
+        "INSERT INTO accounts (id, email, picture, display_order) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET picture = excluded.picture",
+        params![email, email, picture, max_order + 1],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let display_order: i32 = conn
+        .query_row(
+            "SELECT display_order FROM accounts WHERE id = ?1",
+            params![email],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(Account {
+        id: email.to_string(),
+        email: email.to_string(),
+        picture: picture.to_string(),
+        display_order,
+    })
+}
+
+pub fn get_account_picture(app: &AppHandle, email: &str) -> String {
+    let db_path = get_db_path(app);
+    let conn = match Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    conn.query_row(
+        "SELECT picture FROM accounts WHERE id = ?1",
+        params![email],
+        |r| r.get(0),
+    )
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn remove_account(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
+    delete_tokens(&account_id);
+
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "DELETE FROM emails WHERE account_id = ?1",
+        params![account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM sync_state WHERE account_id = ?1",
+        params![account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_accounts(app: tauri::AppHandle, ordered_ids: Vec<String>) -> Result<(), String> {
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    for (i, id) in ordered_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE accounts SET display_order = ?1 WHERE id = ?2",
+            params![i as i32, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── Contact autocomplete ───────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ContactSuggestion {
+    pub name: String,
+    pub email: String,
+}
+
+fn parse_contact(raw: &str) -> (String, String) {
+    let s = raw.trim();
+    if let Some(lt) = s.find('<') {
+        if let Some(gt) = s.rfind('>') {
+            let name = s[..lt].trim().trim_matches('"').to_string();
+            let email = s[lt + 1..gt].trim().to_string();
+            return (name, email);
+        }
+    }
+    if s.contains('@') {
+        return (String::new(), s.to_string());
+    }
+    (String::new(), String::new())
+}
+
+#[tauri::command]
+pub fn search_contacts(
+    app: AppHandle,
+    query: String,
+) -> Result<Vec<ContactSuggestion>, String> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let like = format!("%{}%", query.to_lowercase());
+
+    let mut raw_pairs: Vec<(String, i64)> = Vec::new();
+
+    // Senders from received emails
+    let mut stmt = conn
+        .prepare(
+            "SELECT sender, COUNT(*) FROM emails \
+             WHERE label != 'sent' AND sender != '' AND LOWER(sender) LIKE ?1 \
+             GROUP BY sender ORDER BY COUNT(*) DESC LIMIT 20",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![like], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    for r in rows.flatten() {
+        raw_pairs.push(r);
+    }
+
+    // Recipients from sent emails
+    let mut stmt2 = conn
+        .prepare(
+            "SELECT recipient, COUNT(*) FROM emails \
+             WHERE label = 'sent' AND recipient != '' AND LOWER(recipient) LIKE ?1 \
+             GROUP BY recipient ORDER BY COUNT(*) DESC LIMIT 20",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows2 = stmt2
+        .query_map(params![like], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    for r in rows2.flatten() {
+        raw_pairs.push(r);
+    }
+
+    // Parse, dedupe by email, sort by count
+    let q = query.to_lowercase();
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut best: std::collections::HashMap<String, ContactSuggestion> =
+        std::collections::HashMap::new();
+
+    for (raw, count) in raw_pairs {
+        for part in raw.split(',') {
+            let (name, email) = parse_contact(part.trim());
+            if email.is_empty() || !email.contains('@') {
+                continue;
+            }
+            let el = email.to_lowercase();
+            if !el.contains(&q) && !name.to_lowercase().contains(&q) {
+                continue;
+            }
+            *counts.entry(el.clone()).or_insert(0) += count;
+            best.entry(el).or_insert(ContactSuggestion { name, email });
+        }
+    }
+
+    let mut result: Vec<(i64, ContactSuggestion)> = counts
+        .into_iter()
+        .filter_map(|(k, c)| best.remove(&k).map(|s| (c, s)))
+        .collect();
+    result.sort_by(|a, b| b.0.cmp(&a.0));
+
+    Ok(result.into_iter().take(8).map(|(_, s)| s).collect())
+}
+
+#[tauri::command]
+pub fn get_account_auth(
+    app: tauri::AppHandle,
+    account_id: String,
+) -> Result<Option<AuthInfo>, String> {
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT email, picture FROM accounts WHERE id = ?1",
+            params![account_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    let Some((email, picture)) = row else {
+        return Ok(None);
+    };
+
+    let Some((access_token, refresh_token)) = load_tokens(&email) else {
+        return Ok(None);
+    };
+
+    Ok(Some(AuthInfo {
+        access_token,
+        refresh_token,
+        email,
+        picture,
+    }))
+}
+
+// ── Email CRUD ────────────────────────────────────────────────────────────────
+
+pub fn upsert_emails(app: &AppHandle, account_id: &str, emails: Vec<Email>) -> Result<()> {
     let db_path = get_db_path(app);
     let mut conn = Connection::open(db_path)?;
     let tx = conn.transaction()?;
 
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO emails (id, thread_id, sender, recipient, cc, subject, snippet, body_html, date, unread, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO emails (id, thread_id, sender, recipient, cc, subject, snippet, \
+                                 body_html, date, unread, label, account_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
-                thread_id=excluded.thread_id,
-                sender=excluded.sender,
-                recipient=excluded.recipient,
-                cc=excluded.cc,
-                subject=excluded.subject,
-                snippet=excluded.snippet,
-                body_html=excluded.body_html,
-                date=excluded.date,
-                unread=excluded.unread,
-                label=excluded.label",
+                thread_id = excluded.thread_id,
+                sender    = excluded.sender,
+                recipient = excluded.recipient,
+                cc        = excluded.cc,
+                subject   = excluded.subject,
+                snippet   = excluded.snippet,
+                body_html = excluded.body_html,
+                date      = excluded.date,
+                unread    = excluded.unread,
+                label     = excluded.label,
+                account_id= excluded.account_id",
         )?;
 
         for email in emails {
@@ -212,6 +544,7 @@ pub fn upsert_emails(app: &AppHandle, emails: Vec<Email>) -> Result<()> {
                 email.date,
                 email.unread,
                 email.label,
+                account_id,
             ])?;
         }
     }
@@ -220,83 +553,101 @@ pub fn upsert_emails(app: &AppHandle, emails: Vec<Email>) -> Result<()> {
     Ok(())
 }
 
+fn map_summary_row(row: &rusqlite::Row) -> rusqlite::Result<EmailSummary> {
+    Ok(EmailSummary {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        sender: row.get(2)?,
+        recipient: row.get(3)?,
+        cc: row.get(4)?,
+        subject: row.get(5)?,
+        snippet: row.get(6)?,
+        date: row.get(7)?,
+        unread: row.get(8)?,
+        label: row.get(9)?,
+        account_id: row.get(10)?,
+    })
+}
+
+const SUMMARY_COLS: &str =
+    "id, thread_id, sender, recipient, cc, subject, snippet, date, unread, label, account_id";
+
 #[tauri::command]
-pub fn get_emails_by_label(app: tauri::AppHandle, label: String) -> Result<Vec<EmailSummary>, String> {
+pub fn get_emails_by_label(
+    app: tauri::AppHandle,
+    label: String,
+    account_id: Option<String>,
+) -> Result<Vec<EmailSummary>, String> {
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
-    let mut stmt = conn
-        .prepare("SELECT id, thread_id, sender, recipient, cc, subject, snippet, date, unread, label FROM emails WHERE label = ?1 ORDER BY date DESC")
-        .map_err(|e| e.to_string())?;
-
-    let email_iter = stmt
-        .query_map(params![label], |row| {
-            Ok(EmailSummary {
-                id: row.get(0)?,
-                thread_id: row.get(1)?,
-                sender: row.get(2)?,
-                recipient: row.get(3)?,
-                cc: row.get(4)?,
-                subject: row.get(5)?,
-                snippet: row.get(6)?,
-                date: row.get(7)?,
-                unread: row.get(8)?,
-                label: row.get(9)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut emails = Vec::new();
-    for email in email_iter {
-        if let Ok(e) = email {
-            emails.push(e);
+    match account_id {
+        Some(id) => {
+            let sql = format!(
+                "SELECT {SUMMARY_COLS} FROM emails WHERE label = ?1 AND account_id = ?2 ORDER BY date DESC"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows: Vec<EmailSummary> = stmt
+                .query_map(params![label, id], map_summary_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        }
+        None => {
+            let sql = format!(
+                "SELECT {SUMMARY_COLS} FROM emails WHERE label = ?1 ORDER BY date DESC"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows: Vec<EmailSummary> = stmt
+                .query_map(params![label], map_summary_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
         }
     }
-
-    Ok(emails)
 }
 
 #[tauri::command]
-pub fn get_local_emails(app: tauri::AppHandle) -> Result<Vec<EmailSummary>, String> {
+pub fn get_local_emails(
+    app: tauri::AppHandle,
+    account_id: Option<String>,
+) -> Result<Vec<EmailSummary>, String> {
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
-    let mut stmt = conn
-        .prepare("SELECT id, thread_id, sender, recipient, cc, subject, snippet, date, unread, label FROM emails ORDER BY date DESC")
-        .map_err(|e| e.to_string())?;
-
-    let email_iter = stmt
-        .query_map([], |row| {
-            Ok(EmailSummary {
-                id: row.get(0)?,
-                thread_id: row.get(1)?,
-                sender: row.get(2)?,
-                recipient: row.get(3)?,
-                cc: row.get(4)?,
-                subject: row.get(5)?,
-                snippet: row.get(6)?,
-                date: row.get(7)?,
-                unread: row.get(8)?,
-                label: row.get(9)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut emails = Vec::new();
-    for email in email_iter {
-        if let Ok(e) = email {
-            emails.push(e);
+    match account_id {
+        Some(id) => {
+            let sql = format!(
+                "SELECT {SUMMARY_COLS} FROM emails WHERE account_id = ?1 ORDER BY date DESC"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows: Vec<EmailSummary> = stmt
+                .query_map(params![id], map_summary_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        }
+        None => {
+            let sql =
+                format!("SELECT {SUMMARY_COLS} FROM emails ORDER BY date DESC");
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows: Vec<EmailSummary> = stmt
+                .query_map([], map_summary_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
         }
     }
-
-    Ok(emails)
 }
 
 #[tauri::command]
 pub fn get_email_body(app: tauri::AppHandle, id: String) -> Result<String, String> {
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.query_row(
         "SELECT body_html FROM emails WHERE id = ?1",
         params![id],
@@ -308,171 +659,82 @@ pub fn get_email_body(app: tauri::AppHandle, id: String) -> Result<String, Strin
 pub fn mark_email_as_read_local(app: &AppHandle, id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute("UPDATE emails SET unread = 0 WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 pub fn mark_email_as_unread_local(app: &AppHandle, id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute("UPDATE emails SET unread = 1 WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 pub fn update_email_label(app: &AppHandle, id: &str, label: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute(
         "UPDATE emails SET label = ?1 WHERE id = ?2",
         params![label, id],
     )
     .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 pub fn delete_email_from_db(app: &AppHandle, id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
     conn.execute("DELETE FROM emails WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-pub fn save_auth(app: &AppHandle, auth: AuthInfo) -> Result<(), String> {
-    // Tokens go to Windows Credential Manager; only non-sensitive fields in SQLite.
-    save_tokens_to_keyring(&auth.access_token, &auth.refresh_token)?;
-
-    let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO auth (id, access_token, refresh_token, email, picture)
-         VALUES (1, '', '', ?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET
-            access_token = '',
-            refresh_token = '',
-            email = excluded.email,
-            picture = excluded.picture",
-        params![auth.email, auth.picture],
-    )
-    .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_auth_info(app: tauri::AppHandle) -> Result<Option<AuthInfo>, String> {
+pub fn get_inbox_unread_count(
+    app: tauri::AppHandle,
+    account_id: Option<String>,
+) -> Result<i64, String> {
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
-    // Read SQLite row first; drop all statement borrows before touching conn again.
-    let row_data: Option<(String, String, String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1")
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            Some((
-                row.get(0).unwrap_or_default(),
-                row.get(1).unwrap_or_default(),
-                row.get(2).unwrap_or_default(),
-                row.get(3).unwrap_or_default(),
-            ))
-        } else {
-            None
-        }
-    }; // stmt and rows dropped here
-
-    let (sql_access, sql_refresh, email, picture) = match row_data {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-
-    if email.is_empty() {
-        return Ok(None);
-    }
-
-    let (access_token, refresh_token) = if let Some(tokens) = load_tokens_from_keyring() {
-        tokens
-    } else if !sql_access.is_empty() {
-        // One-time migration: tokens still in SQLite → move to Credential Manager.
-        let _ = save_tokens_to_keyring(&sql_access, &sql_refresh);
-        conn.execute(
-            "UPDATE auth SET access_token = '', refresh_token = '' WHERE id = 1",
-            [],
-        )
-        .ok();
-        (sql_access, sql_refresh)
-    } else {
-        return Ok(None);
-    };
-
-    Ok(Some(AuthInfo {
-        access_token,
-        refresh_token,
-        email,
-        picture,
-    }))
-}
-
-#[tauri::command]
-pub fn logout(app: tauri::AppHandle) -> Result<(), String> {
-    delete_tokens_from_keyring();
-
-    let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM auth WHERE id = 1", [])
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_inbox_unread_count(app: tauri::AppHandle) -> Result<i64, String> {
-    let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-
-    let count: i64 = conn
-        .query_row(
+    let count: i64 = match account_id {
+        Some(id) => conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE label = 'inbox' AND unread = 1 AND account_id = ?1",
+            params![id],
+            |row| row.get(0),
+        ),
+        None => conn.query_row(
             "SELECT COUNT(*) FROM emails WHERE label = 'inbox' AND unread = 1",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-
+        ),
+    }
+    .map_err(|e| e.to_string())?;
     Ok(count)
 }
 
-// ── Sync state (history ID) ──
+// ── Sync state (per-account history ID) ────────────────────────────────────────
 
-pub fn get_history_id(app: &AppHandle) -> Option<String> {
+pub fn get_history_id(app: &AppHandle, account_id: &str) -> Option<String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).ok()?;
     conn.query_row(
-        "SELECT history_id FROM sync_state WHERE id = 1",
-        [],
+        "SELECT history_id FROM sync_state WHERE account_id = ?1",
+        params![account_id],
         |row| row.get::<_, Option<String>>(0),
     )
     .ok()
     .flatten()
 }
 
-pub fn set_history_id(app: &AppHandle, history_id: &str) -> Result<(), String> {
+pub fn set_history_id(app: &AppHandle, account_id: &str, history_id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO sync_state (id, history_id) VALUES (1, ?1)
-         ON CONFLICT(id) DO UPDATE SET history_id = excluded.history_id",
-        params![history_id],
+        "INSERT INTO sync_state (account_id, history_id) VALUES (?1, ?2)
+         ON CONFLICT(account_id) DO UPDATE SET history_id = excluded.history_id",
+        params![account_id, history_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -484,9 +746,15 @@ pub fn delete_emails_by_ids(app: &AppHandle, ids: &[String]) -> Result<(), Strin
     }
     let db_path = get_db_path(app);
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
     let sql = format!("DELETE FROM emails WHERE id IN ({})", placeholders.join(","));
-    let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
-    conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())?;
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+    conn.execute(&sql, params.as_slice())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

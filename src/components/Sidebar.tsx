@@ -1,28 +1,35 @@
-import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw, Plus, Users } from "lucide-react";
 import { tr } from "../i18n";
-import type { AuthInfo } from "../types";
-import { ToolbarTip } from "./ToolbarTip";
+import type { Account } from "../types";
 
 type TabName = "inbox" | "sent" | "archive" | "spam" | "trash" | "settings";
 
 interface SidebarProps {
   activeTab: string;
   goToTab: (tab: TabName) => void;
-  userInfo: AuthInfo | null;
   mobileMenuOpen: boolean;
   setMobileMenuOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   authStatus: string;
   isUserSyncing: boolean;
   unreadCount: number;
-  onLogout: () => void;
   onLogin: () => void;
   usesOverlaySidebar: boolean;
+  // multi-account
+  accounts: Account[];
+  activeAccountId: string | null;
+  onSwitchAccount: (id: string | null) => void;
+  onAddAccount: () => void;
+  onLogoutAccount: (accountId: string) => void;
 }
 
 export function Sidebar({
-  activeTab, goToTab, userInfo, mobileMenuOpen, setMobileMenuOpen,
-  authStatus, isUserSyncing, unreadCount, onLogout, onLogin, usesOverlaySidebar,
+  activeTab, goToTab, mobileMenuOpen, setMobileMenuOpen,
+  authStatus, isUserSyncing, unreadCount, onLogin, usesOverlaySidebar,
+  accounts, activeAccountId, onSwitchAccount, onAddAccount, onLogoutAccount,
 }: SidebarProps) {
+  const [hoveredAccount, setHoveredAccount] = useState<string | null>(null);
+
   const backdropCls = `fixed inset-x-0 bottom-0 top-9 z-40 bg-black/55 transition-opacity duration-200 ${
     usesOverlaySidebar && mobileMenuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
   }`;
@@ -45,10 +52,74 @@ export function Sidebar({
     </button>
   );
 
+  const accountItem = (accountId: string | null, picture: string | null, email: string, isAll = false) => {
+    const isActive = accountId === null ? activeAccountId === null : activeAccountId === accountId;
+    const isHovered = accountId !== null && hoveredAccount === accountId;
+
+    return (
+      <div
+        key={accountId ?? "__all__"}
+        className="relative"
+        onMouseEnter={() => accountId && setHoveredAccount(accountId)}
+        onMouseLeave={() => setHoveredAccount(null)}
+      >
+        <button
+          onClick={() => onSwitchAccount(accountId)}
+          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 ${
+            isActive
+              ? "bg-[var(--app-accent-soft)] shadow-[inset_2px_0_0_var(--app-accent)]"
+              : "hover:bg-white/5"
+          }`}
+        >
+          {isAll ? (
+            <div className={`w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
+              <Users className="w-3.5 h-3.5 text-zinc-400" />
+            </div>
+          ) : picture ? (
+            <img
+              src={picture}
+              alt={email}
+              className={`w-7 h-7 rounded-full object-cover shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}
+            />
+          ) : (
+            <div className={`w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-zinc-300 shrink-0 ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
+              {email[0]?.toUpperCase() ?? "?"}
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <div className={`text-xs font-medium truncate ${isActive ? "text-zinc-100" : "text-zinc-300"}`}>
+              {isAll ? "Tüm hesaplar" : email.split("@")[0]}
+            </div>
+            {!isAll && (
+              <div className="text-[10px] text-zinc-600 truncate">{email}</div>
+            )}
+          </div>
+        </button>
+
+        {/* Hover logout button */}
+        {!isAll && accountId && isHovered && (
+          <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/logout">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onLogoutAccount(accountId); }}
+              className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-red-400 transition-all"
+            >
+              <LogOut className="w-3 h-3" />
+            </button>
+            <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/logout:opacity-100">
+              Hesaptan çıkış
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       <div className={backdropCls} onClick={() => setMobileMenuOpen(false)} aria-hidden={!mobileMenuOpen} />
       <aside className={asideCls}>
+        {/* Navigation */}
         <nav className="flex-1 p-2 pt-3 space-y-0.5">
           {navItem(
             "inbox",
@@ -73,31 +144,14 @@ export function Sidebar({
           {navItem("settings", <Settings className="w-4 h-4" />, tr.nav.settings)}
         </nav>
 
-        <div className="p-2 mt-auto">
-          {userInfo ? (
-            <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-white/[0.03] border border-white/5 relative group">
-              <img
-                src={userInfo.picture}
-                alt="Profile"
-                className="w-7 h-7 rounded-full bg-zinc-800 object-cover shrink-0"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-zinc-300 truncate">{userInfo.email.split("@")[0]}</div>
-                <div className="text-[10px] text-zinc-600 truncate">{userInfo.email}</div>
-              </div>
-              <ToolbarTip label="Çıkış">
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-red-400 transition-all"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
-              </ToolbarTip>
-            </div>
-          ) : (
+        {/* Account section */}
+        <div className="p-2 border-t border-white/5 space-y-0.5">
+          {accounts.length === 0 ? (
+            /* No accounts — show login prompt */
             <>
-              <div className="px-2 py-1 text-[10px] text-zinc-600">{authStatus}</div>
+              {authStatus && (
+                <div className="px-2 py-1 text-[10px] text-zinc-600">{authStatus}</div>
+              )}
               <button
                 onClick={onLogin}
                 disabled={isUserSyncing}
@@ -106,6 +160,25 @@ export function Sidebar({
                 <Settings className="w-4 h-4" />
                 {tr.auth.loginWithGoogle}
                 {isUserSyncing && <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-500 ml-auto" />}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* "All accounts" combined view — only when 2+ accounts */}
+              {accounts.length > 1 && accountItem(null, null, "Tüm hesaplar", true)}
+
+              {/* Individual accounts */}
+              {accounts.map(acc => accountItem(acc.id, acc.picture || null, acc.email))}
+
+              {/* Add account */}
+              <button
+                onClick={onAddAccount}
+                className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-white/5 transition-colors"
+              >
+                <div className="w-7 h-7 rounded-full border border-dashed border-zinc-700 flex items-center justify-center shrink-0">
+                  <Plus className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-xs">Hesap ekle</span>
               </button>
             </>
           )}

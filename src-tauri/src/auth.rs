@@ -19,7 +19,6 @@ fn generate_random_string(len: usize) -> String {
         .collect()
 }
 
-/// Returns (code_verifier, code_challenge) for PKCE-S256 (RFC 7636).
 fn generate_pkce_pair() -> (String, String) {
     let verifier = generate_random_string(64);
     let hash = Sha256::digest(verifier.as_bytes());
@@ -128,7 +127,6 @@ height:100vh;background:#09090b;color:#f87171;font-family:sans-serif;'>\
 pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::AuthInfo, String> {
     let client_id = get_client_id()?;
 
-    // Generate CSRF state and PKCE pair before opening the browser
     let expected_state = generate_random_string(32);
     let (code_verifier, code_challenge) = generate_pkce_pair();
     let auth_url = build_auth_url(&client_id, &expected_state, &code_challenge)?;
@@ -139,8 +137,6 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
 
     open_auth_url(&app, auth_url)?;
 
-    // Wait up to 120s for the browser to redirect back with the auth code.
-    // expected_state and listener are moved into the async block; code_verifier stays outside.
     let code_result: Result<Result<String, String>, _> =
         timeout(Duration::from_secs(120), async move {
             loop {
@@ -162,7 +158,6 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
                     continue;
                 }
 
-                // Parse query params from "GET /callback?code=…&state=… HTTP/1.1"
                 let after_get = &request_line[4..];
                 let path_end = after_get.find(' ').unwrap_or(after_get.len());
                 let full_url = format!("http://localhost:8123{}", &after_get[..path_end]);
@@ -186,7 +181,6 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
                     continue;
                 }
 
-                // Verify CSRF state before accepting the code
                 if state_val != expected_state {
                     let resp = format!(
                         "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\
@@ -225,7 +219,6 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         return Err("Auth code bulunamadi".into());
     }
 
-    // code_verifier was NOT captured by the async block — still owned here
     let auth_resp = exchange_code_for_token(&code, &code_verifier).await?;
 
     let client = reqwest::Client::builder()
@@ -240,26 +233,26 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         .map_err(|e| e.to_string())?;
 
     let user_info: UserInfo = user_res.json().await.map_err(|e| e.to_string())?;
+    let picture = user_info.picture.unwrap_or_default();
 
-    let existing_auth = crate::db::get_auth_info(app.clone()).ok().flatten();
-    let refresh_token = auth_resp.refresh_token.unwrap_or_else(|| {
-        existing_auth
-            .as_ref()
-            .filter(|auth| auth.email == user_info.email)
-            .map(|auth| auth.refresh_token.clone())
-            .unwrap_or_default()
-    });
+    // Reuse existing refresh token if Google didn't send a new one
+    let existing_refresh = crate::db::load_tokens(&user_info.email)
+        .map(|(_, r)| r)
+        .unwrap_or_default();
+    let refresh_token = auth_resp.refresh_token.unwrap_or(existing_refresh);
 
-    let auth_info = crate::db::AuthInfo {
+    // Persist tokens to keyring
+    crate::db::save_tokens(&user_info.email, &auth_resp.access_token, &refresh_token)?;
+
+    // Create or update account record
+    let account = crate::db::upsert_account(&app, &user_info.email, &picture)?;
+
+    Ok(crate::db::AuthInfo {
         access_token: auth_resp.access_token,
         refresh_token,
-        email: user_info.email,
-        picture: user_info.picture.unwrap_or_default(),
-    };
-
-    crate::db::save_auth(&app, auth_info.clone())?;
-
-    Ok(auth_info)
+        email: account.email,
+        picture: account.picture,
+    })
 }
 
 async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<AuthResponse, String> {
@@ -296,12 +289,14 @@ async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<Auth
 }
 
 #[tauri::command]
-pub async fn refresh_access_token(app: tauri::AppHandle) -> Result<crate::db::AuthInfo, String> {
-    let existing = crate::db::get_auth_info(app.clone())
-        .map_err(|e| e.to_string())?
-        .ok_or("No stored auth info found")?;
+pub async fn refresh_access_token(
+    app: tauri::AppHandle,
+    account_id: String,
+) -> Result<crate::db::AuthInfo, String> {
+    let (_, refresh_token) = crate::db::load_tokens(&account_id)
+        .ok_or_else(|| "Oturum bilgisi bulunamadı. Lütfen tekrar giriş yapın.".to_string())?;
 
-    if existing.refresh_token.is_empty() {
+    if refresh_token.is_empty() {
         return Err("No refresh token available. Please login again.".into());
     }
 
@@ -315,7 +310,7 @@ pub async fn refresh_access_token(app: tauri::AppHandle) -> Result<crate::db::Au
     let params = [
         ("client_id", client_id.as_str()),
         ("client_secret", client_secret.as_str()),
-        ("refresh_token", existing.refresh_token.as_str()),
+        ("refresh_token", refresh_token.as_str()),
         ("grant_type", "refresh_token"),
     ];
 
@@ -332,14 +327,16 @@ pub async fn refresh_access_token(app: tauri::AppHandle) -> Result<crate::db::Au
     }
 
     let token_resp: AuthResponse = res.json().await.map_err(|e| e.to_string())?;
+    let new_refresh = token_resp.refresh_token.unwrap_or(refresh_token);
 
-    let updated = crate::db::AuthInfo {
+    crate::db::save_tokens(&account_id, &token_resp.access_token, &new_refresh)?;
+
+    let picture = crate::db::get_account_picture(&app, &account_id);
+
+    Ok(crate::db::AuthInfo {
         access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token.unwrap_or(existing.refresh_token),
-        email: existing.email,
-        picture: existing.picture,
-    };
-
-    crate::db::save_auth(&app, updated.clone())?;
-    Ok(updated)
+        refresh_token: new_refresh,
+        email: account_id,
+        picture,
+    })
 }
