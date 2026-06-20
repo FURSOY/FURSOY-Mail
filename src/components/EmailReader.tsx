@@ -1,14 +1,90 @@
-import { useRef, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import {
   CornerUpLeft, Inbox, Send, Archive, ShieldAlert, Trash2,
   Users, Forward, Eye, RotateCcw, Minus, Plus, Maximize2,
-  Settings, X, RefreshCw, Copy,
+  Settings, X, RefreshCw, Copy, ChevronDown, ChevronUp,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { tr } from "../i18n";
 import type { EmailSummary, MailViewMode, MailZoom, RenderMode } from "../types";
-import { formatDateFull } from "../utils";
+import { formatDateFull, buildRenderableEmailHtml } from "../utils";
 import { EmailHtmlView } from "./EmailHtmlView";
 import { ToolbarTip } from "./ToolbarTip";
+
+function ThreadEmailItem({
+  email,
+  renderMode,
+  onOpenUrl,
+  scrollRef,
+}: {
+  email: EmailSummary;
+  renderMode: RenderMode;
+  onOpenUrl: (url: string) => void;
+  scrollRef: React.RefObject<HTMLElement | null>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [body, setBody] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = async () => {
+    if (!expanded && body === null && !loading) {
+      setLoading(true);
+      try {
+        const raw = await invoke<string>("get_email_body", { id: email.id });
+        setBody(raw || "");
+      } catch {
+        setBody("");
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(e => !e);
+  };
+
+  const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
+  const html = body !== null ? buildRenderableEmailHtml(body, email.snippet, renderMode) : "";
+
+  return (
+    <div className="border border-white/[0.06] rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={toggle}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.02] transition-colors"
+      >
+        <div className="w-7 h-7 rounded-full bg-[var(--app-accent)] flex items-center justify-center text-white text-xs font-bold shrink-0">
+          {(senderName[0] || "?").toUpperCase()}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-medium text-zinc-300 truncate">{senderName}</span>
+            <span className="text-[10px] text-zinc-600 shrink-0">{formatDateFull(email.date)}</span>
+          </div>
+          {!expanded && (
+            <p className="text-[11px] text-zinc-600 truncate mt-0.5">{email.snippet}</p>
+          )}
+        </div>
+        {loading
+          ? <RefreshCw className="w-3.5 h-3.5 text-zinc-600 animate-spin shrink-0" />
+          : expanded
+            ? <ChevronUp className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+            : <ChevronDown className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+        }
+      </button>
+      {expanded && body !== null && (
+        <div className="bg-white rounded-b-lg overflow-hidden border-t border-black/5">
+          <EmailHtmlView
+            key={email.id}
+            html={html}
+            zoom="fit"
+            onFitScaleChange={() => {}}
+            onOpenUrl={onOpenUrl}
+            scrollRef={scrollRef}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface EmailReaderProps {
   className: string;
@@ -59,6 +135,7 @@ interface EmailReaderProps {
   onOpenUrl: (url: string) => void;
   mailScrollRef: React.RefObject<HTMLDivElement | null>;
   relayoutKey: string;
+  threadEmails: EmailSummary[];
 }
 
 export function EmailReader({
@@ -72,9 +149,12 @@ export function EmailReader({
   verificationCode, verificationCopyState, setVerificationCopyState,
   showArchiveBtn, showRestoreBtn, showTrashToBinBtn, showDeleteForeverBtn,
   onArchive, onTrash, onMoveToInbox, onPermanentDelete, onMarkAsUnread, onForward,
-  onOpenUrl, mailScrollRef, relayoutKey,
+  onOpenUrl, mailScrollRef, relayoutKey, threadEmails,
 }: EmailReaderProps) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
+
+  const senderName = activeMail.sender.split("<")[0].replace(/"/g, "").trim();
+  const senderEmail = activeMail.sender.match(/<([^>]+)>/)?.[1] ?? "";
 
   const openReply = (mode: "reply" | "reply-all") => {
     setReplyMode(mode);
@@ -390,14 +470,21 @@ export function EmailReader({
               </div>
               <div>
                 <div className="text-sm font-medium text-zinc-200">
-                  {activeMail.sender.split("<")[0].replace(/"/g, "").trim()}
+                  {senderName || senderEmail || "Unknown"}
                 </div>
+                {senderEmail && (
+                  <div className="text-[11px] text-zinc-500 mt-0.5 select-text">{senderEmail}</div>
+                )}
                 <div className="text-[11px] text-zinc-600 mt-0.5">
-                  {activeTab === "sent" ? "from me" : "to me"} · {formatDateFull(activeMail.date)}
+                  <span className="text-zinc-700">to:</span>{" "}
+                  {activeMail.recipient
+                    ? activeMail.recipient.split(",").map(r => r.split("<")[0].replace(/"/g, "").trim() || r.trim()).join(", ")
+                    : "me"
+                  } · {formatDateFull(activeMail.date)}
                 </div>
                 {activeMail.cc && (
                   <div className="text-[11px] text-zinc-600 mt-0.5">
-                    <span className="text-zinc-700">CC:</span> {activeMail.cc}
+                    <span className="text-zinc-700">cc:</span> {activeMail.cc}
                   </div>
                 )}
               </div>
@@ -470,6 +557,30 @@ export function EmailReader({
               </div>
             )}
           </div>
+
+          {/* Thread section */}
+          {threadEmails.length > 0 && (
+            <div className="mt-6">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="h-px flex-1 bg-white/[0.05]" />
+                <span className="text-[11px] text-zinc-600 shrink-0">
+                  {threadEmails.length} önceki mesaj
+                </span>
+                <div className="h-px flex-1 bg-white/[0.05]" />
+              </div>
+              <div className="space-y-2">
+                {threadEmails.map(email => (
+                  <ThreadEmailItem
+                    key={email.id}
+                    email={email}
+                    renderMode={renderMode}
+                    onOpenUrl={onOpenUrl}
+                    scrollRef={mailScrollRef as React.RefObject<HTMLElement | null>}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Reply Box */}
           {showReply && (

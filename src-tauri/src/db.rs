@@ -196,6 +196,20 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
         [],
     )?;
 
+    // Indexes for common queries
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emails_label_date ON emails(label, date DESC)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emails_account_label_date ON emails(account_id, label, date DESC)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emails_inbox_unread ON emails(label, unread, account_id)",
+        [],
+    )?;
+
     // Legacy auth table (kept for migration only)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS auth (
@@ -738,6 +752,29 @@ pub fn set_history_id(app: &AppHandle, account_id: &str, history_id: &str) -> Re
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_thread_emails(
+    app: tauri::AppHandle,
+    thread_id: String,
+    account_id: String,
+) -> Result<Vec<EmailSummary>, String> {
+    if thread_id.is_empty() {
+        return Ok(vec![]);
+    }
+    let db_path = get_db_path(&app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT {SUMMARY_COLS} FROM emails WHERE thread_id = ?1 AND account_id = ?2 ORDER BY date ASC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<EmailSummary> = stmt
+        .query_map(params![thread_id, account_id], map_summary_row)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
 }
 
 pub fn delete_emails_by_ids(app: &AppHandle, ids: &[String]) -> Result<(), String> {

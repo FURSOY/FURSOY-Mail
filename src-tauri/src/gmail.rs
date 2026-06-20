@@ -604,13 +604,20 @@ pub async fn archive_email(
         "removeLabelIds": ["INBOX"]
     });
 
-    client
+    let res = client
         .post(&url)
         .bearer_auth(&access_token)
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        return Err(format!(
+            "Gmail archive error: {}",
+            res.text().await.unwrap_or_default()
+        ));
+    }
 
     Ok(())
 }

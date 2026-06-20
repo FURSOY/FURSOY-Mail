@@ -158,6 +158,8 @@ export function EmailHtmlView({
       };
       doc.addEventListener("click", handleClick, true);
       doc.addEventListener("submit", handleSubmit, true);
+      const handleContextMenu = (e: Event) => e.preventDefault();
+      doc.addEventListener("contextmenu", handleContextMenu, true);
 
       innerCleanup = () => {
         cancelAnimationFrame(smoothRaf);
@@ -165,6 +167,7 @@ export function EmailHtmlView({
         doc.removeEventListener("wheel", handleWheel);
         doc.removeEventListener("click", handleClick, true);
         doc.removeEventListener("submit", handleSubmit, true);
+        doc.removeEventListener("contextmenu", handleContextMenu, true);
       };
     };
 

@@ -166,6 +166,7 @@ pub fn run() {
             db::get_emails_by_label,
             db::get_email_body,
             db::get_inbox_unread_count,
+            db::get_thread_emails,
             gmail::sync_emails,
             gmail::mark_as_read,
             gmail::mark_as_unread,
