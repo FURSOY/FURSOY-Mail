@@ -9,7 +9,7 @@ on:
       notes:
         description: "Release notes"
         required: false
-        default: "Full Turkish/English language switching: selecting a language in Settings now changes all UI text and OTP detection patterns simultaneously. Translated all previously hardcoded strings across toolbar tooltips, compose labels, view mode buttons, and sidebar. Fixed two Turkish strings hardcoded in the reply editor."
+        default: "Redesigned notification card layout: the copy button now sits inline next to the dismiss button, eliminating the extra row that caused the card to bloat in multi-account OTP mode. Also reduced padding and avatar size for a more compact appearance."
 
 permissions:
   contents: write
@@ -100,7 +100,7 @@ jobs:
         run: |
           $notes = $env:RELEASE_NOTES_INPUT
           if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = "Full Turkish/English language switching: selecting a language in Settings now changes all UI text and OTP detection patterns simultaneously. Translated all previously hardcoded strings across toolbar tooltips, compose labels, view mode buttons, and sidebar. Fixed two Turkish strings hardcoded in the reply editor."
+            $notes = "Redesigned notification card layout: the copy button now sits inline next to the dismiss button, eliminating the extra row that caused the card to bloat in multi-account OTP mode. Also reduced padding and avatar size for a more compact appearance."
           }
           Set-Content -Path RELEASE_NOTES.md -Value $notes -Encoding UTF8
 
