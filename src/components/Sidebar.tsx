@@ -106,11 +106,11 @@ export function Sidebar({
 
           <div className="flex-1 min-w-0">
             <div className={`text-xs font-medium truncate ${isExpired ? "text-orange-400" : isActive ? "text-zinc-100" : "text-zinc-300"}`}>
-              {isAll ? "Tüm hesaplar" : email.split("@")[0]}
+              {isAll ? "All accounts" : email.split("@")[0]}
             </div>
             {!isAll && (
               <div className={`text-[10px] truncate ${isExpired ? "text-orange-600" : "text-zinc-600"}`}>
-                {isExpired ? "Oturum sona erdi" : email}
+                {isExpired ? "Session expired" : email}
               </div>
             )}
           </div>
@@ -128,7 +128,7 @@ export function Sidebar({
                 <RefreshCw className="w-3 h-3" />
               </button>
               <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/relogin:opacity-100">
-                Yeniden giriş yap
+                Re-authenticate
               </span>
             </div>
           ) : (
@@ -141,7 +141,7 @@ export function Sidebar({
                 <LogOut className="w-3 h-3" />
               </button>
               <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/logout:opacity-100">
-                Hesaptan çıkış
+                Sign out
               </span>
             </div>
           )
@@ -200,7 +200,7 @@ export function Sidebar({
           ) : (
             <>
               {/* "All accounts" combined view — only when 2+ accounts */}
-              {accounts.length > 1 && accountItem(null, null, "Tüm hesaplar", true)}
+              {accounts.length > 1 && accountItem(null, null, "All accounts", true)}
 
               {/* Individual accounts */}
               {accounts.map(acc => accountItem(acc.id, acc.picture || null, acc.email))}
@@ -213,7 +213,7 @@ export function Sidebar({
                 <div className="w-7 h-7 rounded-full border border-dashed border-zinc-700 flex items-center justify-center shrink-0">
                   <Plus className="w-3.5 h-3.5" />
                 </div>
-                <span className="text-xs">Hesap ekle</span>
+                <span className="text-xs">Add account</span>
               </button>
             </>
           )}

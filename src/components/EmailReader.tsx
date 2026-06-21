@@ -289,9 +289,9 @@ export function EmailReader({
         attachmentDbId: att.id,
         accessToken,
       });
-      showToast(`${savedName} İndirilenlere kaydedildi`, "success");
+      showToast(`Saved to Downloads: ${savedName}`, "success");
     } catch (e) {
-      showToast("İndirme başarısız", "error");
+      showToast("Download failed", "error");
       console.error("Download failed:", e);
     } finally {
       setDownloadingId(null);
@@ -369,11 +369,11 @@ export function EmailReader({
     if (!files.length) return;
     setReplyAttachError(null);
     const blocked = files.filter(f => BLOCKED_EXT.has(f.name.split(".").pop()?.toLowerCase() ?? ""));
-    if (blocked.length) { setReplyAttachError(`Engellenen tür: ${blocked.map(f => f.name).join(", ")}`); return; }
+    if (blocked.length) { setReplyAttachError(`Blocked file type: ${blocked.map(f => f.name).join(", ")}`); return; }
     const existingBytes = replyAttachments.reduce((s, a) => s + a.size, 0);
     const newBytes = files.reduce((s, f) => s + f.size, 0);
     if (existingBytes + newBytes > MAX_ATT_BYTES) {
-      setReplyAttachError(`Toplam ek boyutu 20 MB'ı geçemez.`); return;
+      setReplyAttachError(`Total attachment size cannot exceed 20 MB.`); return;
     }
     files.forEach(file => {
       const reader = new FileReader();
@@ -428,7 +428,7 @@ export function EmailReader({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5" style={{ WebkitAppRegion: "no-drag" } as CSSProperties}>
-          <ToolbarTip label="Yanıtla">
+          <ToolbarTip label="Reply">
             <button
               type="button"
               onClick={() => openReply("reply")}
@@ -439,7 +439,7 @@ export function EmailReader({
               <CornerUpLeft className="w-4 h-4" />
             </button>
           </ToolbarTip>
-          <ToolbarTip label="Tümünü yanıtla">
+          <ToolbarTip label="Reply all">
             <button
               type="button"
               onClick={() => openReply("reply-all")}
@@ -450,39 +450,39 @@ export function EmailReader({
               <Users className="w-4 h-4" />
             </button>
           </ToolbarTip>
-          <ToolbarTip label="İlet">
+          <ToolbarTip label="Forward">
             <button type="button" onClick={onForward} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-zinc-200 transition-colors">
               <Forward className="w-4 h-4" />
             </button>
           </ToolbarTip>
-          <ToolbarTip label="Okunmadı olarak işaretle">
+          <ToolbarTip label="Mark as unread">
             <button type="button" onClick={onMarkAsUnread} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-zinc-200 transition-colors">
               <Eye className="w-4 h-4" />
             </button>
           </ToolbarTip>
           {showRestoreBtn && (
-            <ToolbarTip label={activeTab === "spam" ? "Spam değil (gelen kutusu)" : "Gelen kutusuna taşı"}>
+            <ToolbarTip label={activeTab === "spam" ? "Not spam (inbox)" : "Move to inbox"}>
               <button type="button" onClick={onMoveToInbox} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-emerald-400 transition-colors">
                 <RotateCcw className="w-4 h-4" />
               </button>
             </ToolbarTip>
           )}
           {showArchiveBtn && (
-            <ToolbarTip label="Arşivle">
+            <ToolbarTip label="Archive">
               <button type="button" onClick={onArchive} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-amber-400 transition-colors">
                 <Archive className="w-4 h-4" />
               </button>
             </ToolbarTip>
           )}
           {showTrashToBinBtn && (
-            <ToolbarTip label="Çöpe taşı">
+            <ToolbarTip label="Move to trash">
               <button type="button" onClick={onTrash} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-red-400 transition-colors">
                 <Trash2 className="w-4 h-4" />
               </button>
             </ToolbarTip>
           )}
           {showDeleteForeverBtn && (
-            <ToolbarTip label="Kalıcı olarak sil">
+            <ToolbarTip label="Delete permanently">
               <button type="button" onClick={onPermanentDelete} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-red-500 transition-colors">
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -576,7 +576,7 @@ export function EmailReader({
                   onClick={() => { setRenderMode(mode); localStorage.setItem("fursoy_render_mode", mode); }}
                   className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === mode ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                 >
-                  {mode === "full" ? "Tam HTML" : "Basit"}
+                  {mode === "full" ? "Full HTML" : "Simple"}
                 </button>
               ))}
             </div>
@@ -656,7 +656,7 @@ export function EmailReader({
                 className="min-w-[7.5rem] justify-center px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-xs font-semibold transition-colors flex items-center gap-2"
               >
                 <Copy className="w-3.5 h-3.5" />
-                {verificationCopyState === "copied" ? "Kopyalandı" : "Kopyala"}
+                {verificationCopyState === "copied" ? "Copied" : "Copy"}
               </button>
             </div>
           )}
@@ -688,34 +688,34 @@ export function EmailReader({
 
           {/* Mobile action buttons */}
           <div className="flex md:hidden items-center gap-1 mt-4">
-            <ToolbarTip label="Yanıtla">
+            <ToolbarTip label="Reply">
               <button type="button" onClick={() => setShowReply(!showReply)} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
                 <CornerUpLeft className="w-4 h-4" />
               </button>
             </ToolbarTip>
             {showRestoreBtn && (
-              <ToolbarTip label={activeTab === "spam" ? "Spam değil" : "Gelen kutusu"}>
+              <ToolbarTip label={activeTab === "spam" ? "Not spam" : "Inbox"}>
                 <button type="button" onClick={onMoveToInbox} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
                   <RotateCcw className="w-4 h-4" />
                 </button>
               </ToolbarTip>
             )}
             {showArchiveBtn && (
-              <ToolbarTip label="Arşivle">
+              <ToolbarTip label="Archive">
                 <button type="button" onClick={onArchive} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
                   <Archive className="w-4 h-4" />
                 </button>
               </ToolbarTip>
             )}
             {showTrashToBinBtn && (
-              <ToolbarTip label="Çöpe taşı">
+              <ToolbarTip label="Move to trash">
                 <button type="button" onClick={onTrash} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </ToolbarTip>
             )}
             {showDeleteForeverBtn && (
-              <ToolbarTip label="Kalıcı sil">
+              <ToolbarTip label="Delete">
                 <button type="button" onClick={onPermanentDelete} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -734,7 +734,7 @@ export function EmailReader({
                 }
                 <span className="text-xs text-zinc-400 truncate">
                   {replyMode === "reply-all" ? (
-                    <>Tümüne yanıtla: <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}{activeMail.cc ? `, ${activeMail.cc}` : ""}</span></>
+                    <>Reply all: <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}{activeMail.cc ? `, ${activeMail.cc}` : ""}</span></>
                   ) : (
                     <>{tr.mail.replyTo} <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}</span></>
                   )}
@@ -792,13 +792,13 @@ export function EmailReader({
                             type="button"
                             onClick={() => setLinkPopover(false)}
                             className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                          >İptal</button>
+                          >Cancel</button>
                           <button
                             type="button"
                             onClick={applyLink}
                             disabled={!linkUrl}
                             className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors"
-                          >Uygula</button>
+                          >Apply</button>
                         </div>
                       </div>
                     </div>
@@ -815,10 +815,10 @@ export function EmailReader({
                   </button>
                   <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
                   {([
-                    { cmd: "bold",          label: "B",  cls: "font-bold",      title: "Kalın" },
-                    { cmd: "italic",        label: "I",  cls: "italic",         title: "İtalik" },
-                    { cmd: "underline",     label: "U",  cls: "underline",      title: "Altçizgi" },
-                    { cmd: "strikeThrough", label: "S",  cls: "line-through",   title: "Üstçizgi" },
+                    { cmd: "bold",          label: "B",  cls: "font-bold",      title: "Bold" },
+                    { cmd: "italic",        label: "I",  cls: "italic",         title: "Italic" },
+                    { cmd: "underline",     label: "U",  cls: "underline",      title: "Underline" },
+                    { cmd: "strikeThrough", label: "S",  cls: "line-through",   title: "Strikethrough" },
                   ] as const).map(({ cmd, label, cls, title }) => (
                     <button
                       key={cmd}
@@ -835,7 +835,7 @@ export function EmailReader({
 
                   <button
                     type="button"
-                    title="Bağlantı ekle"
+                    title="Insert link"
                     onMouseDown={e => {
                       e.preventDefault();
                       saveSelection();
@@ -853,7 +853,7 @@ export function EmailReader({
 
                   <button
                     type="button"
-                    title="Numaralı liste"
+                    title="Numbered list"
                     onMouseDown={e => { e.preventDefault(); applyFormat("insertOrderedList"); }}
                     className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors"
                   >
@@ -861,7 +861,7 @@ export function EmailReader({
                   </button>
                   <button
                     type="button"
-                    title="Madde işareti listesi"
+                    title="Bullet list"
                     onMouseDown={e => { e.preventDefault(); applyFormat("insertUnorderedList"); }}
                     className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors"
                   >
@@ -898,7 +898,7 @@ export function EmailReader({
                   {/* Paperclip */}
                   <button
                     type="button"
-                    title="Dosya ekle"
+                    title="Attach file"
                     onClick={() => replyFileInputRef.current?.click()}
                     className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors"
                   >
@@ -909,7 +909,7 @@ export function EmailReader({
                   {/* Formatting toggle */}
                   <button
                     type="button"
-                    title="Biçimlendirme"
+                    title="Formatting"
                     onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                     className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${
                       showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"
