@@ -54,21 +54,21 @@ export function EmailList({
           </h2>
           {isUserSyncing && (
             <span className="text-[10px] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">
-              Senkronize…
+              Syncing…
             </span>
           )}
           {isBackgroundSyncing && !isUserSyncing && (
-            <span className="text-[10px] text-zinc-600 font-medium">Arka planda güncelleniyor</span>
+            <span className="text-[10px] text-zinc-600 font-medium">Updating in background</span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <div className="inline-flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
             {(
               [
-                ["auto", Settings, "Otomatik"],
-                ["split", Columns2, "Yan yana"],
-                ["single-toggle", PanelLeft, "Dar menu"],
-                ["inbox-first", Rows3, "Liste odakli"],
+                ["auto", Settings, "Auto"],
+                ["split", Columns2, "Side by side"],
+                ["single-toggle", PanelLeft, "Compact"],
+                ["inbox-first", Rows3, "List focus"],
               ] as const
             ).map(([mode, Icon, label]) => (
               <button
@@ -87,7 +87,7 @@ export function EmailList({
               </button>
             ))}
           </div>
-          <ToolbarTip label="Gelen kutusunu sunucudan yenile">
+          <ToolbarTip label="Force refresh from server">
             <button
               type="button"
               onClick={onRefresh}

@@ -168,7 +168,7 @@ export function ComposeModal({
       return BLOCKED_EXTENSIONS.has(ext);
     });
     if (blocked.length > 0) {
-      setAttachError(`Engellenen dosya türü: ${blocked.map(f => f.name).join(", ")}`);
+      setAttachError(`Blocked file type: ${blocked.map(f => f.name).join(", ")}`);
       return;
     }
 
@@ -177,7 +177,7 @@ export function ComposeModal({
     const newBytes = files.reduce((s, f) => s + f.size, 0);
     if (existingBytes + newBytes > MAX_TOTAL_BYTES) {
       const remainingMB = ((MAX_TOTAL_BYTES - existingBytes) / (1024 * 1024)).toFixed(1);
-      setAttachError(`Toplam ek boyutu 20 MB'ı geçemez. Kalan: ${remainingMB} MB`);
+      setAttachError(`Total attachment size cannot exceed 20 MB. Remaining: ${remainingMB} MB`);
       return;
     }
 
@@ -267,7 +267,7 @@ export function ComposeModal({
       <div className="w-full max-w-lg bg-[#111113] border border-white/10 rounded-xl shadow-2xl flex flex-col overflow-hidden" style={{ height: "min(560px, 90vh)" }}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-          <h3 className="text-sm font-semibold text-zinc-200">{composeHtmlAppend ? "İlet" : tr.compose.title}</h3>
+          <h3 className="text-sm font-semibold text-zinc-200">{composeHtmlAppend ? "Forward" : tr.compose.title}</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-zinc-400 transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -282,7 +282,7 @@ export function ComposeModal({
                 onClick={() => setFromOpen(o => !o)}
                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors text-left"
               >
-                <span className="text-[10px] text-zinc-600 shrink-0 w-10">Kimden</span>
+                <span className="text-[10px] text-zinc-600 shrink-0 w-10">From</span>
                 {activeAccount?.picture ? (
                   <img src={activeAccount.picture} className="w-5 h-5 rounded-full shrink-0" alt="" />
                 ) : (
@@ -324,14 +324,14 @@ export function ComposeModal({
           {/* To */}
           <div className="relative">
             <div className="relative flex items-center">
-              <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">Kime</span>
+              <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">To</span>
               <input
                 ref={toRef}
                 value={composeTo}
                 onChange={e => handleToChange(e.target.value)}
                 onKeyDown={handleToKeyDown}
                 onFocus={() => { if (suggestions.length > 0) setSuggOpen(true); }}
-                placeholder="ornek@gmail.com"
+                placeholder="example@gmail.com"
                 autoComplete="off"
                 spellCheck={false}
                 className={`${ui.input} pl-12`}
@@ -365,11 +365,11 @@ export function ComposeModal({
 
           {/* Subject */}
           <div className="relative flex items-center">
-            <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">Konu</span>
+            <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">Subject</span>
             <input
               value={composeSubject}
               onChange={e => setComposeSubject(e.target.value)}
-              placeholder="E-posta konusu"
+              placeholder="Email subject"
               className={`${ui.input} pl-12`}
             />
           </div>
@@ -433,9 +433,9 @@ export function ComposeModal({
                         className="w-full bg-white/[0.05] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 placeholder:text-zinc-600"
                         onKeyDown={e => e.key === "Enter" && applyLink()} />
                       <div className="flex gap-2 justify-end pt-0.5">
-                        <button type="button" onClick={() => setLinkPopover(false)} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">İptal</button>
+                        <button type="button" onClick={() => setLinkPopover(false)} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Cancel</button>
                         <button type="button" onClick={applyLink} disabled={!linkUrl}
-                          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors">Uygula</button>
+                          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors">Apply</button>
                       </div>
                     </div>
                   </div>
@@ -450,10 +450,10 @@ export function ComposeModal({
                 </button>
                 <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
                 {([
-                  { cmd: "bold",          label: "B", cls: "font-bold",    title: "Kalın" },
-                  { cmd: "italic",        label: "I", cls: "italic",       title: "İtalik" },
-                  { cmd: "underline",     label: "U", cls: "underline",    title: "Altçizgi" },
-                  { cmd: "strikeThrough", label: "S", cls: "line-through", title: "Üstçizgi" },
+                  { cmd: "bold",          label: "B", cls: "font-bold",    title: "Bold" },
+                  { cmd: "italic",        label: "I", cls: "italic",       title: "Italic" },
+                  { cmd: "underline",     label: "U", cls: "underline",    title: "Underline" },
+                  { cmd: "strikeThrough", label: "S", cls: "line-through", title: "Strikethrough" },
                 ] as const).map(({ cmd, label, cls, title }) => (
                   <button key={cmd} type="button" title={title}
                     onMouseDown={e => { e.preventDefault(); applyFormat(cmd); }}
@@ -462,18 +462,18 @@ export function ComposeModal({
                   </button>
                 ))}
                 <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
-                <button type="button" title="Bağlantı ekle"
+                <button type="button" title="Insert link"
                   onMouseDown={e => { e.preventDefault(); saveSelection(); setLinkUrl(""); setLinkPopover(v => !v); }}
                   className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${linkPopover ? "text-blue-400 bg-blue-500/10" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"}`}>
                   <Link2 className="w-3.5 h-3.5" />
                 </button>
                 <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
-                <button type="button" title="Numaralı liste"
+                <button type="button" title="Numbered list"
                   onMouseDown={e => { e.preventDefault(); applyFormat("insertOrderedList"); }}
                   className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors">
                   <ListOrdered className="w-3.5 h-3.5" />
                 </button>
-                <button type="button" title="Madde işareti"
+                <button type="button" title="Bullet list"
                   onMouseDown={e => { e.preventDefault(); applyFormat("insertUnorderedList"); }}
                   className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors">
                   <List className="w-3.5 h-3.5" />
@@ -483,12 +483,12 @@ export function ComposeModal({
 
             {/* Bottom bar — paperclip + format toggle */}
             <div className="px-2 py-1.5 border-t border-white/[0.06] flex items-center gap-1 shrink-0">
-              <button type="button" title="Dosya ekle" onClick={() => fileInputRef.current?.click()}
+              <button type="button" title="Attach file" onClick={() => fileInputRef.current?.click()}
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors">
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
               <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
-              <button type="button" title="Biçimlendirme"
+              <button type="button" title="Formatting"
                 onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                 className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"}`}>
                 <Type className="w-3.5 h-3.5" />
