@@ -37,10 +37,10 @@
 
     /* ── Single notification card ── */
     .card {
-      padding: 12px 14px;
+      padding: 10px 12px;
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      gap: 8px;
+      align-items: center;
       cursor: pointer;
       position: relative;
       animation: fadeIn 0.2s ease;
@@ -53,7 +53,7 @@
       pointer-events: none;
     }
 
-    .card+.card {
+    .card + .card {
       border-top: 1px solid rgba(255, 255, 255, 0.06);
     }
 
@@ -61,128 +61,100 @@
       background: #1f1808;
     }
 
-    .card.update+.card,
-    .card+.card.update {
+    .card.update + .card,
+    .card + .card.update {
       border-top-color: rgba(245, 158, 11, 0.18);
     }
 
     @keyframes fadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(6px);
-      }
-
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
 
-    .card-top {
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-    }
-
-    .icon-circle {
-      width: 30px;
-      height: 30px;
+    /* Avatar / icon */
+    .avatar {
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
+      flex-shrink: 0;
       background: rgba(59, 130, 246, 0.15);
       color: #60a5fa;
       display: flex;
       align-items: center;
       justify-content: center;
-      flex-shrink: 0;
     }
 
-    .card.update .icon-circle {
+    .card.update .avatar {
       background: rgba(245, 158, 11, 0.18);
       color: #fbbf24;
     }
 
+    /* Text block */
     .text-area {
-      overflow: hidden;
       flex: 1;
-      padding-right: 18px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .title {
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       color: #f4f4f5;
+      line-height: 1.3;
     }
 
     .card.update .title {
       color: #fff7ed;
     }
 
-    .body {
-      font-size: 11.5px;
-      color: #a1a1aa;
-      margin-top: 2px;
+    .to-line {
+      font-size: 10px;
+      color: #52525b;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      line-height: 1.3;
+    }
+
+    .body {
+      font-size: 11px;
+      color: #71717a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.3;
     }
 
     .card.update .body {
       color: #fcd9a8;
     }
 
-    /* Close button */
-    .close-btn {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      width: 20px;
-      height: 20px;
+    /* Right-side actions */
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    /* Copy button */
+    .code-btn {
+      padding: 3px 8px;
       border: none;
       border-radius: 5px;
-      background: transparent;
-      color: #52525b;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      line-height: 1;
-      transition: all 0.15s;
-    }
-
-    .close-btn:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: #d4d4d8;
-    }
-
-    /* Code copy button — bottom right of card */
-    .code-row {
-      display: none;
-      justify-content: flex-end;
-      align-items: center;
-      padding-right: 2px;
-    }
-
-    .code-row.visible {
-      display: flex;
-    }
-
-    .code-btn {
-      padding: 4px 10px;
-      border: none;
-      border-radius: 6px;
       background: rgba(59, 130, 246, 0.12);
       color: #60a5fa;
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 600;
       cursor: pointer;
       display: flex;
-      gap: 5px;
+      gap: 4px;
       align-items: center;
       transition: all 0.15s;
+      white-space: nowrap;
     }
 
     .code-btn:hover {
@@ -190,15 +162,38 @@
       color: #93bbfd;
     }
 
+    /* Close button */
+    .close-btn {
+      width: 18px;
+      height: 18px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #52525b;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      line-height: 1;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: #d4d4d8;
+    }
+
     /* Dismiss all bar */
     #dismissAll {
       display: none;
       justify-content: center;
       align-items: center;
-      padding: 6px 0;
+      padding: 5px 0;
       border-top: 1px solid rgba(255, 255, 255, 0.06);
       cursor: pointer;
-      font-size: 11px;
+      font-size: 10.5px;
       color: #52525b;
       transition: color 0.15s;
     }
@@ -240,7 +235,7 @@
     import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
     const win = getCurrentWindow();
-    const notifications = [];  // { id, title, body, code, emailId, kind }
+    const notifications = [];
     let nextId = 0;
     let screenW = 1920, screenH = 1080;
     const WIN_W = 340;
@@ -248,8 +243,8 @@
 
     // ── Global timer state ──
     let globalTimer = null;
-    let timerStartedAt = 0;  // Date.now() when timer was started
-    let timerDuration = 0;   // total ms for this timer run
+    let timerStartedAt = 0;
+    let timerDuration = 0;
 
     // ── Get screen info ──
     try {
@@ -261,8 +256,7 @@
 
     // ── Resize window to fit content ──
     async function resizeWindow() {
-      const count = notifications.length;
-      if (count === 0) return;
+      if (notifications.length === 0) return;
 
       await new Promise(r => requestAnimationFrame(r));
       const stack = document.getElementById('stack');
@@ -285,21 +279,18 @@
     function startProgressBar(durationMs, kind = 'mail') {
       const bar = document.getElementById('progressBar');
       bar.className = kind === 'update' ? 'update' : '';
-      // Reset to full width instantly
       bar.style.transition = 'none';
       bar.style.width = '100%';
-      void bar.offsetWidth; // force reflow
-      // Animate to 0 over the duration
+      void bar.offsetWidth;
       bar.style.transition = `width ${durationMs}ms linear`;
       bar.style.width = '0%';
     }
 
-    // ── Global timer: start or extend ──
+    // ── Global timer ──
     function extendTimer(addMs, kind = 'mail') {
       const now = Date.now();
       let remaining = 0;
       if (globalTimer) {
-        // Calculate how much time is left
         const elapsed = now - timerStartedAt;
         remaining = Math.max(timerDuration - elapsed, 0);
         clearTimeout(globalTimer);
@@ -312,10 +303,7 @@
     }
 
     function clearGlobalTimer() {
-      if (globalTimer) {
-        clearTimeout(globalTimer);
-        globalTimer = null;
-      }
+      if (globalTimer) { clearTimeout(globalTimer); globalTimer = null; }
       timerDuration = 0;
       timerStartedAt = 0;
     }
@@ -329,41 +317,42 @@
         const card = document.createElement('div');
         card.className = `card ${n.kind === 'update' ? 'update' : ''}`;
         card.dataset.id = n.id;
+
         const iconSvg = n.kind === 'update'
-          ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3v12"/>
-              <path d="m7 10 5 5 5-5"/>
-              <path d="M5 21h14"/>
-            </svg>`
-          : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
+             </svg>`
+          : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
               <polyline points="22,6 12,13 2,6"/>
-            </svg>`;
+             </svg>`;
 
         const isMulti = n.kind !== 'update' && n.multiAccount;
         const avatarHtml = isMulti && n.accountPicture
-          ? `<img src="${escAttr(n.accountPicture)}" style="width:30px;height:30px;border-radius:50%;flex-shrink:0;object-fit:cover;" alt="" />`
-          : `<div class="icon-circle">${iconSvg}</div>`;
+          ? `<img src="${escAttr(n.accountPicture)}" style="width:26px;height:26px;border-radius:50%;flex-shrink:0;object-fit:cover;" alt="" />`
+          : `<div class="avatar">${iconSvg}</div>`;
 
         const toLineHtml = isMulti && n.accountId
-          ? `<div style="font-size:10.5px;color:#52525b;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">to: ${esc(n.accountId)}</div>`
+          ? `<div class="to-line">to: ${esc(n.accountId)}</div>`
+          : '';
+
+        const copyBtnHtml = n.code
+          ? `<button class="code-btn" data-id="${n.id}" data-code="${escAttr(n.code || '')}">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Kopyala (${esc(n.code || '')})
+             </button>`
           : '';
 
         card.innerHTML = `
-          <button class="close-btn" data-id="${n.id}">&times;</button>
-          <div class="card-top">
-            ${avatarHtml}
-            <div class="text-area">
-              <div class="title">${esc(n.title)}</div>
-              ${toLineHtml}
-              <div class="body">${esc(n.body)}</div>
-            </div>
+          ${avatarHtml}
+          <div class="text-area">
+            <div class="title">${esc(n.title)}</div>
+            ${toLineHtml}
+            <div class="body">${esc(n.body)}</div>
           </div>
-          <div class="code-row ${n.code ? 'visible' : ''}">
-            <button class="code-btn" data-id="${n.id}" data-code="${escAttr(n.code || '')}">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Kopyala (${esc(n.code || '')})
-            </button>
+          <div class="actions">
+            ${copyBtnHtml}
+            <button class="close-btn" data-id="${n.id}">&times;</button>
           </div>
         `;
 
@@ -400,7 +389,13 @@
       if (!data) return;
       const id = nextId++;
       const kind = data.kind === 'update' ? 'update' : 'mail';
-      notifications.push({ id, title: data.title, body: data.body, code: data.code || null, emailId: data.emailId || null, kind, accountId: data.accountId || null, accountPicture: data.accountPicture || null, multiAccount: !!data.multiAccount });
+      notifications.push({
+        id, title: data.title, body: data.body, code: data.code || null,
+        emailId: data.emailId || null, kind,
+        accountId: data.accountId || null,
+        accountPicture: data.accountPicture || null,
+        multiAccount: !!data.multiAccount,
+      });
       render();
 
       const duration = data.duration !== undefined ? data.duration : 5000;
@@ -417,7 +412,7 @@
       await win.show();
     }
 
-    // ── Dismiss one with animation (timer continues unchanged) ──
+    // ── Dismiss one ──
     function dismissById(id) {
       const idx = notifications.findIndex(n => n.id === id);
       if (idx === -1) return;
@@ -450,7 +445,7 @@
       win.hide();
     }
 
-    // ── Open mail + dismiss that card ──
+    // ── Open mail + dismiss ──
     function openMailAndDismiss(id) {
       const notification = notifications.find(n => n.id === id);
       if (notification && notification.kind === 'update') {
@@ -466,13 +461,12 @@
       dismissById(id);
     }
 
-    // ── Copy code + dismiss that card ──
+    // ── Copy code + dismiss ──
     function copyAndDismiss(id, code) {
       if (code) writeText(code).catch(() => {});
       dismissById(id);
     }
 
-    // ── Dismiss All button ──
     document.getElementById('dismissAll').addEventListener('click', dismissAll);
 
     // ── Init ──
