@@ -257,7 +257,7 @@ function App() {
     // Per-account notification (only when single account expires, not via markSessionExpired)
     if (showMessage) {
       const email = accountsRef.current.find(a => a.id === accountId)?.email ?? accountId;
-      showToast(`${email} oturumu sona erdi. Yeniden giriş yapın.`, "error");
+      showToast(`${email} session expired. Please sign in again.`, "error");
     }
 
     // All accounts expired → banner + stop sync
@@ -324,19 +324,19 @@ function App() {
         setUpdateAvailable({ version: update.version, date: update.date || "", body: update.body || "" });
         setUpdateStatus(tr.update.available.replace("{version}", update.version));
         if (showUIMessages) {
-          showToast(`Yeni bir güncelleme mevcut: v${update.version}`, "info");
+          showToast(`New update available: v${update.version}`, "info");
         } else if (notifiedUpdateVersionRef.current !== update.version) {
           notifiedUpdateVersionRef.current = update.version;
           await invoke("show_custom_notification", {
-            title: "FURSOY Mail güncellemesi hazır",
-            body: `v${update.version} sürümü indirilebilir. Güncelleme ekranını açmak için tıklayın.`,
+            title: "FURSOY Mail update ready",
+            body: `v${update.version} is available. Click to open the update screen.`,
             kind: "update", code: null, emailId: null, duration: 10000,
           });
         }
       } else {
         setUpdateAvailable(null);
         setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast("Mevcut sürüm güncel.", "success");
+        if (showUIMessages) showToast("Already up to date.", "success");
       }
     } catch (e) {
       console.error("Update check failed:", e);
@@ -344,13 +344,13 @@ function App() {
         setUpdateAvailable(null);
         setUpdateError(null);
         setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast("Mevcut sürüm güncel.", "success");
+        if (showUIMessages) showToast("Already up to date.", "success");
         return;
       }
       const message = e instanceof Error ? e.message : String(e);
       setUpdateError(`${tr.update.checkFailed}: ${message}`);
       setUpdateStatus("");
-      if (showUIMessages) showToast("Güncelleme kontrolü başarısız.", "error");
+      if (showUIMessages) showToast("Update check failed.", "error");
     } finally {
       if (showUIMessages) setIsCheckingUpdate(false);
     }
@@ -518,7 +518,7 @@ function App() {
     } catch (e) {
       console.error("Failed to update app controls:", e);
       setAppControls(previous);
-      showToast(`Ayar kaydedilemedi: ${e}`, "error");
+      showToast(`Setting could not be saved: ${e}`, "error");
     }
   };
 
@@ -570,7 +570,7 @@ function App() {
         const account = accountsRef.current.find(a => a.id === email.account_id);
         await invoke("show_custom_notification", {
           title: senderName.slice(0, 64),
-          body: (email.subject || email.snippet || "").trim().slice(0, 100) || "Yeni ileti",
+          body: (email.subject || email.snippet || "").trim().slice(0, 100) || "New message",
           kind: "mail",
           code: code || null,
           emailId: email.id,
@@ -678,7 +678,7 @@ function App() {
       console.error("Background sync failed:", e);
       if (isAuthFailure(e)) { markSessionExpired(); return false; }
       const msg = e instanceof Error ? e.message : String(e);
-      showToast(`Senkronizasyon başarısız: ${msg}`, "error");
+      showToast(`Sync failed: ${msg}`, "error");
       return false;
     } finally {
       if (userInitiated) setIsUserSyncing(false);
@@ -854,7 +854,7 @@ function App() {
       const ok = await backgroundSyncRef.current({ userInitiated: true });
       if (ok) {
         setAuthStatus(tr.auth.syncComplete);
-        showToast("Giriş başarılı!", "success");
+        showToast("Signed in!", "success");
       } else {
         setAuthStatus(tr.auth.syncFailedAfterLogin);
       }
@@ -862,7 +862,7 @@ function App() {
     } catch (e) {
       setAuthStatus("Error: " + e);
       setIsUserSyncing(false);
-      showToast("Giriş başarısız: " + e, "error");
+      showToast("Sign-in failed: " + e, "error");
     }
   }
 
@@ -904,10 +904,10 @@ function App() {
         await loadEmails(activeTabRef.current);
         await refreshUnreadCount();
       }
-      showToast("Hesaptan çıkış yapıldı", "success");
+      showToast("Signed out", "success");
     } catch (e) {
       console.error("Logout failed:", e);
-      showToast("Çıkış başarısız: " + e, "error");
+      showToast("Sign-out failed: " + e, "error");
     }
   }
 
@@ -933,16 +933,16 @@ function App() {
 
   const handleRefresh = async () => {
     if (Object.keys(accountTokensRef.current).length === 0) {
-      showToast("Önce giriş yapın.", "error");
+      showToast("Please sign in first.", "error");
       return;
     }
-    setAuthStatus("Senkronize ediliyor...");
+    setAuthStatus("Syncing...");
     const ok = await backgroundSyncRef.current({ userInitiated: true });
     if (ok) {
-      setAuthStatus("Güncel.");
-      showToast("Mailler güncellendi", "success");
+      setAuthStatus("Up to date.");
+      showToast("Inbox updated", "success");
     } else {
-      setAuthStatus("Senkronizasyon başarısız. Ağ veya oturumu kontrol edin.");
+      setAuthStatus("Sync failed. Check your network or session.");
     }
   };
 
@@ -973,7 +973,7 @@ function App() {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
-      showToast("Arşivleme başarısız", "error");
+      showToast("Archive failed", "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -989,7 +989,7 @@ function App() {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
-      showToast("Silme başarısız", "error");
+      showToast("Delete failed", "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -1002,11 +1002,11 @@ function App() {
     setSelectedMail(null);
     try {
       await invoke("move_to_inbox", { accessToken: token, messageId: emailId });
-      showToast("Gelen kutusuna taşındı", "success");
+      showToast("Moved to inbox", "success");
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
     } catch {
-      showToast("Taşıma başarısız", "error");
+      showToast("Move failed", "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -1016,15 +1016,15 @@ function App() {
     const token = getTokenForEmail(mail);
     if (!token) return;
     setConfirmModal({
-      message: "Bu e-posta kalıcı olarak silinsin mi? Bu işlem geri alınamaz.",
+      message: "Permanently delete this email? This cannot be undone.",
       onConfirm: async () => {
         setEmails(prev => prev.filter(e => e.id !== emailId));
         setSelectedMail(null);
         try {
           await invoke("permanently_delete", { accessToken: token, messageId: emailId });
-          showToast("Kalıcı olarak silindi", "success");
+          showToast("Permanently deleted", "success");
         } catch {
-          showToast("Silme başarısız", "error");
+          showToast("Delete failed", "error");
           loadEmails(activeTabRef.current);
         }
       },
@@ -1073,7 +1073,7 @@ function App() {
       setShowReply(false);
       setThreadRefreshKey(k => k + 1);
     } catch {
-      showToast("Yanıt gönderilemedi", "error");
+      showToast("Failed to send reply", "error");
     }
     setIsSending(false);
   };
@@ -1081,7 +1081,7 @@ function App() {
   const handleComposeSend = async (attachments: import("./types").AttachmentPayload[], body: string) => {
     if (!composeTo.trim() || !composeSubject.trim()) return;
     const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
-    if (!sendFromId) { setComposeSendError("Gönderecek hesap bulunamadı."); return; }
+    if (!sendFromId) { setComposeSendError("No account found to send from."); return; }
 
     setComposeSendError(null);
     setIsSending(true);
@@ -1097,7 +1097,7 @@ function App() {
         expiredAccountsRef.current.delete(sendFromId);
         setExpiredAccountIds(new Set(expiredAccountsRef.current));
       } catch {
-        setComposeSendError("Oturum süresi dolmuş. Lütfen hesabınıza tekrar giriş yapın.");
+        setComposeSendError("Session expired. Please sign in to your account again.");
         setIsSending(false);
         return;
       }
@@ -1112,16 +1112,16 @@ function App() {
       setComposeBody("");
       setComposeHtmlAppend("");
       setComposeSendError(null);
-      showToast("E-posta gönderildi", "success");
+      showToast("Email sent", "success");
     } catch (e) {
       const raw = String(e);
       // Token expired mid-send → mark expired
       if (isAuthFailure(raw)) {
         markAccountExpired(sendFromId);
-        setComposeSendError("Oturum süresi doldu. Lütfen tekrar giriş yapın.");
+        setComposeSendError("Session expired. Please sign in again.");
       } else {
         const msg = raw.replace(/^Error:\s*/i, "").replace(/Gmail send error:\s*/i, "");
-        setComposeSendError(msg || "Gönderim başarısız. Lütfen tekrar deneyin.");
+        setComposeSendError(msg || "Send failed. Please try again.");
       }
     }
     setIsSending(false);
@@ -1137,13 +1137,13 @@ function App() {
       await invoke("mark_as_unread", { accessToken: token, messageId: emailId });
       await refreshUnreadCount();
     } catch {
-      showToast("İşlem başarısız", "error");
+      showToast("Operation failed", "error");
       loadEmails(activeTabRef.current);
     }
   };
 
   const handleForward = (mail: EmailSummary) => {
-    const fwdHeader = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- İletilen Mesaj ----------</b><br/>Kimden: ${mail.sender}<br/>Konu: ${mail.subject}<br/>Tarih: ${formatDateFull(mail.date)}<br/><br/></div>`;
+    const fwdHeader = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- Forwarded Message ----------</b><br/>From: ${mail.sender}<br/>Subject: ${mail.subject}<br/>Date: ${formatDateFull(mail.date)}<br/><br/></div>`;
     setComposeTo("");
     setComposeSubject(`Fwd: ${mail.subject.replace(/^(Fwd:\s*)+/i, "")}`);
     setComposeBody("");
@@ -1337,7 +1337,7 @@ function App() {
             onClick={() => setMobileMenuOpen(open => !open)}
             className="hidden"
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            aria-label="Menüyü aç"
+            aria-label="Open menu"
           >
             <Menu className="h-4 w-4" />
           </button>
@@ -1542,14 +1542,14 @@ function App() {
           <div className="flex items-center gap-2 text-white text-xs font-medium">
             <AlertTriangle className="w-3.5 h-3.5" />
             {accounts.length > 1
-              ? `${[...expiredAccountIds].map(id => accounts.find(a => a.id === id)?.email ?? id).join(", ")} oturumu sona erdi — hangi hesapla giriş yaparsanız o hesap yenilenir`
+              ? `${[...expiredAccountIds].map(id => accounts.find(a => a.id === id)?.email ?? id).join(", ")} session expired — signing in to any account will refresh it`
               : AUTH_RELOGIN_MESSAGE}
           </div>
           <button
             onClick={loginWithGoogle}
             className="px-3 py-1 bg-white text-red-600 text-xs font-semibold rounded hover:bg-red-50 transition-colors"
           >
-            Giriş Yap
+            Sign In
           </button>
         </div>
       )}

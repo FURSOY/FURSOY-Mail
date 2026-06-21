@@ -128,8 +128,8 @@ export function SettingsPanel({
               type="button"
               onClick={onMenuOpen}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
-              aria-label="Menuyu ac"
-              title="Menuyu ac"
+              aria-label="Open menu"
+              title="Open menu"
             >
               <Menu className="h-4 w-4" />
             </button>
@@ -140,8 +140,8 @@ export function SettingsPanel({
         <div className="space-y-8">
           {/* Accounts */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Hesaplar</h3>
-            <p className="text-xs text-zinc-500 mb-4">Hesapları sürükleyerek sıralayabilirsiniz. En üstteki hesap uygulama açılışında otomatik seçilir.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Accounts</h3>
+            <p className="text-xs text-zinc-500 mb-4">Drag to reorder accounts. The top account is selected automatically on startup.</p>
             <div className="space-y-1.5">
               {accounts.map((acc, i) => (
                 <div
@@ -168,7 +168,7 @@ export function SettingsPanel({
                     <div className="text-sm font-medium text-zinc-200 truncate">{acc.email.split("@")[0]}</div>
                     <div className="text-xs text-zinc-500 truncate">{acc.email}</div>
                     {i === 0 && (
-                      <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">Birincil hesap</div>
+                      <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">Primary account</div>
                     )}
                   </div>
                   <button
@@ -176,7 +176,7 @@ export function SettingsPanel({
                     className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors shrink-0"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    Çıkış
+                    Sign out
                   </button>
                 </div>
               ))}
@@ -185,7 +185,7 @@ export function SettingsPanel({
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-dashed border-white/10 text-zinc-500 hover:text-zinc-300 hover:border-white/20 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span className="text-sm">Hesap ekle</span>
+                <span className="text-sm">Add account</span>
               </button>
             </div>
           </div>
@@ -249,8 +249,8 @@ export function SettingsPanel({
 
           {/* Sync Interval */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Senkronizasyon Sıklığı</h3>
-            <p className="text-xs text-zinc-500 mb-4">Her senkronizasyon tamamlandıktan sonra kaç saniye bekleyip tekrar çekileceğini belirleyin.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Sync Frequency</h3>
+            <p className="text-xs text-zinc-500 mb-4">How many seconds to wait between sync cycles.</p>
             <div className="flex items-center gap-3">
               <input
                 type="number"
@@ -264,7 +264,7 @@ export function SettingsPanel({
                 }}
                 className="w-24 bg-[#09090b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none"
               />
-              <span className="text-sm text-zinc-400">saniye</span>
+              <span className="text-sm text-zinc-400">seconds</span>
             </div>
           </div>
 
@@ -349,8 +349,8 @@ export function SettingsPanel({
 
           {/* Notification Duration */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Bildirim Ekranda Kalma Süresi</h3>
-            <p className="text-xs text-zinc-500 mb-4">Yeni mail bildirimi geldiğinde ekranda ne kadar süre kalacağını belirleyin.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Notification Duration</h3>
+            <p className="text-xs text-zinc-500 mb-4">How long new email notifications stay on screen.</p>
 
             <div className="space-y-4">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -363,7 +363,7 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">Hiç kapanmasın (Süresiz)</span>
+                <span className="text-sm text-zinc-300">Keep on screen (no timeout)</span>
               </label>
 
               <div className={`flex items-center gap-3 transition-opacity ${notifInfinite ? "opacity-40 pointer-events-none" : ""}`}>
@@ -380,15 +380,15 @@ export function SettingsPanel({
                   disabled={notifInfinite}
                   className="w-24 bg-[#09090b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none disabled:bg-transparent"
                 />
-                <span className="text-sm text-zinc-400">saniye</span>
+                <span className="text-sm text-zinc-400">seconds</span>
               </div>
             </div>
           </div>
 
           {/* Performance Optimization */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Performans ve Oyun Modu</h3>
-            <p className="text-xs text-zinc-500 mb-4">Sistem kaynaklarını verimli kullanmak için ek ayarlar.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Performance &amp; Game Mode</h3>
+            <p className="text-xs text-zinc-500 mb-4">Additional settings for efficient system resource usage.</p>
 
             <div className="space-y-5">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -401,11 +401,11 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">E-posta içeriğini yalnızca açıldığında yükle</span>
+                <span className="text-sm text-zinc-300">Load email content only when opened</span>
               </label>
 
               <div>
-                <div className="text-xs font-medium text-zinc-300 mb-2">HTML Mail Render Modu</div>
+                <div className="text-xs font-medium text-zinc-300 mb-2">HTML Render Mode</div>
                 <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
                   <button
                     type="button"
@@ -415,7 +415,7 @@ export function SettingsPanel({
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "full" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    Tam HTML
+                    Full HTML
                   </button>
                   <button
                     type="button"
@@ -425,13 +425,13 @@ export function SettingsPanel({
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "simple" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    Basit
+                    Simple
                   </button>
                 </div>
               </div>
 
               <div>
-                <div className="text-xs font-medium text-zinc-300 mb-2">OTP Algılama</div>
+                <div className="text-xs font-medium text-zinc-300 mb-2">OTP Detection</div>
                 <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
                   {(["off", "balanced", "strict"] as OtpMode[]).map((mode) => (
                     <button
@@ -443,7 +443,7 @@ export function SettingsPanel({
                       }}
                       className={`px-3 py-1.5 text-xs rounded-md transition-colors ${otpMode === mode ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                     >
-                      {mode === "off" ? "Kapalı" : mode === "balanced" ? "Dengeli" : "Sıkı"}
+                      {mode === "off" ? "Off" : mode === "balanced" ? "Balanced" : "Strict"}
                     </button>
                   ))}
                 </div>
@@ -459,28 +459,28 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">Oyun/tam ekran sırasında arka plan internet işlemlerini durdur</span>
+                <span className="text-sm text-zinc-300">Pause background network activity during fullscreen / game mode</span>
               </label>
 
               <div className="rounded-lg border border-white/5 bg-[#09090b] p-3">
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div>
-                    <div className="text-xs font-medium text-zinc-300">Yaklaşık veri kullanımı</div>
-                    <div className="text-[10px] text-zinc-600">Gösterilen değer WebView2 RAM kullanımını içermez.</div>
+                    <div className="text-xs font-medium text-zinc-300">Approximate data usage</div>
+                    <div className="text-[10px] text-zinc-600">Shown value does not include WebView2 RAM usage.</div>
                   </div>
                   <button
                     type="button"
                     onClick={onClearCaches}
                     className="px-3 py-1.5 rounded-md border border-white/10 text-xs text-zinc-300 hover:bg-white/5"
                   >
-                    Cache'i temizle
+                    Clear cache
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[10px] text-zinc-500">
-                  <div>Açılan içerik: <span className="text-zinc-300">{debugMetrics.openedCount}</span></div>
-                  <div>Son içerik boyutu: <span className="text-zinc-300">{Math.round(debugMetrics.lastBodyBytes / 1024)} KB</span></div>
-                  <div>Önbellekteki etiket: <span className="text-zinc-300">{debugMetrics.cachedLabels}</span></div>
-                  <div>Önbellekteki mail: <span className="text-zinc-300">{debugMetrics.cachedMessages}</span></div>
+                  <div>Opened content: <span className="text-zinc-300">{debugMetrics.openedCount}</span></div>
+                  <div>Last content size: <span className="text-zinc-300">{Math.round(debugMetrics.lastBodyBytes / 1024)} KB</span></div>
+                  <div>Cached labels: <span className="text-zinc-300">{debugMetrics.cachedLabels}</span></div>
+                  <div>Cached emails: <span className="text-zinc-300">{debugMetrics.cachedMessages}</span></div>
                 </div>
               </div>
             </div>

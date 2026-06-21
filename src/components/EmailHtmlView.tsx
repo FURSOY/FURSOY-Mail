@@ -208,7 +208,7 @@ export function EmailHtmlView({
       <div ref={stageRef} className="relative mx-auto">
         <iframe
           ref={frameRef}
-          title="E-posta içeriği"
+          title="Email content"
           sandbox="allow-same-origin allow-popups"
           className="absolute left-0 top-0 block border-0 bg-white"
           style={{ transformOrigin: "top left", width: 0, height: 0 }}

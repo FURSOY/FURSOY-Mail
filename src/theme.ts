@@ -18,19 +18,19 @@ export const typography = {
 
 export const themePresets = {
   blue: {
-    label: "Mavi",
+    label: "Blue",
     accent: "#3b82f6",
     accentHover: "#2563eb",
     accentSoft: "rgb(59 130 246 / 0.14)",
   },
   emerald: {
-    label: "Yeşil",
+    label: "Green",
     accent: "#10b981",
     accentHover: "#059669",
     accentSoft: "rgb(16 185 129 / 0.14)",
   },
   violet: {
-    label: "Mor",
+    label: "Purple",
     accent: "#8b5cf6",
     accentHover: "#7c3aed",
     accentSoft: "rgb(139 92 246 / 0.14)",
