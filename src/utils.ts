@@ -117,9 +117,12 @@ export function buildRenderableEmailHtml(html: string, fallback: string, mode: R
 }
 
 export function normalizeOtpPlaintext(text: string): string {
-  let s = text.replace(/[​-‍﻿⁠]/g, "");
+  // Remove zero-width and invisible unicode characters
+  let s = text.replace(/[​-‍﻿⁠­]/g, "");
   s = s.replace(/\s+/g, " ").trim();
+  // Join digits split by spaces: "1 2 3 4 5 6" → "123456"
   s = s.replace(/\b(?:\d[\s ]){3,11}\d\b/g, (m) => m.replace(/[\s ]+/g, ""));
+  // Join hyphenated digit groups: "123-456" → "123456" (only for 3-4 digit groups totaling 4-8)
   s = s.replace(/\b(\d{3,4})[\s-](\d{3,4})\b/g, (m, g1, g2) => {
     if (g1.length + g2.length >= 4 && g1.length + g2.length <= 8) return g1 + g2;
     return m;
@@ -127,90 +130,168 @@ export function normalizeOtpPlaintext(text: string): string {
   return s;
 }
 
-const NEGATIVE_CONTEXT_RE =
-  /(?:po box|box|parkway|amphitheatre|tl|usd|eur|\$|€|tel|phone|fax|adres|address|street|sokak|cadde|mahalle|bulvar|kimlik|id|no\.|numarası)/i;
+// Email must contain at least one of these signals to be considered an OTP email
+const OTP_SIGNAL_RE =
+  /\b(?:verif(?:y|ication|ied)|doğrulama|dogrulama|confirm(?:ation)?|onay\s*kodu?|otp|one[\s-]?time|tek[\s-]?kullan|2fa|mfa|güvenlik\s*kodu?|guvenlik\s*kodu?|sms\s*kodu?|authentication\s*code|security\s*code|login\s*code|sign[\s-]?in\s*code|access\s*code|hesap\s*doğrulama)\b/i;
 
-const STRONG_OTP_CONTEXT_RE =
-  /(?:verification|verify|dogrulama|doğrulama|confirm|confirmation|onay|login|sign[\s-]?in|oturum|authentication|auth|two[\s-]?factor|2fa|mfa|one[\s-]?time|tek\s*kullanım|tek\s*kullanim)[\s\w.,:;'"()/-]{0,36}(?:code|kod|kodu|pin|otp|passcode|password|sifre|şifre)|(?:code|kod|kodu|pin|otp|passcode|verification code|security code|login code|confirmation code|one[\s-]?time password|one[\s-]?time code|2fa code|mfa code|sifre|şifre)/i;
-
-const DIRECT_OTP_PREFIX_RE =
-  /(?:code|kod|kodu|pin|otp|passcode|verification code|security code|login code|confirmation code|sifre|şifre)\s*(?:is|:|-|=|→)?\s*$/i;
-
-const BROAD_NEGATIVE_CONTEXT_RE =
-  /(?:iso(?:\/iec)?|certified|certificate|certification|standard|platform|developers?|community|experts?|subscribers?|followers?|members?|users?|customers?|blog|article|release|changelog|version|copyright|po box|box|parkway|amphitheatre|tl|try|usd|eur|\$|€|tel|phone|fax|adres|address|street|sokak|cadde|mahalle|bulvar|kimlik|id|no\.|numarası|numarasi|invoice|order|ticket|case|ref|reference)/i;
+// Context words that suggest a number is NOT an OTP
+const FALSE_POS_RE =
+  /\b(?:order\s*#?|sipariş|fatura|invoice|ticket\s*#?|case\s*#?|ref(?:erence)?\s*#?|tracking|takip\s*no|po\s+box|sokak|cadde|mahalle|bulvar|version\s+v?\d|\biso\b|\bvat\b|\bkdv\b)\b/i;
 
 const METRIC_SUFFIX_RE = /^\d+(?:\.\d+)?[kmb]$/i;
-const YEAR_OR_STANDARD_RE = /^(?:19|20)\d{2}$|^27001$|^27701$|^22301$|^9001$|^42001$/;
+
+function isValidCode(code: string): boolean {
+  if (METRIC_SUFFIX_RE.test(code)) return false;
+  if (/^[A-Za-z]+$/.test(code)) return false; // all letters = promo slug, not OTP
+  if (/^\d+$/.test(code)) {
+    if (/^(?:19|20)\d{2}$/.test(code)) return false; // year
+    if (/^(?:27001|27701|22301|9001|42001|14001|45001|50001|31000)$/.test(code)) return false; // ISO standards
+  }
+  return true;
+}
+
+function falsePositiveNearby(text: string, idx: number, len: number): boolean {
+  const before = text.slice(Math.max(0, idx - 80), idx);
+  const after = text.slice(idx + len, Math.min(text.length, idx + len + 80));
+  if (/[$€₺\xA3\xA5]\s*$/.test(before.trimEnd())) return true; // currency before
+  if (/^\s*%/.test(after)) return true; // percentage after
+  return FALSE_POS_RE.test(before + " " + after);
+}
+
+// Tier 1: Service-prefixed codes — "G-123456", "FB-654321"
+function matchPrefixed(text: string): string | null {
+  const re = /\b[A-Z]{1,3}-(\d{4,8})\b/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ctx = text.slice(Math.max(0, m.index - 100), m.index + m[0].length + 100);
+    if (/\bis\s+your\b|\bverif|\bdoğrulama|\bkodunuz\b|\bonay\b/i.test(ctx)) return m[1];
+  }
+  return null;
+}
+
+// Tier 2: Bracket codes — "[123456]" or "(654321)" — most reliable in subject lines
+function matchBracket(text: string): string | null {
+  const re = /[\[(](\d{4,8})[\])]/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (isValidCode(m[1])) return m[1];
+  }
+  return null;
+}
+
+// Tier 3: keyword immediately before code — "code: 123456", "doğrulama kodunuz: 123456", "OTP: 123456"
+const KW_BEFORE_CODE_RE =
+  /(?:(?:verification|security|login|confirmation|access|one[\s-]?time|sms|güvenlik|guvenlik|doğrulama|dogrulama|onay)[\s-])?(?:code|kod(?:unuz|unu|u|lar)?|kodu|otp|pin|şifre(?:niz|nizi)?|sifre(?:niz|nizi)?|passcode|parola(?:nız|nızı)?)\s*(?:is\s+)?[:\-=→>]{1,2}\s*([A-Z0-9]{4,10})\b/gi;
+
+function matchKeywordBefore(text: string): string | null {
+  KW_BEFORE_CODE_RE.lastIndex = 0;
+  let m;
+  while ((m = KW_BEFORE_CODE_RE.exec(text)) !== null) {
+    const code = m[1];
+    if (isValidCode(code) && !falsePositiveNearby(text, m.index, m[0].length)) return code;
+  }
+  return null;
+}
+
+// Tier 4: code-first sentences — "123456 is your WhatsApp code", "654321 kodunuz"
+const CODE_FIRST_RE = /\b([A-Z0-9]{4,8})\s+(?:is\s+(?:your|the)\b|kodunuz\b|şifreniz\b|sifreniz\b)/gi;
+
+function matchCodeFirst(text: string): string | null {
+  CODE_FIRST_RE.lastIndex = 0;
+  let m;
+  while ((m = CODE_FIRST_RE.exec(text)) !== null) {
+    const code = m[1];
+    if (!isValidCode(code) || falsePositiveNearby(text, m.index, m[0].length)) continue;
+    // Turkish possessive forms already imply OTP context
+    if (/kodunuz|şifreniz|sifreniz/i.test(m[0])) return code;
+    // For "is your X", require an OTP word somewhere nearby
+    const ctx = text.slice(Math.max(0, m.index - 30), m.index + m[0].length + 80);
+    if (/\b(?:code|kod|otp|pin|verif|doğrulama|auth|login|password|şifre|sifre|confirm|onay)\b/i.test(ctx))
+      return code;
+  }
+  return null;
+}
+
+// Tier 5: imperative patterns — "enter 123456", "use code 654321", "girin: 123456"
+const ENTER_RE = /\b(?:enter|use|input|type|girin?|kullanın?|giriniz)\s+(?:the\s+)?(?:code\s+)?([A-Z0-9]{4,10})\b/gi;
+
+function matchEnter(text: string): string | null {
+  ENTER_RE.lastIndex = 0;
+  let m;
+  while ((m = ENTER_RE.exec(text)) !== null) {
+    const code = m[1];
+    if (isValidCode(code) && !falsePositiveNearby(text, m.index, m[0].length)) return code;
+  }
+  return null;
+}
+
+// Tier 6: most prominent 6-digit number in a confirmed OTP email (last resort)
+function matchFallback(subject: string, snippet: string, body: string, mode: OtpMode): string | null {
+  type Candidate = { code: string; priority: number };
+  const seen = new Set<string>();
+  const candidates: Candidate[] = [];
+  const SIX = /\b(\d{6})\b/g;
+
+  const addFrom = (text: string, priority: number) => {
+    SIX.lastIndex = 0;
+    let m;
+    while ((m = SIX.exec(text)) !== null) {
+      const code = m[1];
+      if (seen.has(code) || !isValidCode(code) || falsePositiveNearby(text, m.index, 6)) continue;
+      seen.add(code);
+      candidates.push({ code, priority });
+    }
+  };
+
+  addFrom(subject, 3);
+  addFrom(snippet, 2);
+  addFrom(body.slice(0, 800), 1); // OTP codes appear near the top of the email body
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.priority - a.priority);
+  // Strict mode only accepts codes found in the subject line
+  if (mode === "strict" && candidates[0].priority < 3) return null;
+  return candidates[0].code;
+}
 
 export function extractVerificationCode(
   email: { subject: string; snippet: string; body_html: string },
   mode: OtpMode = "balanced"
 ): string | null {
   if (mode === "off") return null;
-  const raw = `${email.subject} ${email.snippet} ${stripHtml(email.body_html)}`;
-  const text = normalizeOtpPlaintext(raw);
 
-  const candidates: { code: string; score: number; index: number }[] = [];
+  const subject = normalizeOtpPlaintext(email.subject || "");
+  const body = normalizeOtpPlaintext(stripHtml(email.body_html || ""));
+  const snippet = normalizeOtpPlaintext(email.snippet || "");
+  const full = `${subject} ${snippet} ${body}`;
 
-  const numRegex = /\b(\d{4,8})\b/g;
-  let m;
-  while ((m = numRegex.exec(text)) !== null) {
-    candidates.push({ code: m[1], score: 0, index: m.index });
+  const isOtpEmail = OTP_SIGNAL_RE.test(full);
+
+  if (!isOtpEmail) {
+    // Doesn't look like an OTP email: only check subject for very obvious matches
+    if (mode === "strict") return null;
+    return (
+      matchPrefixed(subject) ??
+      matchBracket(subject) ??
+      matchKeywordBefore(subject) ??
+      matchCodeFirst(subject) ??
+      null
+    );
   }
 
-  const alphaNumRegex = /\b([A-Z]+[0-9]+[A-Z0-9]*|[0-9]+[A-Z]+[A-Z0-9]*)\b/g;
-  while ((m = alphaNumRegex.exec(text)) !== null) {
-    if (m[1].length >= 4 && m[1].length <= 10 && !METRIC_SUFFIX_RE.test(m[1])) {
-      candidates.push({ code: m[1], score: 0, index: m.index });
-    }
+  // Bracket in subject is the most reliable signal — check it first
+  const bracket = matchBracket(subject);
+  if (bracket) return bracket;
+
+  // Tiered search: each tier tries subject → snippet → body
+  const tiers = [matchPrefixed, matchKeywordBefore, matchCodeFirst, matchEnter];
+  for (const fn of tiers) {
+    const result = fn(subject) ?? fn(snippet) ?? fn(body);
+    if (result) return result;
   }
 
-  if (candidates.length === 0) return null;
-
-  for (const c of candidates) {
-    if (METRIC_SUFFIX_RE.test(c.code) || YEAR_OR_STANDARD_RE.test(c.code)) {
-      c.score = -999;
-      continue;
-    }
-
-    const windowStart = Math.max(0, c.index - 140);
-    const windowEnd = Math.min(text.length, c.index + c.code.length + 140);
-    const contextStr = text.slice(windowStart, windowEnd);
-    const before = text.slice(Math.max(0, c.index - 60), c.index);
-    const after = text.slice(c.index + c.code.length, Math.min(text.length, c.index + c.code.length + 60));
-
-    if (STRONG_OTP_CONTEXT_RE.test(contextStr)) c.score += 80;
-
-    const directPrefix = new RegExp(`(?:code|kod|kodu|verification|doğrulama|otp|pin)[:\\s\\-]*${c.code}`, "i");
-    const hasDirectOtpPrefix = directPrefix.test(contextStr) || DIRECT_OTP_PREFIX_RE.test(before);
-    if (hasDirectOtpPrefix) c.score += 140;
-    if (mode === "strict" && !hasDirectOtpPrefix) c.score -= 100;
-    if (/(?:expires?|valid|dakika|minute|min|within|use|enter|gir|kullan)/i.test(contextStr)) {
-      c.score += 25;
-    }
-
-    if (NEGATIVE_CONTEXT_RE.test(contextStr) || BROAD_NEGATIVE_CONTEXT_RE.test(contextStr)) c.score -= 120;
-    if (/^[A-Z]{2,}\d+$/.test(c.code) && /(?:version|release|build|ticket|issue|case|ref)/i.test(contextStr)) c.score -= 120;
-    if (/^[A-Z0-9]{4,10}$/.test(c.code) && /[A-Z]/.test(c.code) && !STRONG_OTP_CONTEXT_RE.test(contextStr)) c.score -= 80;
-    if (/^\d+$/.test(c.code) && /[%+]/.test(before.slice(-2) + after.slice(0, 2))) c.score -= 100;
-    if (/^\d+$/.test(c.code) && /(?:\bISO(?:\/IEC)?\s*$|\bISO(?:\/IEC)?\s+)/i.test(before.slice(-16) + after.slice(0, 16))) c.score -= 160;
-
-    if (c.code.length === 6 && /^\d+$/.test(c.code)) c.score += 20;
-    else if (/^\d+$/.test(c.code) && c.code.length === 8) c.score += 10;
-    else if (/^\d+$/.test(c.code) && c.code.length === 4) c.score -= 15;
-
-    c.score -= (c.index / text.length) * 10;
-
-    if (c.code.length === 4 && (c.code.startsWith("19") || c.code.startsWith("20"))) {
-      c.score -= 40;
-    }
-  }
-
-  const validCandidates = candidates.filter(c => c.score >= (mode === "strict" ? 140 : 70));
-  if (validCandidates.length === 0) return null;
-
-  validCandidates.sort((a, b) => b.score - a.score);
-  return validCandidates[0].code;
+  // Last resort: most prominent 6-digit number in a confirmed OTP email
+  return matchFallback(subject, snippet, body, mode);
 }
 
 export function resolveEmailUrl(url: string | null | undefined): string | null {
