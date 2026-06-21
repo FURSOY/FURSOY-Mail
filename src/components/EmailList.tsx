@@ -1,5 +1,5 @@
 import { Search, X, RefreshCw, Settings, Columns2, PanelLeft, Rows3, Menu } from "lucide-react";
-import { tr } from "../i18n";
+import { useLocale } from "../i18n";
 import type { Account, EmailSummary, ThreadGroup, MailViewPreference } from "../types";
 import { formatDate } from "../utils";
 import { ToolbarTip } from "./ToolbarTip";
@@ -34,6 +34,7 @@ export function EmailList({
   onRefresh, accessToken,
   accounts, activeAccountId,
 }: EmailListProps) {
+  const tr = useLocale();
   const showAccountBadge = activeAccountId === null && (accounts?.length ?? 0) > 1;
 
   return (

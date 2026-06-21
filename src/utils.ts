@@ -1,5 +1,6 @@
-import type { OtpMode, EmailLanguage, RenderMode, MailZoom, MailViewMode, AppControls } from "./types";
+import type { OtpMode, RenderMode, MailZoom, MailViewMode, AppControls } from "./types";
 import { type ThemePresetName, themePresets } from "./theme";
+import type { AppLanguage } from "./i18n";
 
 export const LARGE_BODY_RENDER_LIMIT = 4_000_000;
 export const MAX_INLINE_DATA_URI = 4_000_000;
@@ -138,7 +139,7 @@ const OTP_SIGNAL_EN_RE =
 const OTP_SIGNAL_TR_RE =
   /\b(?:doğrula(?:ma|yın|n|mak|r)?|dogrula(?:ma|yin|n|mak|r)?|onayla(?:yın|n|mak)?|onay\s*kodu?|tek[\s-]?kullan|güvenlik\s*kodu?|guvenlik\s*kodu?|sms\s*kodu?|hesap\s*doğrulama|oturum\s*aç|giriş\s*kodu?|giris\s*kodu?)\b/i;
 
-function isOtpSignal(text: string, lang: EmailLanguage): boolean {
+function isOtpSignal(text: string, lang: AppLanguage): boolean {
   if (OTP_SIGNAL_EN_RE.test(text)) return true;
   if (lang === "tr" && OTP_SIGNAL_TR_RE.test(text)) return true;
   return false;
@@ -274,7 +275,7 @@ function matchFallback(subject: string, snippet: string, body: string, mode: Otp
 export function extractVerificationCode(
   email: { subject: string; snippet: string; body_html: string },
   mode: OtpMode = "balanced",
-  lang: EmailLanguage = "en"
+  lang: AppLanguage = "en"
 ): string | null {
   if (mode === "off") return null;
 

@@ -1,4 +1,6 @@
-export const tr = {
+import { createContext, useContext } from "react";
+
+const en = {
   app: {
     name: "FURSOY Mail",
   },
@@ -75,6 +77,13 @@ export const tr = {
     disabled: "Launch at startup disabled.",
     failed: "Could not change startup setting.",
   },
+  language: {
+    title: "Language",
+    description: "Changes the app language and the OTP code detection patterns.",
+    label: "App language",
+    en: "English",
+    tr: "Turkish",
+  },
   notifications: {
     title: "Notifications & sync",
     description: "Mute notifications or temporarily pause background mail sync.",
@@ -107,4 +116,129 @@ export const tr = {
   },
 };
 
-export type AppLocale = typeof tr;
+const tr = {
+  app: {
+    name: "FURSOY Mail",
+  },
+  nav: {
+    inbox: "Gelen Kutusu",
+    sent: "Gönderilenler",
+    archive: "Arşiv",
+    spam: "Spam",
+    trash: "Çöp Kutusu",
+    settings: "Ayarlar",
+  },
+  auth: {
+    loginWithGoogle: "Google ile giriş yap",
+    waitingForBrowser: "Tarayıcı bekleniyor...",
+    loggedInSyncing: "Giriş yapıldı, senkronize ediliyor...",
+    syncComplete: "Senkronizasyon tamamlandı.",
+    syncFailedAfterLogin: "Giriş yapıldı ancak senkronizasyon başarısız. Otomatik yeniden denenecek.",
+    loginSuccess: "Giriş yapıldı.",
+    loginFailed: "Giriş başarısız",
+    loggedOut: "Çıkış yapıldı.",
+  },
+  compose: {
+    title: "Yeni e-posta",
+    to: "Kime",
+    subject: "Konu",
+    body: "Mesajınızı yazın...",
+    discard: "Vazgeç",
+    send: "Gönder",
+    sending: "Gönderiliyor...",
+  },
+  mail: {
+    searchEmpty: "Aramanızla eşleşen e-posta yok.",
+    emptyInbox: "Gelen kutusu boş.",
+    emptyFolder: "Bu klasörde e-posta yok.",
+    loadingBody: "E-posta yükleniyor...",
+    preparingBody: "E-posta hazırlanıyor...",
+    bodyLoadFailed: "E-posta yüklenemedi.",
+    noSelection: "E-posta seçilmedi",
+    noSelectionHint: "Okumak için bir e-posta seçin.",
+    replyTo: "Yanıtla",
+    writeReply: "Yanıt yazın...",
+    cancel: "İptal",
+    sendReply: "Yanıtı gönder",
+  },
+  reading: {
+    settings: "Okuma ayarları",
+    fitWidth: "Sığdır",
+    fitWidthHint: "Geniş HTML e-postaları, yatay kaydırma olmadan okuma bölmesine sığacak şekilde otomatik ölçeklendirir.",
+    renderMode: "Görüntüleme modu",
+    zoom: "Yakınlaştırma",
+    zoomHint: "E-posta içeriğinin görüntüleme boyutunu ayarlar. 'Sığdır' bölmeye otomatik uyar.",
+    zoomIn: "Yakınlaştır",
+    zoomOut: "Uzaklaştır",
+  },
+  update: {
+    title: "Uygulama güncellemeleri",
+    description: "En son özellikler ve güvenlik düzeltmeleri için FURSOY Mail'i güncel tutun.",
+    currentVersion: "Mevcut sürüm",
+    check: "Güncellemeleri kontrol et",
+    checking: "Kontrol ediliyor...",
+    installVersion: "v{version} sürümüne güncelle",
+    downloading: "Güncelleme indiriliyor...",
+    restartHint: "İndirme tamamlandığında uygulama otomatik olarak yeniden başlayacak. Lütfen bekleyin.",
+    upToDate: "Zaten güncel.",
+    available: "Yeni güncelleme mevcut: v{version}",
+    checkFailed: "Güncelleme kontrolü başarısız",
+    installFailed: "Güncelleme yüklenirken hata oluştu",
+  },
+  startup: {
+    title: "Başlangıç",
+    description: "FURSOY Mail'in bilgisayarınız açıldığında otomatik başlamasını kontrol edin.",
+    launchAtStartup: "Başlangıçta başlat",
+    enabled: "Başlangıçta başlatma etkinleştirildi.",
+    disabled: "Başlangıçta başlatma devre dışı bırakıldı.",
+    failed: "Başlangıç ayarı değiştirilemedi.",
+  },
+  language: {
+    title: "Dil",
+    description: "Uygulama dilini ve OTP kod algılama desenlerini değiştirir.",
+    label: "Uygulama dili",
+    en: "İngilizce",
+    tr: "Türkçe",
+  },
+  notifications: {
+    title: "Bildirimler ve senkronizasyon",
+    description: "Bildirimleri sessize alın veya arka plan e-posta senkronizasyonunu geçici olarak duraklatın.",
+    muteNotifications: "Bildirimleri sessize al",
+    pauseMailSync: "E-posta senkronizasyonunu duraklat",
+    quietHours: "Sessiz saatler",
+    quietHoursHint: "Bu zaman aralığında yeni e-posta bildirimi gelmez.",
+    start: "Başlangıç",
+    end: "Bitiş",
+  },
+  appearance: {
+    title: "Görünüm",
+    description: "Uygulamanın vurgu rengini ve genel görünümünü özelleştirin.",
+    accentColor: "Vurgu rengi",
+    density: "Yoğunluk",
+    comfortable: "Rahat",
+    compact: "Kompakt",
+  },
+  actions: {
+    refresh: "Yenile",
+    logout: "Çıkış yap",
+    restoreInbox: "Gelen kutusuna taşı",
+    notSpam: "Spam değil",
+    archive: "Arşivle",
+    moveTrash: "Çöp kutusuna taşı",
+    deleteForever: "Kalıcı olarak sil",
+    newEmail: "Yeni e-posta",
+    openLinkFailed: "Bağlantı tarayıcıda açılamadı.",
+    clearCacheSuccess: "Önbellek temizlendi.",
+  },
+};
+
+export type AppLocale = typeof en;
+export type AppLanguage = "en" | "tr";
+
+export const locales: Record<AppLanguage, AppLocale> = { en, tr };
+
+export const LocaleContext = createContext<AppLocale>(en);
+
+export function useLocale(): AppLocale {
+  return useContext(LocaleContext);
+}

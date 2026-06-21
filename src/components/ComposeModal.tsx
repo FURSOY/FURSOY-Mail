@@ -1,7 +1,7 @@
 import { X, RefreshCw, Send, ChevronDown, AlertCircle, Paperclip, FileText, Image, File, Type, Link2, List, ListOrdered, Undo2, Redo2 } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { tr } from "../i18n";
+import { useLocale } from "../i18n";
 import { ui } from "../theme";
 import type { Account, AttachmentPayload } from "../types";
 
@@ -73,6 +73,7 @@ export function ComposeModal({
   composeAccountId,
   setComposeAccountId,
 }: ComposeModalProps) {
+  const tr = useLocale();
   const [fromOpen, setFromOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<ContactSuggestion[]>([]);
   const [suggOpen, setSuggOpen] = useState(false);

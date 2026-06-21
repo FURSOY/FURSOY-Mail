@@ -9,12 +9,12 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Minus, Square, Copy, X, Edit3, Menu, Inbox, AlertTriangle, CheckCircle, XCircle,
 } from "lucide-react";
-import { tr } from "./i18n";
+import { LocaleContext, locales, type AppLanguage } from "./i18n";
 import { themePresets, type ThemePresetName } from "./theme";
 import "./index.css";
 
 import {
-  type Account, type EmailSummary, type ThreadGroup, type AuthInfo, type AppControls, type OtpMode, type EmailLanguage, type RenderMode,
+  type Account, type EmailSummary, type ThreadGroup, type AuthInfo, type AppControls, type OtpMode, type RenderMode,
   type MailZoom, type DensityMode, type MailViewMode, type MailViewPreference,
   type MailDebugMetrics, DEFAULT_APP_CONTROLS,
 } from "./types";
@@ -73,10 +73,11 @@ function App() {
     const saved = localStorage.getItem("fursoy_otp_mode");
     return saved === "off" || saved === "strict" ? saved : "balanced";
   });
-  const [emailLanguage, setEmailLanguage] = useState<EmailLanguage>(() => {
-    const saved = localStorage.getItem("fursoy_email_language");
+  const [appLanguage, setAppLanguage] = useState<AppLanguage>(() => {
+    const saved = localStorage.getItem("fursoy_app_language");
     return saved === "tr" ? "tr" : "en";
   });
+  const tr = locales[appLanguage];
   const [themePreset, setThemePreset] = useState<ThemePresetName>(() => readThemePreset());
   const [densityMode, setDensityMode] = useState<DensityMode>(() => {
     return localStorage.getItem("fursoy_density_mode") === "compact" ? "compact" : "comfortable";
@@ -573,7 +574,7 @@ function App() {
       for (const email of newEmails.slice(0, 5)) {
         const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
         const body = otpMode === "off" ? "" : await invoke<string>("get_email_body", { id: email.id }).catch(() => "");
-        const code = extractVerificationCode({ ...email, body_html: body }, otpMode, emailLanguage);
+        const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
         const account = accountsRef.current.find(a => a.id === email.account_id);
         await invoke("show_custom_notification", {
           title: senderName.slice(0, 64),
@@ -1294,7 +1295,7 @@ function App() {
   const unreadCount = inboxUnread;
   const hasLoadedActiveBody = !!activeMail && selectedMailBodyId === activeMail.id;
   const verificationCode = activeMail && hasLoadedActiveBody
-    ? extractVerificationCode({ ...activeMail, body_html: selectedMailBody }, otpMode, emailLanguage)
+    ? extractVerificationCode({ ...activeMail, body_html: selectedMailBody }, otpMode, appLanguage)
     : null;
   const activeMailHtml = activeMail && hasLoadedActiveBody
     ? buildRenderableEmailHtml(selectedMailBody, activeMail.snippet, renderMode)
@@ -1334,6 +1335,7 @@ function App() {
   }
 
   return (
+    <LocaleContext.Provider value={tr}>
     <div className="flex flex-col h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden select-none">
       {/* CUSTOM TITLEBAR */}
       <div
@@ -1453,7 +1455,7 @@ function App() {
           lazyBodyLoading={lazyBodyLoading} setLazyBodyLoading={setLazyBodyLoading}
           renderMode={renderMode} setRenderMode={setRenderMode}
           otpMode={otpMode} setOtpMode={setOtpMode}
-          emailLanguage={emailLanguage} setEmailLanguage={setEmailLanguage}
+          appLanguage={appLanguage} setAppLanguage={setAppLanguage}
           pauseOnFullscreen={pauseOnFullscreen} setPauseOnFullscreen={setPauseOnFullscreen}
           debugMetrics={debugMetrics} onClearCaches={clearPerformanceCaches}
           currentVersion={currentVersion}
@@ -1592,6 +1594,7 @@ function App() {
         ))}
       </div>
     </div>
+    </LocaleContext.Provider>
   );
 }
 
