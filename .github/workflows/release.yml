@@ -9,7 +9,7 @@ on:
       notes:
         description: "Release notes"
         required: false
-        default: "Onboarding screen shown on first launch. Full English UI translation. Email language setting (English / Turkish) controls which OTP patterns are used for code detection. Fixed Turkish OTP keywords missing from signal gate."
+        default: "Full Turkish/English language switching: selecting a language in Settings now changes all UI text and OTP detection patterns simultaneously. Translated all previously hardcoded strings across toolbar tooltips, compose labels, view mode buttons, and sidebar. Fixed two Turkish strings hardcoded in the reply editor."
 
 permissions:
   contents: write
@@ -100,7 +100,7 @@ jobs:
         run: |
           $notes = $env:RELEASE_NOTES_INPUT
           if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = "Onboarding screen shown on first launch. Full English UI translation. Email language setting (English / Turkish) controls which OTP patterns are used for code detection. Fixed Turkish OTP keywords missing from signal gate."
+            $notes = "Full Turkish/English language switching: selecting a language in Settings now changes all UI text and OTP detection patterns simultaneously. Translated all previously hardcoded strings across toolbar tooltips, compose labels, view mode buttons, and sidebar. Fixed two Turkish strings hardcoded in the reply editor."
           }
           Set-Content -Path RELEASE_NOTES.md -Value $notes -Encoding UTF8
 
