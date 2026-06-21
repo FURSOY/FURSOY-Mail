@@ -28,13 +28,13 @@ export function ConfirmModal({ modal, onClose }: ConfirmModalProps) {
             onClick={onClose}
             className="px-4 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-white/5 transition-colors"
           >
-            İptal
+            Cancel
           </button>
           <button
             onClick={() => { modal.onConfirm(); onClose(); }}
             className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-lg transition-colors"
           >
-            Sil
+            Delete
           </button>
         </div>
       </div>
