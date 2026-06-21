@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw, Plus, Users, AlertTriangle } from "lucide-react";
-import { tr } from "../i18n";
+import { useLocale } from "../i18n";
 import type { Account } from "../types";
 
 type TabName = "inbox" | "sent" | "archive" | "spam" | "trash" | "settings";
@@ -30,6 +30,7 @@ export function Sidebar({
   accounts, activeAccountId, onSwitchAccount, onAddAccount, onLogoutAccount,
   expiredAccountIds,
 }: SidebarProps) {
+  const tr = useLocale();
   const [hoveredAccount, setHoveredAccount] = useState<string | null>(null);
 
   const backdropCls = `fixed inset-x-0 bottom-0 top-9 z-40 bg-black/55 transition-opacity duration-200 ${

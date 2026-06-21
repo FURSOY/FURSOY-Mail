@@ -6,7 +6,7 @@ import {
   Download, FileText, Image, File, Type, Link2, List, ListOrdered, Paperclip, Undo2, Redo2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { tr } from "../i18n";
+import { useLocale } from "../i18n";
 import type { EmailSummary, MailViewMode, MailZoom, RenderMode, AttachmentPayload } from "../types";
 
 interface AttachmentInfo {
@@ -63,6 +63,7 @@ function ThreadCard({
   onOpenUrl: (url: string) => void;
   scrollRef: React.RefObject<HTMLElement | null>;
 }) {
+  const tr = useLocale();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [lazyBody, setLazyBody] = useState<string | null>(null);
   const [lazyLoading, setLazyLoading] = useState(false);
@@ -232,6 +233,7 @@ export function EmailReader({
   onArchive, onTrash, onMoveToInbox, onPermanentDelete, onMarkAsUnread, onForward,
   onOpenUrl, mailScrollRef, relayoutKey, threadEmails, accessToken, showToast,
 }: EmailReaderProps) {
+  const tr = useLocale();
   const replyEditableRef = useRef<HTMLDivElement>(null);
   const replyFileInputRef = useRef<HTMLInputElement>(null);
   const [replyEmpty, setReplyEmpty] = useState(true);

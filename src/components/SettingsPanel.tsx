@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical } from "lucide-react";
-import { tr } from "../i18n";
+import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
-import type { Account, AppControls, DensityMode, EmailLanguage, MailDebugMetrics, OtpMode, RenderMode } from "../types";
+import type { Account, AppControls, DensityMode, MailDebugMetrics, OtpMode, RenderMode } from "../types";
 
 interface SettingsPanelProps {
   isVisible: boolean;
@@ -35,8 +35,8 @@ interface SettingsPanelProps {
   setRenderMode: (v: RenderMode) => void;
   otpMode: OtpMode;
   setOtpMode: (v: OtpMode) => void;
-  emailLanguage: EmailLanguage;
-  setEmailLanguage: (v: EmailLanguage) => void;
+  appLanguage: AppLanguage;
+  setAppLanguage: (v: AppLanguage) => void;
   pauseOnFullscreen: boolean;
   setPauseOnFullscreen: (v: boolean) => void;
 
@@ -66,12 +66,13 @@ export function SettingsPanel({
   appControls, onUpdateAppControls,
   notifDuration, setNotifDuration, notifInfinite, setNotifInfinite,
   lazyBodyLoading, setLazyBodyLoading, renderMode, setRenderMode,
-  otpMode, setOtpMode, emailLanguage, setEmailLanguage, pauseOnFullscreen, setPauseOnFullscreen,
+  otpMode, setOtpMode, appLanguage, setAppLanguage, pauseOnFullscreen, setPauseOnFullscreen,
   debugMetrics, onClearCaches,
   currentVersion, isCheckingUpdate, updateAvailable, updateProgress, updateError, updateStatus,
   onCheckForUpdates, onInstallUpdate,
   accounts, onAddAccount, onLogoutAccount, onReorderAccounts,
 }: SettingsPanelProps) {
+  const tr = useLocale();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const dragStateRef = useRef({ from: null as number | null, over: null as number | null });
@@ -288,22 +289,22 @@ export function SettingsPanel({
 
           {/* Language */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Language</h3>
-            <p className="text-xs text-zinc-500 mb-4">Controls which OTP patterns are used for verification code detection.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.language.title}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.language.description}</p>
             <div className="space-y-2">
-              <div className="text-xs font-medium text-zinc-400">Email language</div>
+              <div className="text-xs font-medium text-zinc-400">{tr.language.label}</div>
               <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
-                {(["en", "tr"] as EmailLanguage[]).map((lang) => (
+                {(["en", "tr"] as AppLanguage[]).map((lang) => (
                   <button
                     key={lang}
                     type="button"
                     onClick={() => {
-                      setEmailLanguage(lang);
-                      localStorage.setItem("fursoy_email_language", lang);
+                      setAppLanguage(lang);
+                      localStorage.setItem("fursoy_app_language", lang);
                     }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${emailLanguage === lang ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${appLanguage === lang ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    {lang === "en" ? "English" : "Turkish"}
+                    {tr.language[lang]}
                   </button>
                 ))}
               </div>
