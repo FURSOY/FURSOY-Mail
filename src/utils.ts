@@ -136,7 +136,7 @@ const OTP_SIGNAL_RE =
 
 // Context words that suggest a number is NOT an OTP
 const FALSE_POS_RE =
-  /\b(?:order\s*#?|sipariş|fatura|invoice|ticket\s*#?|case\s*#?|ref(?:erence)?\s*#?|tracking|takip\s*no|po\s+box|sokak|cadde|mahalle|bulvar|version\s+v?\d|\biso\b|\bvat\b|\bkdv\b)\b/i;
+  /\b(?:order\s*#?|sipariş|fatura|invoice|ticket\s*#?|case\s*#?|ref(?:erence)?\s*#?|tracking|takip\s*no|po\s+box|sokak|cadde|mahalle|bulvar|version\s+v?\d|\biso\b|\bvat\b|\bkdv\b|numaral[ıi]|numarali|telefon|destek\s*merkezi)\b/i;
 
 const METRIC_SUFFIX_RE = /^\d+(?:\.\d+)?[kmb]$/i;
 
