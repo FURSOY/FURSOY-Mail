@@ -119,10 +119,7 @@ export function SettingsPanel({
   return (
     <section
       className="flex-1 overflow-y-scroll overscroll-contain bg-[#0a0a0c] p-8"
-      style={isVisible
-        ? { contain: "paint", willChange: "scroll-position" }
-        : { contain: "paint", visibility: "hidden" as const, position: "absolute" as const, width: 0, height: 0, overflow: "hidden", padding: 0 }
-      }
+      style={isVisible ? { contain: "paint" } : { display: "none" }}
     >
       <div className="max-w-2xl mx-auto">
         <h2 className={`${typography.pageTitle} mb-6 flex items-center gap-2`}>
