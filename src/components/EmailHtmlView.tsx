@@ -109,8 +109,9 @@ export function EmailHtmlView({
 
       doc.fonts?.ready.then(remeasure).catch(() => {});
 
-      let targetScrollTop = -1;
-      let smoothRaf = 0;
+      // Shared animation state attached to the outer element so multiple
+      // iframes in a thread don't fight each other with competing animations.
+      type ScrollExt = { _raf?: number; _target?: number };
       const handleWheel = (e: WheelEvent) => {
         const outer = scrollRef?.current;
         if (!outer) return;
@@ -118,22 +119,25 @@ export function EmailHtmlView({
         const dx = e.deltaX;
         if (e.deltaMode === 1) { dy *= 40; }
         else if (e.deltaMode === 2) { dy *= outer.clientHeight; }
-        if (targetScrollTop < 0) targetScrollTop = outer.scrollTop;
+        const ext = outer as HTMLElement & ScrollExt;
+        if (ext._target === undefined) ext._target = outer.scrollTop;
         const maxScroll = outer.scrollHeight - outer.clientHeight;
-        targetScrollTop = Math.max(0, Math.min(maxScroll, targetScrollTop + dy));
+        ext._target = Math.max(0, Math.min(maxScroll, ext._target + dy));
         if (dx !== 0) outer.scrollLeft += dx;
-        if (!smoothRaf) {
+        if (!ext._raf) {
           const step = () => {
-            const diff = targetScrollTop - outer.scrollTop;
+            const target = ext._target ?? 0;
+            const diff = target - outer.scrollTop;
             if (Math.abs(diff) < 0.5) {
-              outer.scrollTop = targetScrollTop;
-              smoothRaf = 0;
+              outer.scrollTop = target;
+              ext._raf = 0;
+              ext._target = undefined;
               return;
             }
             outer.scrollTop += diff * 0.2;
-            smoothRaf = requestAnimationFrame(step);
+            ext._raf = requestAnimationFrame(step);
           };
-          smoothRaf = requestAnimationFrame(step);
+          ext._raf = requestAnimationFrame(step);
         }
       };
       doc.addEventListener("wheel", handleWheel, { passive: true });
@@ -162,7 +166,11 @@ export function EmailHtmlView({
       doc.addEventListener("contextmenu", handleContextMenu, true);
 
       innerCleanup = () => {
-        cancelAnimationFrame(smoothRaf);
+        const outer = scrollRef?.current;
+        if (outer) {
+          const ext = outer as HTMLElement & ScrollExt;
+          if (ext._raf) { cancelAnimationFrame(ext._raf); ext._raf = 0; ext._target = undefined; }
+        }
         images.forEach((img) => img.removeEventListener("load", remeasure));
         doc.removeEventListener("wheel", handleWheel);
         doc.removeEventListener("click", handleClick, true);
