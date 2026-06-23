@@ -251,6 +251,21 @@ export function EmailReader({
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
+  // Scroll to active card when thread loads (active email may not be the last in thread)
+  useEffect(() => {
+    if (threadEmails.length <= 1) return;
+    const timer = setTimeout(() => {
+      const card = document.getElementById(`tc-${activeMail.id}`);
+      const container = mailScrollRef.current;
+      if (!card || !container) return;
+      const cardTop = (card as HTMLElement).offsetTop;
+      if (cardTop > container.clientHeight * 0.5) {
+        container.scrollTop = Math.max(0, cardTop - 72);
+      }
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [threadEmails, activeMail.id, mailScrollRef]);
+
   useEffect(() => {
     setAttachments([]);
     setThumbnails({});
@@ -668,22 +683,23 @@ export function EmailReader({
             {allEmails.map((email) => {
               const isActive = email.id === activeMail.id;
               return (
-                <ThreadCard
-                  key={email.id}
-                  email={email}
-                  isActive={isActive}
-                  preloadedHtml={isActive ? activeMailHtml : undefined}
-                  isBodyLoading={isActive ? isBodyLoading : undefined}
-                  hasLoadedBody={isActive ? hasLoadedActiveBody : undefined}
-                  bodyError={isActive ? bodyError : undefined}
-                  defaultExpanded={isActive}
-                  renderMode={renderMode}
-                  mailZoom={mailZoom}
-                  relayoutKey={isActive ? relayoutKey : undefined}
-                  onFitScaleChange={isActive ? setMailFitScale : undefined}
-                  onOpenUrl={onOpenUrl}
-                  scrollRef={mailScrollRef as React.RefObject<HTMLElement | null>}
-                />
+                <div key={email.id} id={`tc-${email.id}`}>
+                  <ThreadCard
+                    email={email}
+                    isActive={isActive}
+                    preloadedHtml={isActive ? activeMailHtml : undefined}
+                    isBodyLoading={isActive ? isBodyLoading : undefined}
+                    hasLoadedBody={isActive ? hasLoadedActiveBody : undefined}
+                    bodyError={isActive ? bodyError : undefined}
+                    defaultExpanded={isActive}
+                    renderMode={renderMode}
+                    mailZoom={mailZoom}
+                    relayoutKey={isActive ? relayoutKey : undefined}
+                    onFitScaleChange={isActive ? setMailFitScale : undefined}
+                    onOpenUrl={onOpenUrl}
+                    scrollRef={mailScrollRef as React.RefObject<HTMLElement | null>}
+                  />
+                </div>
               );
             })}
           </div>
