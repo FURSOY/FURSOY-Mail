@@ -1,6 +1,8 @@
 ---
-description: Plan
+description: Deprecated historical draft
 ---
+
+> Do not use this draft for implementation. The maintained Codex instructions are `AGENTS.md` and `.agents/context/`.
 
 =======================================================
   KİŞİSEL DESKTOP MAIL UYGULAMASI — PROJE PLANI

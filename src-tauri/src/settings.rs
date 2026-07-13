@@ -3,10 +3,17 @@ use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
 
 #[cfg(target_os = "windows")]
-const STARTUP_VALUE_NAME: &str = "FURSOY Mail";
+use windows::{
+    core::PCWSTR,
+    Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
+    Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, REG_VALUE_TYPE,
+    },
+};
 
 #[cfg(target_os = "windows")]
-const STARTUP_REG_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_VALUE_NAME: &str = "FURSOY Mail";
 
 const APP_CONTROLS_FILE: &str = "app-controls.json";
 
@@ -18,6 +25,8 @@ pub struct AppControls {
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
     pub quiet_hours_end: String,
+    #[serde(default)]
+    pub app_language: String,
 }
 
 impl Default for AppControls {
@@ -28,6 +37,7 @@ impl Default for AppControls {
             quiet_hours_enabled: false,
             quiet_hours_start: "22:00".into(),
             quiet_hours_end: "08:00".into(),
+            app_language: "en".into(),
         }
     }
 }
@@ -109,50 +119,100 @@ fn startup_value_matches_current_app(value: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn write_startup_value(command: &str) -> Result<(), String> {
-    let status = std::process::Command::new("reg")
-        .args([
-            "add",
-            STARTUP_REG_PATH,
-            "/v",
-            STARTUP_VALUE_NAME,
-            "/t",
-            "REG_SZ",
-            "/d",
-            command,
-            "/f",
-        ])
-        .status()
-        .map_err(|e| format!("Baslangic kaydi eklenemedi: {e}"))?;
+fn to_wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
-    if status.success() {
-        Ok(())
+#[cfg(target_os = "windows")]
+fn reg_open(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Result<HKEY, String> {
+    let subkey = to_wide_null(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let mut hkey = HKEY::default();
+    let err = unsafe {
+        RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), Some(0), access, &mut hkey)
+    };
+    if err == ERROR_SUCCESS {
+        Ok(hkey)
     } else {
-        Err("Baslangic kaydi eklenemedi.".into())
+        Err(format!("Registry acilamadi: {err:?}"))
     }
 }
 
 #[cfg(target_os = "windows")]
-fn read_startup_value() -> Result<Option<String>, String> {
-    let output = std::process::Command::new("reg")
-        .args(["query", STARTUP_REG_PATH, "/v", STARTUP_VALUE_NAME])
-        .output()
-        .map_err(|e| format!("Baslangic kaydi okunamadi: {e}"))?;
+fn write_startup_value(command: &str) -> Result<(), String> {
+    let hkey = reg_open(KEY_SET_VALUE)?;
+    let value_name = to_wide_null(STARTUP_VALUE_NAME);
+    let data: Vec<u16> = command.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2) };
+    let err = unsafe {
+        RegSetValueExW(
+            hkey,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            REG_SZ,
+            Some(bytes),
+        )
+    };
+    unsafe { let _ = RegCloseKey(hkey); }
+    if err == ERROR_SUCCESS { Ok(()) } else { Err(format!("Baslangic kaydi eklenemedi: {err:?}")) }
+}
 
-    if !output.status.success() {
+#[cfg(target_os = "windows")]
+fn delete_startup_value() -> Result<(), String> {
+    let hkey = match reg_open(KEY_SET_VALUE) {
+        Ok(h) => h,
+        Err(_) => return Ok(()), // key doesn't exist → already not set
+    };
+    let value_name = to_wide_null(STARTUP_VALUE_NAME);
+    let err = unsafe { RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr())) };
+    unsafe { let _ = RegCloseKey(hkey); }
+    if err == ERROR_SUCCESS || err == ERROR_FILE_NOT_FOUND { Ok(()) }
+    else { Err(format!("Baslangic kaydi silinemedi: {err:?}")) }
+}
+
+#[cfg(target_os = "windows")]
+fn read_startup_value() -> Result<Option<String>, String> {
+    let hkey = match reg_open(KEY_READ) {
+        Ok(h) => h,
+        Err(_) => return Ok(None),
+    };
+    let value_name = to_wide_null(STARTUP_VALUE_NAME);
+    let mut data_type = REG_VALUE_TYPE::default();
+    let mut size: u32 = 0;
+    // First call: get required buffer size
+    let size_err = unsafe {
+        RegQueryValueExW(hkey, PCWSTR(value_name.as_ptr()), None, Some(&mut data_type), None, Some(&mut size))
+    };
+    if size_err != ERROR_SUCCESS {
+        unsafe { let _ = RegCloseKey(hkey); }
+        return if size_err == ERROR_FILE_NOT_FOUND {
+            Ok(None)
+        } else {
+            Err(format!("Baslangic kaydi okunamadi: {size_err:?}"))
+        };
+    }
+    if size == 0 {
+        unsafe { let _ = RegCloseKey(hkey); }
         return Ok(None);
     }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let value = text
-        .lines()
-        .find(|line| line.contains(STARTUP_VALUE_NAME))
-        .and_then(|line| line.split("REG_SZ").nth(1))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    Ok(value)
+    let mut buffer = vec![0u8; size as usize];
+    let err = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            Some(&mut data_type),
+            Some(buffer.as_mut_ptr()),
+            Some(&mut size),
+        )
+    };
+    unsafe { let _ = RegCloseKey(hkey); }
+    if err != ERROR_SUCCESS { return Ok(None); }
+    let words: Vec<u16> = buffer
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let s = String::from_utf16_lossy(&words).trim_end_matches('\0').to_string();
+    Ok(if s.is_empty() { None } else { Some(s) })
 }
 
 #[tauri::command]
@@ -183,14 +243,7 @@ pub fn set_launch_at_startup(enabled: bool) -> Result<bool, String> {
             let command = startup_command()?;
             write_startup_value(&command)?;
         } else {
-            let status = std::process::Command::new("reg")
-                .args(["delete", STARTUP_REG_PATH, "/v", STARTUP_VALUE_NAME, "/f"])
-                .status()
-                .map_err(|e| format!("Baslangic kaydi silinemedi: {e}"))?;
-
-            if !status.success() && read_startup_value()?.is_some() {
-                return Err("Baslangic kaydi silinemedi.".into());
-            }
+            delete_startup_value()?;
         }
 
         get_launch_at_startup()
