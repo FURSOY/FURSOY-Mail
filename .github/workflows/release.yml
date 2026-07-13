@@ -9,7 +9,7 @@ on:
       notes:
         description: "Release notes"
         required: false
-        default: "Fix profile photo appearing as a large square in the notification in production builds. Wrap the avatar image in a clipping container div so border-radius and size constraints are enforced by the parent element rather than relying solely on inline img styles, which were inconsistently applied by WebView2 in installed builds."
+        default: ""
 
 permissions:
   contents: write
@@ -100,7 +100,7 @@ jobs:
         run: |
           $notes = $env:RELEASE_NOTES_INPUT
           if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = "Fix profile photo appearing as a large square in the notification in production builds. Wrap the avatar image in a clipping container div so border-radius and size constraints are enforced by the parent element rather than relying solely on inline img styles, which were inconsistently applied by WebView2 in installed builds."
+            $notes = Get-Content -Path .github/release-notes.md -Raw
           }
           Set-Content -Path RELEASE_NOTES.md -Value $notes -Encoding UTF8
 

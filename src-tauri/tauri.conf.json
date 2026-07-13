@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FURSOY Mail",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "identifier": "com.fsoye.mailapp",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -50,7 +50,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/FURSOY/mail/releases/latest/download/latest.json"
+        "https://github.com/FURSOY/FURSOY-Mail/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwRDc1MjFCMjA1OEYwOEUKUldTTzhGZ2dHMUxYVUc3OFFFOWVpRnduQlpaRFV2RWh3ZURpNHJtSFp3M21QbnM4NnNBa296TkcK"
     }
