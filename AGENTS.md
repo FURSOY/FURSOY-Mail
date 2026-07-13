@@ -30,4 +30,6 @@ For user-visible copy, keep English and Turkish locale coverage aligned in `src/
 - Rust change: `cargo check` from `src-tauri`
 - Release: follow `.agents/context/release.md`; do not tag, push, or publish without explicit approval.
 
+For a release commit, use the version as a short title and a concise Markdown body with user-facing bullet points, mirroring the release notes. Do not rewrite an already-published release commit merely to improve its message.
+
 Keep docs in `.agents/context/` factual and compact. Update only the relevant map when a structural change would make this routing inaccurate.
