@@ -1,5 +1,6 @@
 export type OtpMode = "off" | "balanced" | "strict";
 export type RenderMode = "full" | "simple";
+export type RemoteImageMode = "always" | "trusted" | "ask";
 export type MailZoom = "fit" | number;
 export type DensityMode = "comfortable" | "compact";
 export type MailViewMode = "split" | "single-toggle" | "inbox-first";
@@ -33,13 +34,6 @@ export interface ThreadGroup {
   participants: string[];
 }
 
-export interface MailDebugMetrics {
-  openedCount: number;
-  lastBodyBytes: number;
-  cachedLabels: number;
-  cachedMessages: number;
-}
-
 export interface AuthInfo {
   access_token: string;
   email: string;
@@ -52,6 +46,7 @@ export interface AppControls {
   quietHoursEnabled: boolean;
   quietHoursStart: string;
   quietHoursEnd: string;
+  appLanguage: "en" | "tr";
 }
 
 export interface AttachmentPayload {
@@ -66,4 +61,5 @@ export const DEFAULT_APP_CONTROLS: AppControls = {
   quietHoursEnabled: false,
   quietHoursStart: "22:00",
   quietHoursEnd: "08:00",
+  appLanguage: "en",
 };

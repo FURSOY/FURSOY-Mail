@@ -7,6 +7,7 @@ export const MAX_INLINE_DATA_URI = 4_000_000;
 export const FIXED_LAYOUT_MIN_WIDTH = 460;
 export const IMAGE_PROXY_BASE = "http://mailimg.localhost/?url=";
 export const MAX_LABEL_CACHE = 5;
+export const MAIL_PAGE_SIZE = 100;
 export const STARTUP_NETWORK_DELAY_MS = 5000;
 export const STARTUP_UPDATE_DELAY_MS = 9000;
 export const MAIL_TABS = new Set(["inbox", "sent", "archive", "spam", "trash"]);
@@ -94,27 +95,66 @@ export function sanitizeEmailHtml(html: string, fallback: string): string {
   return `${styles}${bodyMatch ? bodyMatch[1] : cleaned}`;
 }
 
+const BLOCKED_REMOTE_IMAGE_DATA_URI = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="280" viewBox="0 0 500 280"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e4e4e7"/><stop offset="1" stop-color="#d4d4d8"/></linearGradient></defs><rect width="500" height="280" rx="18" fill="url(#g)"/><rect x="32" y="32" width="436" height="216" rx="14" fill="#fafafa" opacity=".8"/><path d="M178 178l48-52 34 36 25-27 57 61H158l20-18z" fill="#a1a1aa"/><circle cx="210" cy="102" r="20" fill="#c4c4cc"/><path d="M250 98h104M250 122h72" stroke="#a1a1aa" stroke-width="10" stroke-linecap="round"/></svg>'
+)}`;
+
+function proxyRemoteImageUrl(url: string): string {
+  return `${IMAGE_PROXY_BASE}${encodeURIComponent(url)}`;
+}
+
+export function hasRemoteEmailImages(html: string): boolean {
+  return /<(?:img\b[^>]*?\ssrc|[^>]+\sbackground)\s*=\s*(["']?)\s*https?:\/\//i.test(html)
+    || /url\(\s*(["']?)\s*https?:\/\//i.test(html);
+}
+
 export function proxifyEmailImages(html: string): string {
   return html
     .replace(
-      /(<img\b[^>]*?\ssrc\s*=\s*)(["'])(https?:\/\/[^"']+)\2/gi,
-      (_match, prefix, quote, url) => `${prefix}${quote}${IMAGE_PROXY_BASE}${encodeURIComponent(url)}${quote}`
+      /(<img\b[^>]*?\ssrc\s*=\s*|\sbackground\s*=\s*)(?:(["'])(https?:\/\/[^"']+)\2|(https?:\/\/[^\s>]+))/gi,
+      (_match, prefix, quote, quotedUrl, unquotedUrl) => {
+        const url = quotedUrl ?? unquotedUrl;
+        const delimiter = quote ?? '"';
+        return `${prefix}${delimiter}${proxyRemoteImageUrl(url)}${delimiter}`;
+      }
     )
-    .replace(/\ssrcset\s*=\s*("[^"]*"|'[^']*')/gi, "")
+    .replace(
+      /url\(\s*(["']?)(https?:\/\/[^'"\s)]+)\1\s*\)/gi,
+      (_match, _quote, url) => `url("${proxyRemoteImageUrl(url)}")`
+    )
+    .replace(/\ssrcset\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/\sloading\s*=\s*["']lazy["']/gi, "");
 }
 
-export function buildRenderableEmailHtml(html: string, fallback: string, mode: RenderMode): string {
+function blockRemoteEmailImages(html: string): string {
+  return html
+    .replace(
+      /(<img\b[^>]*?\ssrc\s*=\s*|\sbackground\s*=\s*)(?:(["'])(https?:\/\/[^"']+)\2|(https?:\/\/[^\s>]+))/gi,
+      (_match, prefix, quote) => `${prefix}${quote ?? '"'}${BLOCKED_REMOTE_IMAGE_DATA_URI}${quote ?? '"'}`
+    )
+    .replace(/url\(\s*(["']?)(https?:\/\/[^'"\s)]+)\1\s*\)/gi, "none")
+    .replace(/\ssrcset\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\sloading\s*=\s*["']lazy["']/gi, "");
+}
+
+export function buildRenderableEmailHtml(
+  html: string,
+  fallback: string,
+  mode: RenderMode,
+  loadRemoteImages = true,
+): string {
   if (mode === "simple" || byteLength(html) > LARGE_BODY_RENDER_LIMIT) {
     const plain = stripHtml(html || fallback);
     return `<div class="plain-text">${escapeHtml(plain || fallback || "").replace(/\n/g, "<br/>")}</div>`;
   }
 
-  const sanitized = sanitizeEmailHtml(html, fallback).replace(
+  const sanitized = sanitizeEmailHtml(html, fallback)
+    .replace(/@import\s+(?:url\()?[^;]+;?/gi, "")
+    .replace(
     new RegExp(`\\s(src|href)\\s*=\\s*(["'])data:([^"']{${MAX_INLINE_DATA_URI},})\\2`, "gi"),
     ""
   );
-  return proxifyEmailImages(sanitized);
+  return loadRemoteImages ? proxifyEmailImages(sanitized) : blockRemoteEmailImages(sanitized);
 }
 
 export function normalizeOtpPlaintext(text: string): string {

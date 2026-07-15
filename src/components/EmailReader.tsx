@@ -3,7 +3,7 @@ import {
   CornerUpLeft, Inbox, Send, Archive, ShieldAlert, Trash2,
   Users, Forward, Eye, RotateCcw, Minus, Plus, Maximize2,
   Settings, X, RefreshCw, Copy, ChevronDown, ChevronUp,
-  Download, FileText, Image, File, Type, Link2, List, ListOrdered, Paperclip, Undo2, Redo2,
+  Download, FileText, Image, ImageOff, File, Type, Link2, List, ListOrdered, Paperclip, Undo2, Redo2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLocale } from "../i18n";
@@ -29,7 +29,7 @@ function AttachmentIcon({ mimeType }: { mimeType: string }) {
   if (mimeType === "application/pdf" || mimeType.startsWith("text/")) return <FileText className="w-3.5 h-3.5" />;
   return <File className="w-3.5 h-3.5" />;
 }
-import { formatDateFull, buildRenderableEmailHtml } from "../utils";
+import { formatDateFull, buildRenderableEmailHtml, hasRemoteEmailImages } from "../utils";
 import { EmailHtmlView } from "./EmailHtmlView";
 import { ToolbarTip } from "./ToolbarTip";
 
@@ -37,7 +37,7 @@ import { ToolbarTip } from "./ToolbarTip";
 function ThreadCard({
   email,
   isActive,
-  preloadedHtml,
+  preloadedBody,
   isBodyLoading,
   hasLoadedBody,
   bodyError,
@@ -47,11 +47,14 @@ function ThreadCard({
   relayoutKey,
   onFitScaleChange,
   onOpenUrl,
+  remoteImagesAllowed,
+  onLoadRemoteImages,
+  onTrustRemoteImages,
   scrollRef,
 }: {
   email: EmailSummary;
   isActive: boolean;
-  preloadedHtml?: string;
+  preloadedBody?: string;
   isBodyLoading?: boolean;
   hasLoadedBody?: boolean;
   bodyError?: string | null;
@@ -61,6 +64,9 @@ function ThreadCard({
   relayoutKey?: string;
   onFitScaleChange?: (scale: number) => void;
   onOpenUrl: (url: string) => void;
+  remoteImagesAllowed: boolean;
+  onLoadRemoteImages: (emailId: string) => void;
+  onTrustRemoteImages: (email: EmailSummary) => void;
   scrollRef: React.RefObject<HTMLElement | null>;
 }) {
   const tr = useLocale();
@@ -77,8 +83,8 @@ function ThreadCard({
     if (!expanded && !isActive && lazyBody === null && !lazyLoading) {
       setLazyLoading(true);
       try {
-        const raw = await invoke<string>("get_email_body", { id: email.id });
-        setLazyBody(buildRenderableEmailHtml(raw || "", email.snippet, renderMode));
+        const raw = await invoke<string>("get_email_body", { id: email.id, accountId: email.account_id });
+        setLazyBody(raw || "");
       } catch {
         setLazyBody("");
       } finally {
@@ -88,10 +94,12 @@ function ThreadCard({
     setExpanded(e => !e);
   };
 
-  const bodyHtml = isActive ? preloadedHtml ?? "" : lazyBody ?? "";
+  const bodySource = isActive ? preloadedBody ?? "" : lazyBody ?? "";
+  const bodyHtml = buildRenderableEmailHtml(bodySource, email.snippet, renderMode, remoteImagesAllowed);
   const loading = isActive ? (isBodyLoading ?? false) : lazyLoading;
   const loaded = isActive ? (hasLoadedBody ?? false) : lazyBody !== null;
   const error = isActive ? bodyError : null;
+  const showRemoteImageNotice = loaded && !remoteImagesAllowed && hasRemoteEmailImages(bodySource);
 
   return (
     <div className={`rounded-xl overflow-hidden border ${isActive ? "border-white/[0.10]" : "border-white/[0.06]"}`}>
@@ -143,6 +151,35 @@ function ThreadCard({
             </div>
           ) : loaded ? (
             <div className="bg-white overflow-hidden">
+              {showRemoteImageNotice && (
+                <div className="m-4 rounded-xl border border-[var(--app-accent)]/25 bg-[var(--app-accent-soft)] p-4 text-zinc-800 shadow-sm shadow-black/5">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/70 bg-white/70 text-[var(--app-accent)] shadow-sm">
+                      <ImageOff className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold">{tr.remoteImages.blockedTitle}</div>
+                      <p className="mt-1 text-xs leading-relaxed text-zinc-600">{tr.remoteImages.blockedDescription}</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onLoadRemoteImages(email.id)}
+                          className="rounded-lg bg-[var(--app-accent)] px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-[var(--app-accent-hover)]"
+                        >
+                          {tr.remoteImages.load}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onTrustRemoteImages(email)}
+                          className="rounded-lg border border-zinc-200 bg-white/75 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-white"
+                        >
+                          {tr.remoteImages.trustSender.replace("{sender}", email.sender)}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <EmailHtmlView
                 key={email.id}
                 html={bodyHtml}
@@ -168,7 +205,7 @@ function ThreadCard({
 interface EmailReaderProps {
   className: string;
   activeMail: EmailSummary;
-  activeMailHtml: string;
+  activeMailBody: string;
   isBodyLoading: boolean;
   bodyError: string | null;
   hasLoadedActiveBody: boolean;
@@ -195,6 +232,9 @@ interface EmailReaderProps {
   setReadingToolsOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
   renderMode: RenderMode;
   setRenderMode: (v: RenderMode) => void;
+  remoteImagesAllowedForEmail: (email: EmailSummary) => boolean;
+  onLoadRemoteImages: (emailId: string) => void;
+  onTrustRemoteImages: (email: EmailSummary) => void;
 
   verificationCode: string | null;
   verificationCopyState: "idle" | "copied";
@@ -221,13 +261,14 @@ interface EmailReaderProps {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export function EmailReader({
-  className, activeMail, activeMailHtml,
+  className, activeMail, activeMailBody,
   isBodyLoading, bodyError, hasLoadedActiveBody,
   mailViewMode, activeTab, closeReader,
   showReply, setShowReply, replyMode, setReplyMode, replyText, setReplyText,
   isSending, onSendReply,
   mailZoom, setMailFitScale, stepMailZoom, persistMailZoom, effectiveZoomPct,
   readingToolsOpen, setReadingToolsOpen, renderMode, setRenderMode,
+  remoteImagesAllowedForEmail, onLoadRemoteImages, onTrustRemoteImages,
   verificationCode, verificationCopyState, setVerificationCopyState,
   showArchiveBtn, showRestoreBtn, showTrashToBinBtn, showDeleteForeverBtn,
   onArchive, onTrash, onMoveToInbox, onPermanentDelete, onMarkAsUnread, onForward,
@@ -269,7 +310,7 @@ export function EmailReader({
   useEffect(() => {
     setAttachments([]);
     setThumbnails({});
-    invoke<AttachmentInfo[]>("get_email_attachments", { emailId: activeMail.id })
+    invoke<AttachmentInfo[]>("get_email_attachments", { emailId: activeMail.id, accountId: activeMail.account_id })
       .then(atts => {
         setAttachments(atts);
         if (!accessToken) return;
@@ -282,6 +323,7 @@ export function EmailReader({
           imageAtts.map(a =>
             invoke<string>("fetch_attachment_data", {
               emailId,
+              accountId: activeMail.account_id,
               attachmentDbId: a.id,
               accessToken: token,
             }).then(data => ({ id: a.id, data }))
@@ -303,6 +345,7 @@ export function EmailReader({
     try {
       const savedName = await invoke<string>("save_and_reveal_attachment", {
         emailId: activeMail.id,
+        accountId: activeMail.account_id,
         attachmentDbId: att.id,
         accessToken,
       });
@@ -687,7 +730,7 @@ export function EmailReader({
                   <ThreadCard
                     email={email}
                     isActive={isActive}
-                    preloadedHtml={isActive ? activeMailHtml : undefined}
+                    preloadedBody={isActive ? activeMailBody : undefined}
                     isBodyLoading={isActive ? isBodyLoading : undefined}
                     hasLoadedBody={isActive ? hasLoadedActiveBody : undefined}
                     bodyError={isActive ? bodyError : undefined}
@@ -697,6 +740,9 @@ export function EmailReader({
                     relayoutKey={isActive ? relayoutKey : undefined}
                     onFitScaleChange={isActive ? setMailFitScale : undefined}
                     onOpenUrl={onOpenUrl}
+                    remoteImagesAllowed={remoteImagesAllowedForEmail(email)}
+                    onLoadRemoteImages={onLoadRemoteImages}
+                    onTrustRemoteImages={onTrustRemoteImages}
                     scrollRef={mailScrollRef as React.RefObject<HTMLElement | null>}
                   />
                 </div>

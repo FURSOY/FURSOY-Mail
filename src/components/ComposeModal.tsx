@@ -94,6 +94,7 @@ export function ComposeModal({
   const bodyEditableRef = useRef<HTMLDivElement>(null);
   const savedRangeRef = useRef<Range | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contactSearchRequestIdRef = useRef(0);
 
   const activeAccount = accounts.find(a => a.id === composeAccountId) ?? accounts[0];
 
@@ -118,19 +119,29 @@ export function ComposeModal({
     return () => document.removeEventListener("mousedown", h);
   }, [suggOpen]);
 
+  useEffect(() => {
+    contactSearchRequestIdRef.current += 1;
+    setSuggestions([]);
+    setSuggOpen(false);
+  }, [activeAccount?.id]);
+
   const searchContacts = useCallback((q: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const trimmed = q.trim();
     if (trimmed.length < 1) { setSuggestions([]); setSuggOpen(false); return; }
+    const accountId = activeAccount?.id;
+    if (!accountId) { setSuggestions([]); setSuggOpen(false); return; }
+    const requestId = ++contactSearchRequestIdRef.current;
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await invoke<ContactSuggestion[]>("search_contacts", { query: trimmed });
+        const res = await invoke<ContactSuggestion[]>("search_contacts", { query: trimmed, accountId });
+        if (requestId !== contactSearchRequestIdRef.current || activeAccount?.id !== accountId) return;
         setSuggestions(res);
         setSuggOpen(res.length > 0);
         setHighlightIdx(0);
       } catch { /* ignore */ }
     }, 200);
-  }, []);
+  }, [activeAccount?.id]);
 
   const handleToChange = (v: string) => {
     setComposeTo(v);
