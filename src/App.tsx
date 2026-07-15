@@ -16,14 +16,14 @@ import "./index.css";
 import {
   type Account, type EmailSummary, type ThreadGroup, type AuthInfo, type AppControls, type OtpMode, type RenderMode,
   type MailZoom, type DensityMode, type MailViewMode, type MailViewPreference,
-  type MailDebugMetrics, DEFAULT_APP_CONTROLS,
+  type RemoteImageMode, DEFAULT_APP_CONTROLS,
 } from "./types";
 import { useMemo } from "react";
 import {
   MAIL_TABS, AUTH_RELOGIN_MESSAGE, STARTUP_NETWORK_DELAY_MS, STARTUP_UPDATE_DELAY_MS,
-  MAX_LABEL_CACHE, ZOOM_STEPS,
-  isNoUpdateError, isAuthFailure, byteLength, extractVerificationCode,
-  buildRenderableEmailHtml, readMailZoom, readThemePreset, getAutoMailViewMode,
+  MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
+  isNoUpdateError, isAuthFailure, extractVerificationCode,
+  readMailZoom, readThemePreset, getAutoMailViewMode,
   isInQuietHours, formatDateFull,
 } from "./utils";
 
@@ -35,6 +35,42 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { ComposeModal } from "./components/ComposeModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { ToolbarTip } from "./components/ToolbarTip";
+
+function readTrustedImageSenders(): Record<string, string[]> {
+  try {
+    const saved = JSON.parse(localStorage.getItem("fursoy_trusted_image_senders") ?? "{}");
+    if (!saved || typeof saved !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(saved).filter(([, senders]) =>
+        Array.isArray(senders) && senders.every(sender => typeof sender === "string")
+      )
+    ) as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+function getSenderAddress(sender: string): string {
+  const match = sender.match(/<([^>]+)>/);
+  return (match?.[1] ?? sender).trim().toLowerCase();
+}
+
+function mailKey(accountId: string, messageId: string): string {
+  return `${accountId}\u0000${messageId}`;
+}
+
+function emailKey(email: EmailSummary): string {
+  return mailKey(email.account_id, email.id);
+}
+
+function sameEmail(left: EmailSummary, right: EmailSummary): boolean {
+  return left.id === right.id && left.account_id === right.account_id;
+}
+
+interface MailboxDownloadStatus {
+  running: boolean;
+  pending: boolean;
+}
 
 function App() {
   const [activeTab, setActiveTab] = useState<"inbox" | "sent" | "archive" | "spam" | "trash" | "settings">("inbox");
@@ -66,6 +102,12 @@ function App() {
   const [renderMode, setRenderMode] = useState<RenderMode>(() => {
     return localStorage.getItem("fursoy_render_mode") === "simple" ? "simple" : "full";
   });
+  const [remoteImageMode, setRemoteImageMode] = useState<RemoteImageMode>(() => {
+    const saved = localStorage.getItem("fursoy_remote_image_mode");
+    return saved === "trusted" || saved === "ask" ? saved : "always";
+  });
+  const [trustedImageSenders, setTrustedImageSenders] = useState<Record<string, string[]>>(readTrustedImageSenders);
+  const [loadedRemoteImageEmails, setLoadedRemoteImageEmails] = useState<Set<string>>(() => new Set());
   const [mailZoom, setMailZoom] = useState<MailZoom>(() => readMailZoom());
   const [mailFitScale, setMailFitScale] = useState(1);
   const [appControls, setAppControls] = useState<AppControls>(DEFAULT_APP_CONTROLS);
@@ -95,9 +137,6 @@ function App() {
   const [bodyError, setBodyError] = useState<string | null>(null);
   const [threadEmails, setThreadEmails] = useState<EmailSummary[]>([]);
   const [threadRefreshKey, setThreadRefreshKey] = useState(0);
-  const [debugMetrics, setDebugMetrics] = useState<MailDebugMetrics>({
-    openedCount: 0, lastBodyBytes: 0, cachedLabels: 0, cachedMessages: 0,
-  });
   // multi-account
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
@@ -106,6 +145,14 @@ function App() {
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<EmailSummary[] | null>(null);
+  const [hasMoreEmails, setHasMoreEmails] = useState(true);
+  const [isLoadingMoreEmails, setIsLoadingMoreEmails] = useState(false);
+  const [mailAppendVersion, setMailAppendVersion] = useState(0);
+  const [notificationFocusVersion, setNotificationFocusVersion] = useState(0);
+  const [isMailboxBackfilling, setIsMailboxBackfilling] = useState(false);
+  const [mailboxDownloadPending, setMailboxDownloadPending] = useState(false);
+  const [isResettingLocalMailbox, setIsResettingLocalMailbox] = useState(false);
   const [showReply, setShowReply] = useState(false);
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all">("reply");
   const [replyText, setReplyText] = useState("");
@@ -140,7 +187,7 @@ function App() {
   const mailScrollRef = useRef<HTMLDivElement>(null);
   const syncIntervalRef = useRef<number | null>(null);
   const syncChainIdRef = useRef(0);
-  const recentNotificationsRef = useRef<Record<string, string>>({});
+  const recentNotificationsRef = useRef<Record<string, { accountId: string; messageId: string } | null>>({});
   const notifiedUpdateVersionRef = useRef<string | null>(null);
   const lastToastRef = useRef<{ msg: string; type: "error" | "success" | "info"; at: number } | null>(null);
   const previousAutoMailViewModeRef = useRef<MailViewMode | null>(null);
@@ -151,11 +198,17 @@ function App() {
   const activeAccountIdRef = useRef<string | null>(null);
   const expiredAccountsRef = useRef<Set<string>>(new Set());
   const backgroundSyncRef = useRef<
-    (opts?: { userInitiated?: boolean }) => Promise<boolean>
+    (opts?: { userInitiated?: boolean; suppressNotifications?: boolean }) => Promise<boolean>
   >(async () => false);
   const knownEmailIdsRef = useRef<Set<string>>(new Set());
+  const notificationReadyAccountIdsRef = useRef<Set<string>>(new Set());
+  const notificationBaselineEpochRef = useRef(0);
   const recentlyReadRef = useRef<Set<string>>(new Set());
-  const isFirstSyncRef = useRef(true);
+  const pendingUnreadBadgeDeltasRef = useRef<Map<string, { delta: number; expiresAt: number }>>(new Map());
+  const mailPageCursorRef = useRef<EmailSummary | null>(null);
+  const mailListRequestIdRef = useRef(0);
+  const searchRequestIdRef = useRef(0);
+  const isLoadingMoreEmailsRef = useRef(false);
   const tabEmailCacheRef = useRef<Partial<Record<string, EmailSummary[]>>>({});
   const [, startTabTransition] = useTransition();
   const [, startDataTransition] = useTransition();
@@ -188,8 +241,7 @@ function App() {
 
   // Look up the right token for a specific email's account
   const getTokenForEmail = (email: EmailSummary | undefined): string => {
-    if (!email) return accessToken ?? "";
-    return accountTokens[email.account_id] ?? accessToken ?? "";
+    return email ? accountTokens[email.account_id] ?? "" : "";
   };
 
   useEffect(() => {
@@ -231,16 +283,35 @@ function App() {
   }, [themePreset, densityMode]);
 
   useEffect(() => {
+    localStorage.setItem("fursoy_app_language", appLanguage);
+  }, [appLanguage]);
+
+  useEffect(() => {
     getVersion().then(setCurrentVersion).catch(console.error);
     invoke<boolean>("get_launch_at_startup").then(setLaunchAtStartup).catch(console.error);
     invoke<AppControls>("get_app_controls")
-      .then((controls) => setAppControls({ ...DEFAULT_APP_CONTROLS, ...controls }))
+      .then((controls) => {
+        const localLanguage = localStorage.getItem("fursoy_app_language") === "tr" ? "tr" : "en";
+        const savedLanguage: AppLanguage = controls.appLanguage === "en" || controls.appLanguage === "tr"
+          ? controls.appLanguage
+          : localLanguage;
+        const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...controls, appLanguage: savedLanguage };
+        setAppControls(normalized);
+        setAppLanguage(savedLanguage);
+        localStorage.setItem("fursoy_app_language", savedLanguage);
+        if (controls.appLanguage !== savedLanguage) {
+          void invoke("set_app_language", { language: savedLanguage });
+        }
+      })
       .catch(console.error);
   }, []);
 
   useEffect(() => {
     const unlistenPromise = listen<AppControls>("app-controls-changed", (event) => {
-      setAppControls({ ...DEFAULT_APP_CONTROLS, ...event.payload });
+      const savedLanguage: AppLanguage = event.payload.appLanguage === "tr" ? "tr" : "en";
+      const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...event.payload, appLanguage: savedLanguage };
+      setAppControls(normalized);
+      setAppLanguage(savedLanguage);
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
   }, []);
@@ -409,16 +480,20 @@ function App() {
   };
 
   useEffect(() => {
-    const openNotificationMail = async (emailId: string, accountId?: string) => {
-      if (!emailId) return;
+    const openNotificationMail = async (messageId: string, accountId?: string) => {
+      if (!messageId || !accountId) return;
       if (accountId && accountId !== activeAccountIdRef.current) {
         setActiveAccountId(accountId);
         activeAccountIdRef.current = accountId;
         tabEmailCacheRef.current = {};
       }
       setMobileMenuOpen(false);
+      setSinglePanelView("reader");
+      activeTabRef.current = "inbox";
+      mailListRequestIdRef.current += 1;
       startTabTransition(() => setActiveTab("inbox"));
-      setSelectedMail(emailId);
+      setSelectedMail(mailKey(accountId, messageId));
+      setNotificationFocusVersion(version => version + 1);
       await loadEmails("inbox");
       await getCurrentWindow().show();
       await getCurrentWindow().unminimize();
@@ -434,12 +509,14 @@ function App() {
         const payload = event.payload?.notification;
         if (!payload) return;
         const key = (payload.title || "") + (payload.body || "");
-        const emailId = recentNotificationsRef.current[key];
-        await openNotificationMail(emailId || "");
+        const mail = recentNotificationsRef.current[key];
+        if (mail) await openNotificationMail(mail.messageId, mail.accountId);
       }
     );
     const unlistenUpdatePromise = listen("open-update-settings", async () => {
       setMobileMenuOpen(false);
+      activeTabRef.current = "settings";
+      mailListRequestIdRef.current += 1;
       startTabTransition(() => setActiveTab("settings"));
       await getCurrentWindow().show();
       await getCurrentWindow().unminimize();
@@ -461,42 +538,149 @@ function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const loadEmails = async (tab?: string) => {
+  const isMailContextCurrent = (label: string, accountId: string | null) =>
+    activeTabRef.current === label && activeAccountIdRef.current === accountId;
+
+  const mailCacheKey = (label: string, accountId: string | null) =>
+    `${accountId ?? "__all_accounts__"}\u0000${label}`;
+
+  const loadEmails = async (tab?: string, options?: { append?: boolean; cursor?: EmailSummary | null }) => {
     try {
       const label = tab || activeTabRef.current;
       if (!MAIL_TABS.has(label)) {
         startDataTransition(() => setEmails([]));
-        return;
+        return [];
       }
       const accountId = activeAccountIdRef.current; // null = all accounts
-      const result = await invoke<EmailSummary[]>("get_emails_by_label", { label, accountId });
+      const cursor = options?.cursor ?? null;
+      const requestId = ++mailListRequestIdRef.current;
+      const result = await invoke<EmailSummary[]>("get_emails_by_label", {
+        label,
+        accountId,
+        limit: MAIL_PAGE_SIZE,
+        beforeDate: cursor?.date ?? null,
+        beforeAccountId: cursor?.account_id ?? null,
+        beforeId: cursor?.id ?? null,
+      });
+      if (requestId !== mailListRequestIdRef.current || !isMailContextCurrent(label, accountId)) {
+        return [];
+      }
       const adjusted = result.map(m =>
-        recentlyReadRef.current.has(m.id) ? { ...m, unread: false } : m
+        recentlyReadRef.current.has(emailKey(m)) ? { ...m, unread: false } : m
       );
-      tabEmailCacheRef.current[label] = adjusted;
+      if (!options?.append) {
+        setHasMoreEmails(adjusted.length === MAIL_PAGE_SIZE);
+      }
+      if (adjusted.length > 0) {
+        mailPageCursorRef.current = adjusted[adjusted.length - 1];
+      }
+      const cacheKey = mailCacheKey(label, accountId);
+      tabEmailCacheRef.current[cacheKey] = options?.append
+        ? [...(tabEmailCacheRef.current[cacheKey] ?? []), ...adjusted]
+        : adjusted;
       const cacheKeys = Object.keys(tabEmailCacheRef.current);
       while (cacheKeys.length > MAX_LABEL_CACHE) {
         const oldest = cacheKeys.shift();
-        if (oldest && oldest !== label) delete tabEmailCacheRef.current[oldest];
+        if (oldest && oldest !== cacheKey) delete tabEmailCacheRef.current[oldest];
       }
-      const cachedLabels = Object.keys(tabEmailCacheRef.current).length;
-      const cachedMessages = Object.values(tabEmailCacheRef.current).reduce((sum, list) => sum + (list?.length || 0), 0);
-      setDebugMetrics(prev => ({ ...prev, cachedLabels, cachedMessages }));
-      startDataTransition(() => setEmails(adjusted));
+      startDataTransition(() => {
+        setEmails(previous => {
+          if (!options?.append) return adjusted;
+          const seen = new Set(previous.map(emailKey));
+          return [...previous, ...adjusted.filter(email => !seen.has(emailKey(email)))];
+        });
+        if (options?.append && adjusted.length > 0) {
+          setMailAppendVersion(version => version + 1);
+        }
+      });
+      return adjusted;
     } catch (e) {
       console.error("Failed to load emails:", e);
+      return [];
     }
   };
 
-  const clearPerformanceCaches = () => {
-    tabEmailCacheRef.current = {};
-    recentNotificationsRef.current = {};
-    setSelectedMailBody("");
-    setSelectedMailBodyId(null);
-    setBodyError(null);
-    setDebugMetrics({ openedCount: 0, lastBodyBytes: 0, cachedLabels: 0, cachedMessages: 0 });
-    void loadEmails(activeTabRef.current);
-    showToast(tr.actions.clearCacheSuccess, "success");
+  const resetMailPagination = () => {
+    mailListRequestIdRef.current += 1;
+    mailPageCursorRef.current = null;
+    isLoadingMoreEmailsRef.current = false;
+    setHasMoreEmails(true);
+    setIsLoadingMoreEmails(false);
+  };
+
+  const loadOlderEmails = async () => {
+    const label = activeTabRef.current;
+    const accountId = activeAccountIdRef.current;
+    if (!MAIL_TABS.has(label) || !hasMoreEmails || isLoadingMoreEmailsRef.current) return false;
+
+    isLoadingMoreEmailsRef.current = true;
+    setIsLoadingMoreEmails(true);
+    try {
+      const page = await loadEmails(label, { append: true, cursor: mailPageCursorRef.current });
+      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
+        accountId,
+      }).catch(() => ({ running: false, pending: false }));
+      if (!isMailContextCurrent(label, accountId)) return false;
+      if (page.length === 0 && status.pending && !status.running) {
+        // Never block the list on Gmail. Request a safe per-account sync and
+        // let the existing background worker populate SQLite asynchronously.
+        const targets = accountId
+          ? [{ id: accountId, token: accountTokensRef.current[accountId] }]
+          : accountsRef.current.map(account => ({ id: account.id, token: accountTokensRef.current[account.id] }));
+        void Promise.allSettled(
+          targets
+            .filter((target): target is { id: string; token: string } => !!target.token)
+            .map(target => invoke("sync_emails", { accountId: target.id, accessToken: target.token }))
+        );
+      }
+      setIsMailboxBackfilling(status.running);
+      setMailboxDownloadPending(status.pending);
+      setHasMoreEmails(page.length === MAIL_PAGE_SIZE || status.running || status.pending);
+      return page.length > 0;
+    } catch (error) {
+      console.error("Failed to load older emails:", error);
+      showToast(tr.mail.loadOlderFailed, "error");
+      return false;
+    } finally {
+      if (isMailContextCurrent(label, accountId)) {
+        isLoadingMoreEmailsRef.current = false;
+        setIsLoadingMoreEmails(false);
+      }
+    }
+  };
+
+  const resetLocalMailbox = () => {
+    if (isResettingLocalMailbox) return;
+    setConfirmModal({
+      message: tr.localMailbox.confirm,
+      onConfirm: async () => {
+        setIsResettingLocalMailbox(true);
+        try {
+          // Make the reset visible immediately. If the local delete fails, the
+          // current list is loaded again below instead of leaving stale rows up.
+          tabEmailCacheRef.current = {};
+          setEmails([]);
+          setSelectedMail(null);
+          setSelectedMailBody("");
+          setSelectedMailBodyId(null);
+          resetMailPagination();
+          await invoke("reset_local_mail_cache", { accountId: null });
+          recentNotificationsRef.current = {};
+          recentlyReadRef.current.clear();
+          knownEmailIdsRef.current.clear();
+          notificationReadyAccountIdsRef.current.clear();
+          notificationBaselineEpochRef.current += 1;
+          await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
+          showToast(tr.localMailbox.resetSuccess, "success");
+        } catch (error) {
+          console.error("Failed to reset local mailbox:", error);
+          showToast(tr.localMailbox.resetFailed, "error");
+          void loadEmails(activeTabRef.current);
+        } finally {
+          setIsResettingLocalMailbox(false);
+        }
+      },
+    });
   };
 
   const handleLaunchAtStartupChange = async (checked: boolean) => {
@@ -557,11 +741,36 @@ function App() {
     }
   }, [markAccountExpired]);
 
+  const adjustUnreadBadge = (accountId: string, delta: number) => {
+    const activeAccountId = activeAccountIdRef.current;
+    if (activeAccountId !== null && activeAccountId !== accountId) return;
+
+    const now = Date.now();
+    const previous = pendingUnreadBadgeDeltasRef.current.get(accountId);
+    const nextDelta = (previous?.expiresAt && previous.expiresAt > now ? previous.delta : 0) + delta;
+    if (nextDelta === 0) {
+      pendingUnreadBadgeDeltasRef.current.delete(accountId);
+    } else {
+      // Gmail's label counters can lag a successful message modification briefly.
+      pendingUnreadBadgeDeltasRef.current.set(accountId, { delta: nextDelta, expiresAt: now + 30_000 });
+    }
+    setInboxUnread(current => Math.max(0, current + delta));
+  };
+
   const refreshUnreadCount = async () => {
     try {
       const accountId = activeAccountIdRef.current;
       const count = await invoke<number>("get_inbox_unread_count", { accountId });
-      startDataTransition(() => setInboxUnread(count));
+      const now = Date.now();
+      let pendingDelta = 0;
+      for (const [id, pending] of pendingUnreadBadgeDeltasRef.current) {
+        if (pending.expiresAt <= now) {
+          pendingUnreadBadgeDeltasRef.current.delete(id);
+        } else if (accountId === null || accountId === id) {
+          pendingDelta += pending.delta;
+        }
+      }
+      startDataTransition(() => setInboxUnread(Math.max(0, count + pendingDelta)));
       return count;
     } catch { return 0; }
   };
@@ -573,12 +782,20 @@ function App() {
     try {
       for (const email of newEmails.slice(0, 5)) {
         const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
-        const body = otpMode === "off" ? "" : await invoke<string>("get_email_body", { id: email.id }).catch(() => "");
+        const body = otpMode === "off" ? "" : await invoke<string>("get_email_body", { id: email.id, accountId: email.account_id }).catch(() => "");
         const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
         const account = accountsRef.current.find(a => a.id === email.account_id);
+        const title = senderName.slice(0, 64);
+        const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || "New message";
+        const notificationKey = title + notificationBody;
+        const previous = recentNotificationsRef.current[notificationKey];
+        recentNotificationsRef.current[notificationKey] = previous &&
+          (previous.accountId !== email.account_id || previous.messageId !== email.id)
+          ? null
+          : { accountId: email.account_id, messageId: email.id };
         await invoke("show_custom_notification", {
-          title: senderName.slice(0, 64),
-          body: (email.subject || email.snippet || "").trim().slice(0, 100) || "New message",
+          title,
+          body: notificationBody,
           kind: "mail",
           code: code || null,
           emailId: email.id,
@@ -622,12 +839,13 @@ function App() {
     if (Object.keys(accountTokens).length > 0) startPeriodicSync();
   }, [syncIntervalValue]);
 
-  const backgroundSync = async (opts?: { userInitiated?: boolean }): Promise<boolean> => {
+  const backgroundSync = async (opts?: { userInitiated?: boolean; suppressNotifications?: boolean }): Promise<boolean> => {
     const accts = accountsRef.current;
     const tokens = accountTokensRef.current;
     if (accts.length === 0) return false;
 
     const userInitiated = opts?.userInitiated ?? false;
+    const notificationBaselineEpoch = notificationBaselineEpochRef.current;
     if (appControlsRef.current.mailSyncPaused && !userInitiated) return false;
     if (await shouldDeferNetworkForGameMode(userInitiated)) {
       console.log("System in fullscreen/game mode, skipping background sync.");
@@ -638,25 +856,15 @@ function App() {
       if (userInitiated) setIsUserSyncing(true);
       else setIsBackgroundSyncing(true);
 
-      // Initial snapshot for new-email detection
-      let hadLocalInboxSnapshot = knownEmailIdsRef.current.size > 0;
-      if (isFirstSyncRef.current && !hadLocalInboxSnapshot) {
-        try {
-          const localInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox", accountId: null });
-          knownEmailIdsRef.current = new Set(localInbox.map(e => e.id));
-          hadLocalInboxSnapshot = localInbox.length > 0;
-        } catch (err) {
-          console.error("Initial inbox snapshot failed:", err);
-        }
-      }
-
       let anySuccess = false;
+      const successfullySyncedAccountIds = new Set<string>();
       for (const account of accts) {
         const token = tokens[account.id];
         if (!token || expiredAccountsRef.current.has(account.id)) continue;
         try {
           await syncAccountWithAutoRefresh(account.id, token);
           anySuccess = true;
+          successfullySyncedAccountIds.add(account.id);
         } catch (e) {
           if (!isAuthFailure(e)) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -667,17 +875,23 @@ function App() {
 
       if (anySuccess) {
         const freshInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox", accountId: null });
-        const newUnreadEmails = freshInbox.filter(e => e.unread && !knownEmailIdsRef.current.has(e.id));
-        knownEmailIdsRef.current = new Set(freshInbox.map(e => e.id));
+        const readyAccountIds = notificationReadyAccountIdsRef.current;
+        const suppressNotifications = opts?.suppressNotifications === true ||
+          notificationBaselineEpoch !== notificationBaselineEpochRef.current;
+        const newUnreadEmails = freshInbox.filter(
+          e => !suppressNotifications && e.unread && readyAccountIds.has(e.account_id) && !knownEmailIdsRef.current.has(emailKey(e))
+        );
+        knownEmailIdsRef.current = new Set(freshInbox.map(emailKey));
+        // The first successful sync for an account establishes its baseline.
+        // Existing cache and initial Gmail history never create notifications.
+        for (const accountId of successfullySyncedAccountIds) readyAccountIds.add(accountId);
+        notifyNewEmails(newUnreadEmails);
 
-        if (isFirstSyncRef.current) {
-          isFirstSyncRef.current = false;
-          if (hadLocalInboxSnapshot) notifyNewEmails(newUnreadEmails);
-        } else {
-          notifyNewEmails(newUnreadEmails);
+        // Do not replace a list the user has paged through while background
+        // sync is running; new mail will appear on the next refresh instead.
+        if (MAIL_TABS.has(activeTabRef.current) && emails.length <= MAIL_PAGE_SIZE) {
+          await loadEmails();
         }
-
-        if (MAIL_TABS.has(activeTabRef.current)) await loadEmails();
         await refreshUnreadCount();
       }
 
@@ -813,10 +1027,77 @@ function App() {
       startDataTransition(() => setEmails([]));
       return;
     }
-    const cached = tabEmailCacheRef.current[activeTab];
+    resetMailPagination();
+    const cached = tabEmailCacheRef.current[mailCacheKey(activeTab, activeAccountId)];
     if (cached !== undefined) setEmails(cached);
     void loadEmails(activeTab);
   }, [activeTab, activeAccountId]);
+
+  useEffect(() => {
+    if (!accountsLoaded) return;
+    let cancelled = false;
+    const label = activeTab;
+    const accountId = activeAccountId;
+    const refreshBackfillStatus = async () => {
+      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
+        accountId,
+      }).catch(() => ({ running: false, pending: false }));
+      if (!cancelled && isMailContextCurrent(label, accountId)) {
+        setIsMailboxBackfilling(status.running);
+        setMailboxDownloadPending(status.pending);
+        if (!status.running && !status.pending && MAIL_TABS.has(label)) {
+          const cursor = mailPageCursorRef.current;
+          const nextPage = await invoke<EmailSummary[]>("get_emails_by_label", {
+            label,
+            accountId,
+            limit: 1,
+            beforeDate: cursor?.date ?? null,
+            beforeAccountId: cursor?.account_id ?? null,
+            beforeId: cursor?.id ?? null,
+          }).catch(() => []);
+          if (!cancelled && isMailContextCurrent(label, accountId)) setHasMoreEmails(nextPage.length > 0);
+        }
+      }
+    };
+    void refreshBackfillStatus();
+    const timer = window.setInterval(() => { void refreshBackfillStatus(); }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [accountsLoaded, activeAccountId, activeTab]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    const requestId = ++searchRequestIdRef.current;
+    if (!query) {
+      setSearchResults(null);
+      return;
+    }
+
+    const accountId = activeAccountId;
+    const timer = window.setTimeout(() => {
+      void invoke<EmailSummary[]>("search_local_emails", {
+        query,
+        accountId,
+        limit: 500,
+      })
+        .then(results => {
+          if (
+            searchRequestIdRef.current !== requestId ||
+            activeAccountIdRef.current !== accountId
+          ) return;
+          setSearchResults(results);
+        })
+        .catch(error => {
+          if (searchRequestIdRef.current !== requestId) return;
+          console.error("Local email search failed:", error);
+          setSearchResults([]);
+        });
+    }, 150);
+
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, activeAccountId]);
 
   useEffect(() => {
     if (activeTab !== "settings") return;
@@ -831,6 +1112,8 @@ function App() {
     setShowReply(false);
     setSinglePanelView("list");
     setMobileMenuOpen(false);
+    activeTabRef.current = tab;
+    mailListRequestIdRef.current += 1;
     startTabTransition(() => setActiveTab(tab));
   };
 
@@ -861,7 +1144,8 @@ function App() {
       const stillExpired = expiredAccountsRef.current.size > 0;
       tokenExpiredRef.current = stillExpired;
       if (!stillExpired) setTokenExpired(false);
-      const ok = await backgroundSyncRef.current({ userInitiated: true });
+      // The first download for a newly added account is a baseline, not new-mail activity.
+      const ok = await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
       if (ok) {
         setAuthStatus(tr.auth.syncComplete);
         showToast("Signed in!", "success");
@@ -889,6 +1173,11 @@ function App() {
       setAccountTokens(newTokens);
       expiredAccountsRef.current.delete(accountId);
       setExpiredAccountIds(new Set(expiredAccountsRef.current));
+      notificationReadyAccountIdsRef.current.delete(accountId);
+      const removedAccountPrefix = `${accountId}\u0000`;
+      knownEmailIdsRef.current = new Set(
+        [...knownEmailIdsRef.current].filter(key => !key.startsWith(removedAccountPrefix))
+      );
 
       const updatedAccounts = await invoke<Account[]>("get_accounts");
       setAccounts(updatedAccounts);
@@ -938,6 +1227,7 @@ function App() {
     setActiveAccountId(accountId);
     activeAccountIdRef.current = accountId;
     tabEmailCacheRef.current = {};
+    resetMailPagination();
     setSelectedMail(null);
     await loadEmails(activeTabRef.current);
     await refreshUnreadCount();
@@ -959,29 +1249,35 @@ function App() {
   };
 
   const handleMailClick = async (mail: EmailSummary) => {
-    setSelectedMail(mail.id);
+    setSelectedMail(emailKey(mail));
     if (mailViewMode !== "split") setSinglePanelView("reader");
     setShowReply(false);
     setReplyText("");
     if (mail.unread) {
-      recentlyReadRef.current.add(mail.id);
-      setEmails(prev => prev.map(m => m.id === mail.id ? { ...m, unread: false } : m));
+      recentlyReadRef.current.add(emailKey(mail));
+      setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m));
+      setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m) ?? null);
+      adjustUnreadBadge(mail.account_id, -1);
       try {
-        await invoke("mark_as_read", { accessToken: getTokenForEmail(mail), messageId: mail.id });
+        await invoke("mark_as_read", { accountId: mail.account_id, accessToken: getTokenForEmail(mail), messageId: mail.id });
       } catch (e) {
         console.error("Failed to mark as read:", e);
+        recentlyReadRef.current.delete(emailKey(mail));
+        setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m));
+        setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m) ?? null);
+        setThreadEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m));
+        adjustUnreadBadge(mail.account_id, 1);
       }
     }
   };
 
-  const handleArchive = async (emailId: string) => {
-    const mail = emails.find(e => e.id === emailId);
+  const handleArchive = async (mail: EmailSummary) => {
     const token = getTokenForEmail(mail);
-    if (!token) return;
-    setEmails(prev => prev.map(e => e.id === emailId ? { ...e, label: "archive" } : e));
+    if (!mail || !token) return;
+    setEmails(prev => prev.map(e => sameEmail(e, mail) ? { ...e, label: "archive" } : e));
     setSelectedMail(null);
     try {
-      await invoke("archive_email", { accessToken: token, messageId: emailId });
+      await invoke("archive_email", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
@@ -990,14 +1286,13 @@ function App() {
     }
   };
 
-  const handleTrash = async (emailId: string) => {
-    const mail = emails.find(e => e.id === emailId);
+  const handleTrash = async (mail: EmailSummary) => {
     const token = getTokenForEmail(mail);
-    if (!token) return;
-    setEmails(prev => prev.map(e => e.id === emailId ? { ...e, label: "trash" } : e));
+    if (!mail || !token) return;
+    setEmails(prev => prev.map(e => sameEmail(e, mail) ? { ...e, label: "trash" } : e));
     setSelectedMail(null);
     try {
-      await invoke("trash_email", { accessToken: token, messageId: emailId });
+      await invoke("trash_email", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
@@ -1006,14 +1301,13 @@ function App() {
     }
   };
 
-  const handleMoveToInbox = async (emailId: string) => {
-    const mail = emails.find(e => e.id === emailId);
+  const handleMoveToInbox = async (mail: EmailSummary) => {
     const token = getTokenForEmail(mail);
-    if (!token) return;
-    setEmails(prev => prev.filter(e => e.id !== emailId));
+    if (!mail || !token) return;
+    setEmails(prev => prev.filter(e => !sameEmail(e, mail)));
     setSelectedMail(null);
     try {
-      await invoke("move_to_inbox", { accessToken: token, messageId: emailId });
+      await invoke("move_to_inbox", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
       showToast("Moved to inbox", "success");
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
@@ -1023,17 +1317,16 @@ function App() {
     }
   };
 
-  const handlePermanentDelete = (emailId: string) => {
-    const mail = emails.find(e => e.id === emailId);
+  const handlePermanentDelete = (mail: EmailSummary) => {
     const token = getTokenForEmail(mail);
-    if (!token) return;
+    if (!mail || !token) return;
     setConfirmModal({
       message: "Permanently delete this email? This cannot be undone.",
       onConfirm: async () => {
-        setEmails(prev => prev.filter(e => e.id !== emailId));
+        setEmails(prev => prev.filter(e => !sameEmail(e, mail)));
         setSelectedMail(null);
         try {
-          await invoke("permanently_delete", { accessToken: token, messageId: emailId });
+          await invoke("permanently_delete", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
           showToast("Permanently deleted", "success");
         } catch {
           showToast("Delete failed", "error");
@@ -1139,16 +1432,16 @@ function App() {
     setIsSending(false);
   };
 
-  const handleMarkAsUnread = async (emailId: string) => {
-    const mail = emails.find(e => e.id === emailId);
+  const handleMarkAsUnread = async (mail: EmailSummary) => {
     const token = getTokenForEmail(mail);
-    if (!token) return;
-    recentlyReadRef.current.delete(emailId);
-    setEmails(prev => prev.map(m => m.id === emailId ? { ...m, unread: true } : m));
+    if (!mail || !token) return;
+    recentlyReadRef.current.delete(emailKey(mail));
+    setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m));
+    adjustUnreadBadge(mail.account_id, 1);
     try {
-      await invoke("mark_as_unread", { accessToken: token, messageId: emailId });
-      await refreshUnreadCount();
+      await invoke("mark_as_unread", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
     } catch {
+      adjustUnreadBadge(mail.account_id, -1);
       showToast("Operation failed", "error");
       loadEmails(activeTabRef.current);
     }
@@ -1164,8 +1457,49 @@ function App() {
     setShowCompose(true);
   };
 
+  const handleAppLanguageChange = async (language: AppLanguage) => {
+    const previous = appLanguage;
+    setAppLanguage(language);
+    localStorage.setItem("fursoy_app_language", language);
+    try {
+      const saved = await invoke<AppControls>("set_app_language", { language });
+      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved });
+    } catch (error) {
+      console.error("Failed to save app language:", error);
+      setAppLanguage(previous);
+      localStorage.setItem("fursoy_app_language", previous);
+    }
+  };
+
+  const canLoadRemoteImages = useCallback((mail: EmailSummary) => {
+    if (remoteImageMode === "always" || loadedRemoteImageEmails.has(mail.id)) return true;
+    if (remoteImageMode !== "trusted") return false;
+    const sender = getSenderAddress(mail.sender);
+    return !!sender && (trustedImageSenders[mail.account_id] ?? []).includes(sender);
+  }, [loadedRemoteImageEmails, remoteImageMode, trustedImageSenders]);
+
+  const handleLoadRemoteImages = useCallback((emailId: string) => {
+    setLoadedRemoteImageEmails(previous => new Set(previous).add(emailId));
+  }, []);
+
+  const handleTrustRemoteImages = useCallback((mail: EmailSummary) => {
+    const sender = getSenderAddress(mail.sender);
+    if (!sender) return;
+    setTrustedImageSenders(previous => {
+      const senders = previous[mail.account_id] ?? [];
+      if (senders.includes(sender)) return previous;
+      const next = { ...previous, [mail.account_id]: [...senders, sender] };
+      localStorage.setItem("fursoy_trusted_image_senders", JSON.stringify(next));
+      return next;
+    });
+    handleLoadRemoteImages(mail.id);
+  }, [handleLoadRemoteImages]);
+
   // --- Derived state ---
-  const activeMail = emails.find(m => m.id === selectedMail);
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  const displayEmails = hasSearchQuery ? (searchResults ?? []) : emails;
+  const activeMail = [...displayEmails, ...emails].find(m => emailKey(m) === selectedMail);
+  const activeMailKey = activeMail ? emailKey(activeMail) : null;
   const selectedMailViewMode = mailViewPreference === "auto" ? getAutoMailViewMode(windowWidth) : mailViewPreference;
   const mailViewMode: MailViewMode = selectedMailViewMode === "single-toggle" ? "split" : selectedMailViewMode;
 
@@ -1216,19 +1550,14 @@ function App() {
     setIsBodyLoading(false);
     setReadingToolsOpen(false);
     if (mailScrollRef.current) mailScrollRef.current.scrollTop = 0;
-    if (!selectedMail) return;
+    if (!selectedMail || !activeMail) return;
 
     setIsBodyLoading(true);
-    invoke<string>("get_email_body", { id: selectedMail })
+    invoke<string>("get_email_body", { id: activeMail?.id, accountId: activeMail?.account_id })
       .then((body) => {
         if (cancelled) return;
         setSelectedMailBody(body || "");
         setSelectedMailBodyId(selectedMail);
-        setDebugMetrics(prev => ({
-          ...prev,
-          openedCount: prev.openedCount + 1,
-          lastBodyBytes: byteLength(body || ""),
-        }));
       })
       .catch((e) => {
         if (cancelled) return;
@@ -1238,7 +1567,33 @@ function App() {
       .finally(() => { if (!cancelled) setIsBodyLoading(false); });
 
     return () => { cancelled = true; };
-  }, [selectedMail]);
+  }, [selectedMail, activeMailKey]);
+
+  useEffect(() => {
+    if (!activeMail || !activeMailKey) return;
+    const token = getTokenForEmail(activeMail);
+    if (!token) return;
+    let cancelled = false;
+
+    // The reader is already showing SQLite data. Refresh only this message in
+    // the background, then replace the body only if it is still open.
+    void invoke("refresh_email_from_gmail", {
+      accountId: activeMail.account_id,
+      accessToken: token,
+      messageId: activeMail.id,
+    })
+      .then(() => invoke<string>("get_email_body", { id: activeMail.id, accountId: activeMail.account_id }))
+      .then((body) => {
+        if (cancelled || selectedMail !== activeMailKey) return;
+        setSelectedMailBody(body || "");
+        setSelectedMailBodyId(activeMailKey);
+      })
+      .catch(() => {
+        // Local data remains usable when an individual Gmail refresh fails.
+      });
+
+    return () => { cancelled = true; };
+  }, [activeMailKey]);
 
   useEffect(() => { setVerificationCopyState("idle"); }, [selectedMail]);
 
@@ -1246,16 +1601,27 @@ function App() {
   useEffect(() => {
     if (!selectedMail || !selectedMailThreadId) { setThreadEmails([]); return; }
     let cancelled = false;
-    invoke<EmailSummary[]>("get_thread_emails", { threadId: selectedMailThreadId })
+    invoke<EmailSummary[]>("get_thread_emails", { threadId: selectedMailThreadId, accountId: activeMail?.account_id })
       .then(all => {
         if (cancelled) return;
         setThreadEmails(all);
         for (const email of all) {
-          if (email.unread && !recentlyReadRef.current.has(email.id)) {
-            recentlyReadRef.current.add(email.id);
-            setEmails(prev => prev.map(m => m.id === email.id ? { ...m, unread: false } : m));
+          if (email.unread && !recentlyReadRef.current.has(emailKey(email))) {
+            recentlyReadRef.current.add(emailKey(email));
+            setEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: false } : m));
+            setSearchResults(prev => prev?.map(m => sameEmail(m, email) ? { ...m, unread: false } : m) ?? null);
+            adjustUnreadBadge(email.account_id, -1);
             const token = getTokenForEmail(email);
-            if (token) invoke("mark_as_read", { accessToken: token, messageId: email.id }).catch(console.error);
+            if (token) {
+              invoke("mark_as_read", { accountId: email.account_id, accessToken: token, messageId: email.id }).catch(error => {
+                console.error("Failed to mark thread email as read:", error);
+                recentlyReadRef.current.delete(emailKey(email));
+                setEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: true } : m));
+                setSearchResults(prev => prev?.map(m => sameEmail(m, email) ? { ...m, unread: true } : m) ?? null);
+                setThreadEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: true } : m));
+                adjustUnreadBadge(email.account_id, 1);
+              });
+            }
           }
         }
       })
@@ -1263,19 +1629,10 @@ function App() {
     return () => { cancelled = true; };
   }, [selectedMail, selectedMailThreadId, threadRefreshKey]);
 
-  const displayEmails = emails.filter(email => {
-    if (!searchQuery) return true;
-    return (
-      email.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      email.sender.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      email.snippet.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  });
-
   const threadGroups = useMemo((): ThreadGroup[] => {
     const map = new Map<string, ThreadGroup>();
     for (const email of displayEmails) {
-      const key = email.thread_id || email.id;
+      const key = `${email.account_id}\u0000${email.thread_id || email.id}`;
       const name = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
       const ex = map.get(key);
       if (!ex) {
@@ -1293,18 +1650,15 @@ function App() {
   }, [displayEmails]);
 
   const unreadCount = inboxUnread;
-  const hasLoadedActiveBody = !!activeMail && selectedMailBodyId === activeMail.id;
+  const hasLoadedActiveBody = !!activeMail && selectedMailBodyId === selectedMail;
   const verificationCode = activeMail && hasLoadedActiveBody
     ? extractVerificationCode({ ...activeMail, body_html: selectedMailBody }, otpMode, appLanguage)
     : null;
-  const activeMailHtml = activeMail && hasLoadedActiveBody
-    ? buildRenderableEmailHtml(selectedMailBody, activeMail.snippet, renderMode)
-    : "";
-
-  const showArchiveBtn = activeTab === "inbox" || activeTab === "sent";
-  const showRestoreBtn = activeTab === "trash" || activeTab === "spam" || activeTab === "archive";
-  const showTrashToBinBtn = activeTab !== "trash";
-  const showDeleteForeverBtn = activeTab === "trash";
+  const activeMailTab = activeMail?.label ?? activeTab;
+  const showArchiveBtn = activeMailTab === "inbox" || activeMailTab === "sent";
+  const showRestoreBtn = activeMailTab === "trash" || activeMailTab === "spam" || activeMailTab === "archive";
+  const showTrashToBinBtn = activeMailTab !== "trash";
+  const showDeleteForeverBtn = activeMailTab === "trash";
   const isCompactSidebarMode =
     mailViewPreference === "single-toggle" ||
     (mailViewPreference === "auto" && windowWidth >= 900 && windowWidth < 1280);
@@ -1454,10 +1808,12 @@ function App() {
           notifInfinite={notifInfinite} setNotifInfinite={setNotifInfinite}
           lazyBodyLoading={lazyBodyLoading} setLazyBodyLoading={setLazyBodyLoading}
           renderMode={renderMode} setRenderMode={setRenderMode}
+          remoteImageMode={remoteImageMode} setRemoteImageMode={setRemoteImageMode}
           otpMode={otpMode} setOtpMode={setOtpMode}
-          appLanguage={appLanguage} setAppLanguage={setAppLanguage}
+          appLanguage={appLanguage} setAppLanguage={handleAppLanguageChange}
           pauseOnFullscreen={pauseOnFullscreen} setPauseOnFullscreen={setPauseOnFullscreen}
-          debugMetrics={debugMetrics} onClearCaches={clearPerformanceCaches}
+          onResetLocalMailbox={resetLocalMailbox}
+          isResettingLocalMailbox={isResettingLocalMailbox}
           currentVersion={currentVersion}
           isCheckingUpdate={isCheckingUpdate}
           updateAvailable={updateAvailable}
@@ -1490,6 +1846,13 @@ function App() {
               mailViewPreference={mailViewPreference}
               onViewPreferenceChange={handleMailViewPreferenceChange}
               onRefresh={handleRefresh}
+              onLoadMore={loadOlderEmails}
+              hasMoreEmails={hasSearchQuery ? false : hasMoreEmails}
+              isLoadingMoreEmails={isLoadingMoreEmails}
+              mailAppendVersion={mailAppendVersion}
+              notificationFocusVersion={notificationFocusVersion}
+              isMailboxBackfilling={isMailboxBackfilling}
+              mailboxDownloadPending={mailboxDownloadPending}
               accessToken={accessToken}
               accounts={accounts}
               activeAccountId={activeAccountId}
@@ -1498,12 +1861,12 @@ function App() {
               <EmailReader
                 className={mailReaderClassName}
                 activeMail={activeMail}
-                activeMailHtml={activeMailHtml}
+                activeMailBody={selectedMailBody}
                 isBodyLoading={isBodyLoading}
                 bodyError={bodyError}
                 hasLoadedActiveBody={hasLoadedActiveBody}
                 mailViewMode={mailViewMode}
-                activeTab={activeTab}
+                activeTab={activeMailTab}
                 closeReader={closeReader}
                 showReply={showReply} setShowReply={setShowReply}
                 replyMode={replyMode} setReplyMode={setReplyMode}
@@ -1517,6 +1880,9 @@ function App() {
                 effectiveZoomPct={effectiveZoomPct}
                 readingToolsOpen={readingToolsOpen} setReadingToolsOpen={setReadingToolsOpen}
                 renderMode={renderMode} setRenderMode={setRenderMode}
+                remoteImagesAllowedForEmail={canLoadRemoteImages}
+                onLoadRemoteImages={handleLoadRemoteImages}
+                onTrustRemoteImages={handleTrustRemoteImages}
                 verificationCode={verificationCode}
                 verificationCopyState={verificationCopyState}
                 setVerificationCopyState={setVerificationCopyState}
@@ -1524,11 +1890,11 @@ function App() {
                 showRestoreBtn={showRestoreBtn}
                 showTrashToBinBtn={showTrashToBinBtn}
                 showDeleteForeverBtn={showDeleteForeverBtn}
-                onArchive={() => handleArchive(activeMail.id)}
-                onTrash={() => handleTrash(activeMail.id)}
-                onMoveToInbox={() => handleMoveToInbox(activeMail.id)}
-                onPermanentDelete={() => handlePermanentDelete(activeMail.id)}
-                onMarkAsUnread={() => handleMarkAsUnread(activeMail.id)}
+                onArchive={() => handleArchive(activeMail)}
+                onTrash={() => handleTrash(activeMail)}
+                onMoveToInbox={() => handleMoveToInbox(activeMail)}
+                onPermanentDelete={() => handlePermanentDelete(activeMail)}
+                onMarkAsUnread={() => handleMarkAsUnread(activeMail)}
                 onForward={() => handleForward(activeMail)}
                 onOpenUrl={openExternalMailUrl}
                 mailScrollRef={mailScrollRef}

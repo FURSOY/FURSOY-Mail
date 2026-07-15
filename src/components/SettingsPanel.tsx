@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical } from "lucide-react";
 import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
-import type { Account, AppControls, DensityMode, MailDebugMetrics, OtpMode, RenderMode } from "../types";
+import type { Account, AppControls, DensityMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
 
 interface SettingsPanelProps {
   isVisible: boolean;
@@ -33,6 +33,8 @@ interface SettingsPanelProps {
   setLazyBodyLoading: (v: boolean) => void;
   renderMode: RenderMode;
   setRenderMode: (v: RenderMode) => void;
+  remoteImageMode: RemoteImageMode;
+  setRemoteImageMode: (v: RemoteImageMode) => void;
   otpMode: OtpMode;
   setOtpMode: (v: OtpMode) => void;
   appLanguage: AppLanguage;
@@ -40,8 +42,8 @@ interface SettingsPanelProps {
   pauseOnFullscreen: boolean;
   setPauseOnFullscreen: (v: boolean) => void;
 
-  debugMetrics: MailDebugMetrics;
-  onClearCaches: () => void;
+  onResetLocalMailbox: () => void;
+  isResettingLocalMailbox: boolean;
 
   currentVersion: string;
   isCheckingUpdate: boolean;
@@ -65,9 +67,10 @@ export function SettingsPanel({
   launchAtStartup, startupSettingLoading, onLaunchAtStartupChange,
   appControls, onUpdateAppControls,
   notifDuration, setNotifDuration, notifInfinite, setNotifInfinite,
-  lazyBodyLoading, setLazyBodyLoading, renderMode, setRenderMode,
+  lazyBodyLoading, setLazyBodyLoading, renderMode, setRenderMode, remoteImageMode, setRemoteImageMode,
   otpMode, setOtpMode, appLanguage, setAppLanguage, pauseOnFullscreen, setPauseOnFullscreen,
-  debugMetrics, onClearCaches,
+  onResetLocalMailbox,
+  isResettingLocalMailbox,
   currentVersion, isCheckingUpdate, updateAvailable, updateProgress, updateError, updateStatus,
   onCheckForUpdates, onInstallUpdate,
   accounts, onAddAccount, onLogoutAccount, onReorderAccounts,
@@ -297,7 +300,6 @@ export function SettingsPanel({
                     type="button"
                     onClick={() => {
                       setAppLanguage(lang);
-                      localStorage.setItem("fursoy_app_language", lang);
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${appLanguage === lang ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
@@ -305,6 +307,40 @@ export function SettingsPanel({
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+
+          {/* Remote images */}
+          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.remoteImages.title}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.remoteImages.description}</p>
+            <div className="space-y-2">
+              {(["always", "trusted", "ask"] as RemoteImageMode[]).map((mode) => {
+                const label = tr.remoteImages[mode];
+                return (
+                  <label
+                    key={mode}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${
+                      remoteImageMode === mode
+                        ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
+                        : "border-white/10 bg-[#09090b] hover:bg-white/[0.03]"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="remote-image-mode"
+                      value={mode}
+                      checked={remoteImageMode === mode}
+                      onChange={() => {
+                        setRemoteImageMode(mode);
+                        localStorage.setItem("fursoy_remote_image_mode", mode);
+                      }}
+                      className="h-3.5 w-3.5 border-white/20 bg-[#09090b] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-zinc-200">{label}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -486,26 +522,17 @@ export function SettingsPanel({
                 <span className="text-sm text-zinc-300">Pause background network activity during fullscreen / game mode</span>
               </label>
 
-              <div className="rounded-lg border border-white/5 bg-[#09090b] p-3">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <div>
-                    <div className="text-xs font-medium text-zinc-300">Approximate data usage</div>
-                    <div className="text-[10px] text-zinc-600">Shown value does not include WebView2 RAM usage.</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={onClearCaches}
-                    className="px-3 py-1.5 rounded-md border border-white/10 text-xs text-zinc-300 hover:bg-white/5"
-                  >
-                    Clear cache
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[10px] text-zinc-500">
-                  <div>Opened content: <span className="text-zinc-300">{debugMetrics.openedCount}</span></div>
-                  <div>Last content size: <span className="text-zinc-300">{Math.round(debugMetrics.lastBodyBytes / 1024)} KB</span></div>
-                  <div>Cached labels: <span className="text-zinc-300">{debugMetrics.cachedLabels}</span></div>
-                  <div>Cached emails: <span className="text-zinc-300">{debugMetrics.cachedMessages}</span></div>
-                </div>
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-3">
+                <div className="text-xs font-medium text-zinc-200">{tr.localMailbox.title}</div>
+                <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{tr.localMailbox.description}</p>
+                <button
+                  type="button"
+                  onClick={onResetLocalMailbox}
+                  disabled={isResettingLocalMailbox}
+                  className="mt-3 rounded-md border border-amber-500/30 px-3 py-1.5 text-xs text-amber-200 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isResettingLocalMailbox ? tr.localMailbox.resetting : tr.localMailbox.reset}
+                </button>
               </div>
             </div>
           </div>

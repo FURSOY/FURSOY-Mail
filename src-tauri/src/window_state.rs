@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Window};
 
 const WINDOW_STATE_FILE: &str = "window-state.json";
@@ -111,6 +111,20 @@ pub fn save_window_state(window: &Window) {
     };
 
     let _ = fs::write(path, json);
+}
+
+/// Captures the normal window bounds after Windows finishes a
+/// fullscreen/maximize transition. The first resize event may still report the
+/// previous state, which would otherwise leave stale bounds on the next launch.
+pub fn save_window_state_after_transition(window: Window) {
+    if !window.is_fullscreen().unwrap_or(false) && !window.is_maximized().unwrap_or(false) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        save_window_state(&window);
+    });
 }
 
 fn saved_position_is_visible(app: &AppHandle, state: &PersistedWindowState) -> bool {

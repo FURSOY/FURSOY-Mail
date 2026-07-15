@@ -6,14 +6,87 @@ mod notify;
 mod settings;
 mod window_state;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Emitter;
 
 /// Per-account sync lock — prevents concurrent syncs for the same account
+#[derive(Default)]
+pub struct SyncWorkers {
+    active: HashMap<String, i64>,
+    resync_requested: HashMap<String, i64>,
+    backfilling: HashMap<String, i64>,
+}
+
+impl SyncWorkers {
+    /// Returns true only for the caller that owns this account's worker.
+    pub fn claim_or_request_resync(&mut self, account_id: &str, account_generation: i64) -> bool {
+        match self.active.get(account_id) {
+            Some(active_generation) if *active_generation == account_generation => {
+                self.resync_requested.insert(account_id.to_string(), account_generation);
+                false
+            }
+            _ => {
+                self.active.insert(account_id.to_string(), account_generation);
+                true
+            }
+        }
+    }
+
+    pub fn take_resync_request(&mut self, account_id: &str, account_generation: i64) -> bool {
+        if self.active.get(account_id) != Some(&account_generation) {
+            return false;
+        }
+        self.resync_requested.remove(account_id) == Some(account_generation)
+    }
+
+    /// Atomically either keeps the worker for a queued refresh or releases it.
+    pub fn take_resync_or_release(&mut self, account_id: &str, account_generation: i64) -> bool {
+        if self.active.get(account_id) != Some(&account_generation) {
+            return false;
+        }
+        self.backfilling.remove(account_id);
+        if self.resync_requested.remove(account_id) == Some(account_generation) {
+            true
+        } else {
+            self.active.remove(account_id);
+            false
+        }
+    }
+
+    pub fn set_backfilling(&mut self, account_id: &str, account_generation: i64) -> bool {
+        if self.active.get(account_id) != Some(&account_generation) {
+            return false;
+        }
+        self.backfilling.insert(account_id.to_string(), account_generation);
+        true
+    }
+
+    pub fn is_backfilling(&self, account_id: Option<&str>) -> bool {
+        match account_id {
+            Some(account_id) => self.backfilling.contains_key(account_id),
+            None => !self.backfilling.is_empty(),
+        }
+    }
+
+    pub fn release(&mut self, account_id: &str, account_generation: i64) {
+        if self.active.get(account_id) == Some(&account_generation) {
+            self.active.remove(account_id);
+            self.resync_requested.remove(account_id);
+            self.backfilling.remove(account_id);
+        }
+    }
+
+    pub fn invalidate_account(&mut self, account_id: &str) {
+        self.active.remove(account_id);
+        self.resync_requested.remove(account_id);
+        self.backfilling.remove(account_id);
+    }
+}
+
+/// Single per-account worker state for initial sync, incremental sync, and backfill.
 pub struct SyncState {
-    pub is_syncing: Mutex<HashSet<String>>,
-    pub resync_requested: Mutex<HashSet<String>>,
+    pub workers: Mutex<SyncWorkers>,
 }
 
 fn is_background_launch() -> bool {
@@ -49,13 +122,13 @@ pub fn run() {
             });
         })
         .manage(SyncState {
-            is_syncing: Mutex::new(HashSet::new()),
-            resync_requested: Mutex::new(HashSet::new()),
+            workers: Mutex::new(SyncWorkers::default()),
         })
         .manage(notify::PendingNotification(Mutex::new(None)))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                 window_state::save_window_state(window);
+                window_state::save_window_state_after_transition(window.clone());
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "main" {
@@ -161,11 +234,16 @@ pub fn run() {
             db::reorder_accounts,
             db::search_contacts,
             db::get_local_emails,
+            db::search_local_emails,
             db::get_emails_by_label,
+            db::get_orphaned_cache_counts,
+            db::reset_local_mail_cache,
             db::get_email_body,
             db::get_inbox_unread_count,
             db::get_thread_emails,
             gmail::sync_emails,
+            gmail::refresh_email_from_gmail,
+            gmail::get_mailbox_download_status,
             gmail::mark_as_read,
             gmail::mark_as_unread,
             gmail::archive_email,
@@ -187,8 +265,34 @@ pub fn run() {
             settings::get_app_controls,
             settings::set_app_controls,
             settings::set_notifications_muted,
-            settings::set_mail_sync_paused
+            settings::set_mail_sync_paused,
+            settings::set_app_language
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncWorkers;
+
+    #[test]
+    fn worker_keeps_ownership_until_the_queued_resync_is_consumed() {
+        let mut workers = SyncWorkers::default();
+
+        assert!(workers.claim_or_request_resync("account-a", 1));
+        assert!(!workers.claim_or_request_resync("account-a", 1));
+        assert!(workers.set_backfilling("account-a", 1));
+
+        assert!(workers.take_resync_or_release("account-a", 1));
+        assert!(!workers.claim_or_request_resync("account-a", 1));
+        assert!(workers.take_resync_or_release("account-a", 1));
+        assert!(!workers.take_resync_or_release("account-a", 1));
+        assert!(workers.claim_or_request_resync("account-a", 1));
+
+        workers.invalidate_account("account-a");
+        assert!(workers.claim_or_request_resync("account-a", 2));
+        workers.release("account-a", 1);
+        assert!(!workers.claim_or_request_resync("account-a", 2));
+    }
 }

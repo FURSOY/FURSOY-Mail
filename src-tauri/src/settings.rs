@@ -17,6 +17,10 @@ const STARTUP_VALUE_NAME: &str = "FURSOY Mail";
 
 const APP_CONTROLS_FILE: &str = "app-controls.json";
 
+fn default_app_language() -> String {
+    "en".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppControls {
@@ -25,7 +29,7 @@ pub struct AppControls {
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
     pub quiet_hours_end: String,
-    #[serde(default)]
+    #[serde(default = "default_app_language")]
     pub app_language: String,
 }
 
@@ -90,6 +94,17 @@ pub fn set_notifications_muted(app: AppHandle, muted: bool) -> Result<AppControl
 pub fn set_mail_sync_paused(app: AppHandle, paused: bool) -> Result<AppControls, String> {
     let mut controls = read_app_controls(&app);
     controls.mail_sync_paused = paused;
+    write_app_controls(&app, &controls)?;
+    Ok(controls)
+}
+
+#[tauri::command]
+pub fn set_app_language(app: AppHandle, language: String) -> Result<AppControls, String> {
+    if language != "en" && language != "tr" {
+        return Err("Unsupported app language".into());
+    }
+    let mut controls = read_app_controls(&app);
+    controls.app_language = language;
     write_app_controls(&app, &controls)?;
     Ok(controls)
 }

@@ -1,6 +1,11 @@
-use crate::db::{delete_emails_by_ids, get_history_id, load_tokens, set_history_id, upsert_emails, Email};
+use crate::db::{
+    complete_full_sync, delete_emails_by_ids, finalize_full_sync, get_active_full_sync,
+    get_account_cache_generation, get_history_id, get_mailbox_cursor_state, has_pending_mailbox_pages, load_tokens,
+    next_full_sync_generation, set_history_id, set_mailbox_cursor, upsert_sync_attachments,
+    upsert_sync_emails, set_gmail_inbox_unread_stats, Email,
+};
 use base64::Engine;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -61,6 +66,14 @@ struct ProfileResponse {
     history_id: String,
 }
 
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+struct GmailLabelStats {
+    #[serde(rename = "messagesUnread")]
+    messages_unread: i64,
+    #[serde(rename = "threadsUnread")]
+    threads_unread: i64,
+}
+
 // ── Get current historyId from Gmail profile ──
 async fn get_profile_history_id(client: &Client, access_token: &str) -> Result<String, String> {
     let res = client
@@ -76,6 +89,23 @@ async fn get_profile_history_id(client: &Client, access_token: &str) -> Result<S
 
     let profile: ProfileResponse = res.json().await.map_err(|e| e.to_string())?;
     Ok(profile.history_id)
+}
+
+/// Gmail exposes both message and thread counts. The product badge intentionally
+/// uses messagesUnread, matching the user's Gmail unread-message count.
+async fn get_inbox_unread_stats(client: &Client, access_token: &str) -> Result<GmailLabelStats, String> {
+    let res = client
+        .get("https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| format!("Inbox label fetch error: {e}"))?;
+
+    if !res.status().is_success() {
+        return Err(format!("Inbox label API error: {}", res.status()));
+    }
+
+    res.json().await.map_err(|e| e.to_string())
 }
 
 // ── Fetch history changes since a given historyId ──
@@ -182,6 +212,7 @@ async fn fetch_history(
 async fn do_incremental_sync(
     app: &AppHandle,
     account_id: &str,
+    account_generation: i64,
     access_token: &str,
     start_history_id: &str,
 ) -> Result<(), String> {
@@ -201,15 +232,6 @@ async fn do_incremental_sync(
         new_history_id
     );
 
-    // Delete removed messages from DB
-    if !delete_ids.is_empty() {
-        let app_clone = app.clone();
-        let ids = delete_ids.clone();
-        tokio::task::spawn_blocking(move || delete_emails_by_ids(&app_clone, &ids))
-            .await
-            .map_err(|e| format!("DB delete task failed: {}", e))??;
-    }
-
     // Fetch details for new/changed messages
     if !fetch_ids.is_empty() {
         let parsed: Vec<(Email, Vec<crate::db::Attachment>)> = stream::iter(fetch_ids)
@@ -219,14 +241,18 @@ async fn do_incremental_sync(
                 async move {
                     fetch_message_detail(client, token, &id)
                         .await
-                        .ok()
                         .map(parse_message_detail)
                 }
             })
             .buffer_unordered(10)
-            .filter_map(|x| async { x })
-            .collect()
-            .await;
+            .try_collect()
+            .await
+            .map_err(|e| {
+                format!(
+                    "Incremental sync detail fetch failed; history checkpoint was not advanced: {}",
+                    e
+                )
+            })?;
 
         if !parsed.is_empty() {
             let acct = account_id.to_string();
@@ -240,87 +266,96 @@ async fn do_incremental_sync(
             let app_clone = app.clone();
             let acct2 = acct.clone();
             tokio::task::spawn_blocking(move || {
-                upsert_emails(&app_clone, &acct2, emails).map_err(|e| e.to_string())?;
-                crate::db::upsert_attachments(&app_clone, atts_flat).map_err(|e| e.to_string())
+                upsert_sync_emails(&app_clone, &acct2, account_generation, None, emails)
+                    .map_err(|e| e.to_string())?;
+                upsert_sync_attachments(&app_clone, &acct2, account_generation, atts_flat)
+                    .map_err(|e| e.to_string())
             })
             .await
             .map_err(|e| format!("DB upsert task failed: {}", e))??;
         }
     }
 
-    set_history_id(app, account_id, &new_history_id)?;
+    // Only remove local messages after every changed message was fetched and saved.
+    if !delete_ids.is_empty() {
+        let app_clone = app.clone();
+        let account_id = account_id.to_string();
+        tokio::task::spawn_blocking(move || delete_emails_by_ids(&app_clone, &account_id, account_generation, &delete_ids))
+            .await
+            .map_err(|e| format!("DB delete task failed: {}", e))??;
+    }
+
+    // Advancing this checkpoint is the final step: a failed sync must be retried
+    // from the same history ID so Gmail does not permanently skip any change.
+    if get_account_cache_generation(app, account_id)? != account_generation {
+        return Err("Account is no longer available".to_string());
+    }
+    set_history_id(app, account_id, account_generation, &new_history_id)?;
 
     Ok(())
 }
 
 // ── Full sync ──
-async fn do_sync(app: &AppHandle, account_id: &str, access_token: &str) -> Result<(), String> {
+async fn do_sync(
+    app: &AppHandle,
+    account_id: &str,
+    account_generation: i64,
+    access_token: &str,
+) -> Result<(), String> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_default();
 
-    let profile_history_id = get_profile_history_id(&client, access_token).await.ok();
+    let profile_history_id = get_profile_history_id(&client, access_token).await?;
+    let sync_generation = next_full_sync_generation(app, account_id)?;
 
     let mut all_ids = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
+    let mut cursors = Vec::new();
 
-    let queries = vec![
-        ("in:inbox", 500u32),
-        ("in:sent", 200),
-        ("in:spam", 50),
-        ("in:trash", 50),
-        ("-in:inbox -in:sent -in:spam -in:trash -in:drafts", 100),
-    ];
-
-    for (query, max) in queries {
-        if let Ok(ids) = fetch_message_ids(&client, access_token, query, max).await {
-            for msg in ids {
-                if seen_ids.insert(msg.id.clone()) {
-                    all_ids.push(msg.id);
-                }
+    for label in ["inbox", "sent", "spam", "trash", "archive"] {
+        let page = fetch_message_page(
+            &client,
+            access_token,
+            mailbox_query(label).expect("known mailbox label"),
+            None,
+            100,
+        )
+        .await?;
+        for msg in page.messages {
+            if seen_ids.insert(msg.id.clone()) {
+                all_ids.push(msg.id);
             }
         }
+        cursors.push((label.to_string(), page.next_page_token));
     }
 
     eprintln!("[SYNC:{}] full sync: {} messages to fetch", account_id, all_ids.len());
 
-    let parsed: Vec<(Email, Vec<crate::db::Attachment>)> = stream::iter(all_ids)
-        .map(|id| {
-            let client = &client;
-            let token = access_token;
-            async move {
-                fetch_message_detail(client, token, &id)
-                    .await
-                    .ok()
-                    .map(parse_message_detail)
-            }
-        })
-        .buffer_unordered(10)
-        .filter_map(|x| async { x })
-        .collect()
-        .await;
+    cache_message_details(
+        app,
+        account_id,
+        &client,
+        access_token,
+        all_ids.into_iter().map(|id| MessageId { id }).collect(),
+        Some(sync_generation),
+        account_generation,
+    )
+    .await?;
 
-    let acct = account_id.to_string();
-    let (emails, mut all_attachments): (Vec<Email>, Vec<Vec<crate::db::Attachment>>) =
-        parsed.into_iter().unzip();
-    let atts_flat: Vec<crate::db::Attachment> = all_attachments
-        .iter_mut()
-        .flat_map(|v| v.iter_mut().map(|a| { a.account_id = acct.clone(); a.clone() }))
-        .collect();
-    let app_clone = app.clone();
-    let acct2 = acct.clone();
-    tokio::task::spawn_blocking(move || {
-        upsert_emails(&app_clone, &acct2, emails).map_err(|e| e.to_string())?;
-        crate::db::upsert_attachments(&app_clone, atts_flat).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("DB task failed: {}", e))??;
-
-    if let Some(hid) = profile_history_id {
-        eprintln!("[SYNC:{}] full sync done, historyId={}", account_id, hid);
-        set_history_id(app, account_id, &hid)?;
+    if get_account_cache_generation(app, account_id)? != account_generation {
+        return Err("Account is no longer available".to_string());
     }
+    complete_full_sync(
+        app,
+        account_id,
+        account_generation,
+        &cursors,
+        &profile_history_id,
+        sync_generation,
+    )?;
+    eprintln!("[SYNC:{}] full sync done, historyId={}", account_id, profile_history_id);
 
     Ok(())
 }
@@ -336,6 +371,11 @@ struct MessageListResponse {
 #[derive(Deserialize, Debug)]
 struct MessageId {
     id: String,
+}
+
+struct MessagePage {
+    messages: Vec<MessageId>,
+    next_page_token: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -482,56 +522,56 @@ fn parse_message_detail(detail: MessageDetail) -> (Email, Vec<crate::db::Attachm
     (email, attachments)
 }
 
-/// Fetch a list of message IDs from Gmail (with pagination support)
-async fn fetch_message_ids(
+fn mailbox_query(label: &str) -> Result<&'static str, String> {
+    match label {
+        "inbox" => Ok("in:inbox"),
+        "sent" => Ok("in:sent"),
+        "spam" => Ok("in:spam"),
+        "trash" => Ok("in:trash"),
+        "archive" => Ok("-in:inbox -in:sent -in:spam -in:trash -in:drafts"),
+        _ => Err("Unknown mailbox label".to_string()),
+    }
+}
+
+/// Fetch one Gmail result page. We persist its continuation token so a later
+/// scroll can continue where the initial cache stopped.
+async fn fetch_message_page(
     client: &Client,
     access_token: &str,
     query: &str,
+    page_token: Option<&str>,
     max_results: u32,
-) -> Result<Vec<MessageId>, String> {
-    let mut all_messages = Vec::new();
-    let mut page_token: Option<String> = None;
-    let page_size = std::cmp::min(max_results, 100); // Gmail max per page is 100
-
-    loop {
-        let mut url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={}&q={}",
-            page_size, query
-        );
-        if let Some(ref token) = page_token {
-            url.push_str(&format!("&pageToken={}", token));
+) -> Result<MessagePage, String> {
+    let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/messages")
+        .map_err(|e| e.to_string())?;
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("maxResults", &max_results.min(100).to_string());
+        params.append_pair("q", query);
+        if let Some(token) = page_token {
+            params.append_pair("pageToken", token);
         }
-
-        let res = client
-            .get(&url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| format!("List fetch error: {}", e))?;
-
-        if !res.status().is_success() {
-            return Err(format!(
-                "Gmail API Error: {}",
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let list_data: MessageListResponse = res.json().await.map_err(|e| e.to_string())?;
-
-        if let Some(msgs) = list_data.messages {
-            all_messages.extend(msgs);
-        }
-
-        // Stop if we have enough or no more pages
-        if all_messages.len() >= max_results as usize || list_data.next_page_token.is_none() {
-            break;
-        }
-        page_token = list_data.next_page_token;
     }
 
-    // Trim to exact max
-    all_messages.truncate(max_results as usize);
-    Ok(all_messages)
+    let res = client
+        .get(url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| format!("List fetch error: {}", e))?;
+
+    if !res.status().is_success() {
+        return Err(format!(
+            "Gmail API Error: {}",
+            res.text().await.unwrap_or_default()
+        ));
+    }
+
+    let list_data: MessageListResponse = res.json().await.map_err(|e| e.to_string())?;
+    Ok(MessagePage {
+        messages: list_data.messages.unwrap_or_default(),
+        next_page_token: list_data.next_page_token,
+    })
 }
 
 /// Fetch full details of a single message
@@ -551,7 +591,240 @@ async fn fetch_message_detail(
         .await
         .map_err(|e| format!("Detail fetch error: {}", e))?;
 
+    if !res.status().is_success() {
+        return Err(format!("Detail fetch API error: {}", res.status()));
+    }
+
     res.json::<MessageDetail>().await.map_err(|e| e.to_string())
+}
+
+async fn backfill_mailbox(
+    app: &AppHandle,
+    account_id: &str,
+    account_generation: i64,
+    access_token: &str,
+) -> Result<(), String> {
+    let full_sync = get_active_full_sync(app, account_id)?;
+    let sync_generation = full_sync.as_ref().map(|sync| sync.generation);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
+
+    for label in ["inbox", "sent", "spam", "trash", "archive"] {
+        let mut seen_page_tokens = std::collections::HashSet::new();
+        loop {
+            let Some(Some(page_token)) = get_mailbox_cursor_state(app, account_id, label)? else {
+                break;
+            };
+            if !seen_page_tokens.insert(page_token.clone()) {
+                return Err(format!("Gmail pagination cursor repeated for {label}"));
+            }
+            let page = fetch_message_page(
+                &client,
+                access_token,
+                mailbox_query(label)?,
+                Some(&page_token),
+                100,
+            )
+            .await?;
+            let next_page_token = page.next_page_token;
+            if next_page_token.as_deref() == Some(page_token.as_str()) {
+                return Err(format!("Gmail pagination cursor did not advance for {label}"));
+            }
+            if get_account_cache_generation(app, account_id)? != account_generation {
+                return Err("Account is no longer available".to_string());
+            }
+            cache_message_details(
+                app,
+                account_id,
+                &client,
+                access_token,
+                page.messages,
+                sync_generation,
+                account_generation,
+            )
+            .await?;
+            if get_account_cache_generation(app, account_id)? != account_generation {
+                return Err("Account is no longer available".to_string());
+            }
+            set_mailbox_cursor(
+                app,
+                account_id,
+                account_generation,
+                label,
+                next_page_token.as_deref(),
+            )?;
+
+            if next_page_token.is_none() {
+                break;
+            }
+        }
+    }
+
+    if let Some(full_sync) = full_sync {
+        if get_account_cache_generation(app, account_id)? != account_generation {
+            return Err("Account is no longer available".to_string());
+        }
+        let removed = finalize_full_sync(
+            app,
+            account_id,
+            account_generation,
+            full_sync.generation,
+        )?;
+        eprintln!(
+            "[SYNC:{}] full mailbox rebuild complete; removed {} stale local messages",
+            account_id, removed
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_sync_cycle(
+    app: &AppHandle,
+    account_id: &str,
+    account_generation: i64,
+    initial_token: String,
+) -> Result<String, String> {
+    let mut token = initial_token;
+    loop {
+        if get_active_full_sync(app, account_id)?.is_some() {
+            return Ok(token);
+        }
+        let history_id = get_history_id(app, account_id);
+        if let Some(history_id) = history_id {
+            match do_incremental_sync(app, account_id, account_generation, &token, &history_id).await {
+                Ok(()) => {}
+                Err(error) if error == "HISTORY_EXPIRED" => {
+                    eprintln!("[SYNC:{}] history expired, full sync", account_id);
+                    do_sync(app, account_id, account_generation, &token).await?;
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            do_sync(app, account_id, account_generation, &token).await?;
+        }
+
+        // Keep the displayed badge on Gmail's message-count semantics. This is
+        // reconciliation data: direct UI actions still update the badge
+        // optimistically instead of waiting for Gmail's label-stat propagation.
+        let stats_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+        match get_inbox_unread_stats(&stats_client, &token).await {
+            Ok(stats) => set_gmail_inbox_unread_stats(
+                app,
+                account_id,
+                account_generation,
+                stats.messages_unread,
+                stats.threads_unread,
+            )?,
+            Err(error) => eprintln!("[SYNC:{}] inbox unread stats unavailable: {}", account_id, error),
+        }
+
+        let run_again = {
+            let state = app.state::<crate::SyncState>();
+            let mut workers = state.workers.lock().map_err(|_| "Sync worker lock poisoned")?;
+            workers.take_resync_request(account_id, account_generation)
+        };
+        if !run_again {
+            return Ok(token);
+        }
+
+        if let Some((fresh_access, _)) = load_tokens(account_id) {
+            token = fresh_access;
+        }
+    }
+}
+
+async fn run_background_backfill_worker(
+    app: AppHandle,
+    account_id: String,
+    account_generation: i64,
+    mut token: String,
+) {
+    loop {
+        let started = {
+            let state = app.state::<crate::SyncState>();
+            let started = match state.workers.lock() {
+                Ok(mut workers) => {
+                    workers.set_backfilling(&account_id, account_generation)
+                }
+                Err(_) => false,
+            };
+            started
+        };
+        if !started {
+            return;
+        }
+
+        let result = backfill_mailbox(&app, &account_id, account_generation, &token).await;
+        if let Err(error) = &result {
+            eprintln!("[SYNC:{}] background mailbox download paused: {}", account_id, error);
+        }
+
+        let run_again = {
+            let state = app.state::<crate::SyncState>();
+            let run_again = match state.workers.lock() {
+                Ok(mut workers) => workers.take_resync_or_release(&account_id, account_generation),
+                Err(_) => false,
+            };
+            run_again
+        };
+        if !run_again {
+            return;
+        }
+
+        if let Some((fresh_access, _)) = load_tokens(&account_id) {
+            token = fresh_access;
+        }
+        match run_sync_cycle(&app, &account_id, account_generation, token).await {
+            Ok(fresh_token) => token = fresh_token,
+            Err(error) => {
+                eprintln!("[SYNC:{}] queued sync failed: {}", account_id, error);
+                if let Ok(mut workers) = app.state::<crate::SyncState>().workers.lock() {
+                    workers.release(&account_id, account_generation);
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn start_background_backfill(
+    app: &AppHandle,
+    account_id: String,
+    account_generation: i64,
+    access_token: String,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_background_backfill_worker(app, account_id, account_generation, access_token).await;
+    });
+}
+
+#[derive(Serialize)]
+pub struct MailboxDownloadStatus {
+    pub running: bool,
+    pub pending: bool,
+}
+
+#[tauri::command]
+pub fn get_mailbox_download_status(
+    app: AppHandle,
+    account_id: Option<String>,
+) -> Result<MailboxDownloadStatus, String> {
+    let state = app.state::<crate::SyncState>();
+    let workers = state
+        .workers
+        .lock()
+        .map_err(|_| "Sync worker lock poisoned")?;
+    let running = workers.is_backfilling(account_id.as_deref());
+    drop(workers);
+    let pending = has_pending_mailbox_pages(&app, account_id.as_deref())?;
+    Ok(MailboxDownloadStatus { running, pending })
 }
 
 #[tauri::command]
@@ -560,80 +833,144 @@ pub async fn sync_emails(
     account_id: String,
     access_token: String,
 ) -> Result<(), String> {
+    let account_generation = get_account_cache_generation(&app, &account_id)?;
     let state = app.state::<crate::SyncState>();
 
-    {
-        let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-        if syncing.contains(&account_id) {
-            let mut pending = state
-                .resync_requested
-                .lock()
-                .map_err(|_| "Sync lock poisoned")?;
-            pending.insert(account_id);
-            return Ok(());
-        }
-        syncing.insert(account_id.clone());
+    let owns_worker = state
+        .workers
+        .lock()
+        .map_err(|_| "Sync worker lock poisoned")?
+        .claim_or_request_resync(&account_id, account_generation);
+    if !owns_worker {
+        return Ok(());
     }
 
-    let mut token = access_token;
-    loop {
-        let result = {
-            let history_id = get_history_id(&app, &account_id);
-            if let Some(hid) = history_id {
-                match do_incremental_sync(&app, &account_id, &token, &hid).await {
-                    Ok(()) => Ok(()),
-                    Err(e) if e == "HISTORY_EXPIRED" => {
-                        eprintln!("[SYNC:{}] history expired, full sync", account_id);
-                        do_sync(&app, &account_id, &token).await
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
-                do_sync(&app, &account_id, &token).await
+    let token = match run_sync_cycle(&app, &account_id, account_generation, access_token).await {
+        Ok(token) => token,
+        Err(error) => {
+            if let Ok(mut workers) = state.workers.lock() {
+                workers.release(&account_id, account_generation);
             }
-        };
-
-        let run_again = {
-            let mut pending = state
-                .resync_requested
-                .lock()
-                .map_err(|_| "Sync lock poisoned")?;
-            let had = pending.contains(&account_id);
-            pending.remove(&account_id);
-            had
-        };
-
-        if let Err(e) = result {
-            let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-            syncing.remove(&account_id);
-            return Err(e);
+            return Err(error);
         }
+    };
 
-        if !run_again {
-            break;
-        }
+    start_background_backfill(&app, account_id, account_generation, token);
+    Ok(())
+}
 
-        // Use latest stored token in case it was refreshed
-        if let Some((fresh_access, _)) = load_tokens(&account_id) {
-            token = fresh_access;
-        }
+/// Refreshes exactly one open message without making the mail list wait for
+/// Gmail or restarting mailbox pagination.
+#[tauri::command]
+pub async fn refresh_email_from_gmail(
+    app: AppHandle,
+    account_id: String,
+    access_token: String,
+    message_id: String,
+) -> Result<(), String> {
+    let account_generation = get_account_cache_generation(&app, &account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    let detail = fetch_message_detail(&client, &access_token, &message_id).await?;
+    let (email, mut attachments) = parse_message_detail(detail);
+    for attachment in &mut attachments {
+        attachment.account_id = account_id.clone();
     }
 
-    let mut syncing = state.is_syncing.lock().map_err(|_| "Sync lock poisoned")?;
-    syncing.remove(&account_id);
+    let app_for_db = app.clone();
+    let account_for_db = account_id.clone();
+    tokio::task::spawn_blocking(move || {
+        upsert_sync_emails(
+            &app_for_db,
+            &account_for_db,
+            account_generation,
+            None,
+            vec![email],
+        )
+        .map_err(|e| e.to_string())?;
+        upsert_sync_attachments(
+            &app_for_db,
+            &account_for_db,
+            account_generation,
+            attachments,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Message refresh DB task failed: {e}"))??;
+
+    Ok(())
+}
+
+async fn cache_message_details(
+    app: &AppHandle,
+    account_id: &str,
+    client: &Client,
+    access_token: &str,
+    ids: Vec<MessageId>,
+    sync_generation: Option<i64>,
+    account_generation: i64,
+) -> Result<(), String> {
+    if get_account_cache_generation(app, account_id)? != account_generation {
+        return Err("Account is no longer available".to_string());
+    }
+    let parsed: Vec<(Email, Vec<crate::db::Attachment>)> = stream::iter(ids)
+        .map(|message| async move {
+            fetch_message_detail(client, access_token, &message.id)
+                .await
+                .map(parse_message_detail)
+        })
+        .buffer_unordered(10)
+        .try_collect()
+        .await
+        .map_err(|e| format!("Message detail fetch failed; mailbox cursor was not advanced: {e}"))?;
+
+    if parsed.is_empty() {
+        return Ok(());
+    }
+
+    let account_id = account_id.to_string();
+    let (emails, mut attachments): (Vec<Email>, Vec<Vec<crate::db::Attachment>>) =
+        parsed.into_iter().unzip();
+    let attachments: Vec<crate::db::Attachment> = attachments
+        .iter_mut()
+        .flat_map(|items| {
+            items.iter_mut().map(|attachment| {
+                attachment.account_id = account_id.clone();
+                attachment.clone()
+            })
+        })
+        .collect();
+    let app = app.clone();
+    let account_for_db = account_id.clone();
+    tokio::task::spawn_blocking(move || {
+        upsert_sync_emails(
+            &app,
+            &account_for_db,
+            account_generation,
+            sync_generation,
+            emails,
+        )
+        .map_err(|e| e.to_string())?;
+        upsert_sync_attachments(&app, &account_for_db, account_generation, attachments)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("DB task failed: {}", e))??;
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn archive_email(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    // 1. Update local DB
-    crate::db::update_email_label(&app, &message_id, "archive")?;
-
-    // 2. Remove INBOX label from Gmail
+    // Remove INBOX from Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
@@ -658,19 +995,19 @@ pub async fn archive_email(
         ));
     }
 
+    crate::db::update_email_label(&app, &message_id, &account_id, "archive")?;
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn trash_email(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    // 1. Update local DB label to 'trash' (keep it visible in Trash tab)
-    crate::db::update_email_label(&app, &message_id, "trash")?;
-
-    // 2. Trash on Gmail
+    // Trash on Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/trash",
@@ -691,19 +1028,19 @@ pub async fn trash_email(
         ));
     }
 
+    crate::db::update_email_label(&app, &message_id, &account_id, "trash")?;
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn move_to_inbox(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    // 1. Update local DB
-    crate::db::update_email_label(&app, &message_id, "inbox")?;
-
-    // 2. Add INBOX, remove SPAM/TRASH labels
+    // Add INBOX and remove SPAM/TRASH on Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
@@ -729,19 +1066,19 @@ pub async fn move_to_inbox(
         ));
     }
 
+    crate::db::update_email_label(&app, &message_id, &account_id, "inbox")?;
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn permanently_delete(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    // 1. Remove from local DB
-    crate::db::delete_email_from_db(&app, &message_id)?;
-
-    // 2. Permanently delete from Gmail
+    // Permanently delete from Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
@@ -761,6 +1098,8 @@ pub async fn permanently_delete(
             res.text().await.unwrap_or_default()
         ));
     }
+
+    crate::db::delete_email_from_db(&app, &message_id, &account_id)?;
 
     Ok(())
 }
@@ -953,13 +1292,11 @@ pub async fn send_email(
 #[tauri::command]
 pub async fn mark_as_read(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    // 1. Update local database instantly
-    crate::db::mark_email_as_read_local(&app, &message_id)?;
-
-    // 2. Notify Google API to remove UNREAD label
+    // Notify Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
@@ -969,7 +1306,7 @@ pub async fn mark_as_read(
         "removeLabelIds": ["UNREAD"]
     });
 
-    let _res = client
+    let res = client
         .post(&url)
         .bearer_auth(&access_token)
         .json(&body)
@@ -977,17 +1314,26 @@ pub async fn mark_as_read(
         .await
         .map_err(|e| e.to_string())?;
 
+    if !res.status().is_success() {
+        return Err(format!(
+            "Gmail mark as read error: {}",
+            res.text().await.unwrap_or_default()
+        ));
+    }
+
+    crate::db::mark_email_as_read_local(&app, &message_id, &account_id)?;
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn mark_as_unread(
     app: AppHandle,
+    account_id: String,
     access_token: String,
     message_id: String,
 ) -> Result<(), String> {
-    crate::db::mark_email_as_unread_local(&app, &message_id)?;
-
+    // Notify Gmail before changing the local cache.
     let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
@@ -997,13 +1343,22 @@ pub async fn mark_as_unread(
         "addLabelIds": ["UNREAD"]
     });
 
-    let _res = client
+    let res = client
         .post(&url)
         .bearer_auth(&access_token)
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        return Err(format!(
+            "Gmail mark as unread error: {}",
+            res.text().await.unwrap_or_default()
+        ));
+    }
+
+    crate::db::mark_email_as_unread_local(&app, &message_id, &account_id)?;
 
     Ok(())
 }
@@ -1114,10 +1469,11 @@ fn decode_base64_url(data: &str) -> String {
 async fn get_attachment_bytes(
     app: &tauri::AppHandle,
     email_id: &str,
+    account_id: &str,
     attachment_db_id: &str,
     access_token: &str,
 ) -> Result<(Vec<u8>, String, String), String> {
-    let atts = crate::db::get_email_attachments(app.clone(), email_id.to_string())
+    let atts = crate::db::get_email_attachments(app.clone(), email_id.to_string(), account_id.to_string())
         .map_err(|e| e.to_string())?;
     let att = atts.into_iter().find(|a| a.id == attachment_db_id)
         .ok_or_else(|| "Attachment not found".to_string())?;
@@ -1154,28 +1510,82 @@ async fn get_attachment_bytes(
     Ok((bytes, att.filename, att.mime_type))
 }
 
+fn safe_attachment_filename(filename: &str) -> String {
+    let basename = std::path::Path::new(filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment")
+        .trim();
+
+    let cleaned: String = basename
+        .chars()
+        .map(|ch| {
+            if ch.is_control()
+                || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\u{202e}')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches(|ch: char| ch == '.' || ch == ' ');
+    let cleaned: String = cleaned.chars().take(120).collect();
+    let cleaned = cleaned.trim_matches(|ch: char| ch == '.' || ch == ' ');
+
+    if cleaned.is_empty() {
+        return "attachment".to_string();
+    }
+
+    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let is_reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+
+    if is_reserved {
+        let extension = std::path::Path::new(cleaned)
+            .extension()
+            .and_then(|extension| extension.to_str());
+        match extension {
+            Some(extension) if !extension.is_empty() => format!("{}_file.{}", stem, extension),
+            _ => format!("{}_file", stem),
+        }
+    } else {
+        cleaned.to_string()
+    }
+}
+
 /// Saves attachment to Downloads folder and reveals it in Windows Explorer.
 #[tauri::command]
 pub async fn save_and_reveal_attachment(
     app: tauri::AppHandle,
     email_id: String,
+    account_id: String,
     attachment_db_id: String,
     access_token: String,
 ) -> Result<String, String> {
     let (bytes, filename, _mime) =
-        get_attachment_bytes(&app, &email_id, &attachment_db_id, &access_token).await?;
+        get_attachment_bytes(&app, &email_id, &account_id, &attachment_db_id, &access_token).await?;
 
     let downloads = app
         .path()
         .download_dir()
         .map_err(|e| format!("Cannot find Downloads folder: {}", e))?;
 
+    // A sender controls attachment filenames. Keep the saved file inside Downloads
+    // instead of trusting path segments or Windows device names from the message.
+    let safe_filename = safe_attachment_filename(&filename);
+    let mut dest = downloads.join(&safe_filename);
+    if dest.parent() != Some(downloads.as_path()) {
+        return Err("Unsafe attachment filename".to_string());
+    }
+
     // Avoid overwriting existing files by appending a counter
-    let mut dest = downloads.join(&filename);
     if dest.exists() {
-        let stem = std::path::Path::new(&filename)
+        let stem = std::path::Path::new(&safe_filename)
             .file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = std::path::Path::new(&filename)
+        let ext = std::path::Path::new(&safe_filename)
             .extension().and_then(|s| s.to_str()).unwrap_or("");
         let mut i = 2u32;
         loop {
@@ -1200,8 +1610,37 @@ pub async fn save_and_reveal_attachment(
 
     Ok(dest.file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(&filename)
+        .unwrap_or(&safe_filename)
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{safe_attachment_filename, GmailLabelStats};
+
+    #[test]
+    fn inbox_label_stats_keep_message_and_thread_counts_distinct() {
+        let stats: GmailLabelStats = serde_json::from_str(
+            r#"{"messagesUnread": 1046, "threadsUnread": 810}"#,
+        )
+        .expect("parse Gmail inbox label stats");
+
+        assert_eq!(stats.messages_unread, 1046);
+        assert_eq!(stats.threads_unread, 810);
+    }
+
+    #[test]
+    fn attachment_filename_drops_path_components() {
+        assert_eq!(safe_attachment_filename(r"..\..\Desktop\report.pdf"), "report.pdf");
+        assert_eq!(safe_attachment_filename(r"C:\Windows\System32\hosts"), "hosts");
+    }
+
+    #[test]
+    fn attachment_filename_replaces_windows_unsafe_characters() {
+        assert_eq!(safe_attachment_filename("invoice:2026?.pdf"), "invoice_2026_.pdf");
+        assert_eq!(safe_attachment_filename("NUL.txt"), "NUL_file.txt");
+        assert_eq!(safe_attachment_filename("..."), "attachment");
+    }
 }
 
 /// Returns raw base64 data — used for image thumbnail preview in the frontend.
@@ -1209,10 +1648,11 @@ pub async fn save_and_reveal_attachment(
 pub async fn fetch_attachment_data(
     app: tauri::AppHandle,
     email_id: String,
+    account_id: String,
     attachment_db_id: String,
     access_token: String,
 ) -> Result<String, String> {
     let (bytes, _filename, _mime) =
-        get_attachment_bytes(&app, &email_id, &attachment_db_id, &access_token).await?;
+        get_attachment_bytes(&app, &email_id, &account_id, &attachment_db_id, &access_token).await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }

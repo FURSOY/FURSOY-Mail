@@ -1,4 +1,5 @@
 import { Search, X, RefreshCw, Settings, Columns2, PanelLeft, Rows3, Menu } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import { useLocale } from "../i18n";
 import type { Account, EmailSummary, ThreadGroup, MailViewPreference } from "../types";
 import { formatDate } from "../utils";
@@ -20,6 +21,13 @@ interface EmailListProps {
   mailViewPreference: MailViewPreference;
   onViewPreferenceChange: (mode: MailViewPreference) => void;
   onRefresh: () => void;
+  onLoadMore: () => Promise<boolean>;
+  hasMoreEmails: boolean;
+  isLoadingMoreEmails: boolean;
+  mailAppendVersion: number;
+  notificationFocusVersion: number;
+  isMailboxBackfilling: boolean;
+  mailboxDownloadPending: boolean;
   accessToken: string | null;
   accounts?: Account[];
   activeAccountId?: string | null;
@@ -31,11 +39,59 @@ export function EmailList({
   searchQuery, setSearchQuery, searchInputRef,
   activeTab, usesOverlaySidebar, onMenuOpen,
   mailViewPreference, onViewPreferenceChange,
-  onRefresh, accessToken,
+  onRefresh, onLoadMore, hasMoreEmails, isLoadingMoreEmails, mailAppendVersion, notificationFocusVersion, isMailboxBackfilling, mailboxDownloadPending, accessToken,
   accounts, activeAccountId,
 }: EmailListProps) {
   const tr = useLocale();
   const showAccountBadge = activeAccountId === null && (accounts?.length ?? 0) > 1;
+  const listRef = useRef<HTMLDivElement>(null);
+  const pendingLoadScrollTop = useRef<number | null>(null);
+  const loadRequestInFlight = useRef(false);
+  const ignoreAutoLoadUntil = useRef(0);
+  const completedNotificationFocusVersion = useRef(0);
+
+  const requestOlderEmails = async () => {
+    if (loadRequestInFlight.current || isLoadingMoreEmails) return;
+    const list = listRef.current;
+    if (list) {
+      // Older messages are appended below the current list. Preserve the current
+      // viewport anchor instead of the distance from the bottom, which would
+      // incorrectly pull a reader back to the new bottom of the list.
+      pendingLoadScrollTop.current = list.scrollTop;
+    }
+    loadRequestInFlight.current = true;
+    const appended = await onLoadMore();
+    if (!appended) {
+      pendingLoadScrollTop.current = null;
+      loadRequestInFlight.current = false;
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (pendingLoadScrollTop.current === null) return;
+    const list = listRef.current;
+    if (list) {
+      list.scrollTop = Math.min(
+        pendingLoadScrollTop.current,
+        Math.max(0, list.scrollHeight - list.clientHeight)
+      );
+      ignoreAutoLoadUntil.current = Date.now() + 300;
+    }
+    pendingLoadScrollTop.current = null;
+    loadRequestInFlight.current = false;
+  }, [mailAppendVersion]);
+
+  useLayoutEffect(() => {
+    if (
+      notificationFocusVersion === 0 ||
+      notificationFocusVersion === completedNotificationFocusVersion.current ||
+      !selectedMail
+    ) return;
+    const selectedRow = listRef.current?.querySelector<HTMLElement>('[data-mail-selected="true"]');
+    if (!selectedRow) return;
+    selectedRow.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    completedNotificationFocusVersion.current = notificationFocusVersion;
+  }, [notificationFocusVersion, selectedMail, threadGroups]);
 
   return (
     <section className={className}>
@@ -125,7 +181,21 @@ export function EmailList({
       </div>
 
       {/* Thread List */}
-      <div className="flex-1 overflow-y-auto">
+      <div
+        ref={listRef}
+        className="flex-1 overflow-y-auto"
+        onScroll={(event) => {
+          if (Date.now() < ignoreAutoLoadUntil.current) return;
+          const element = event.currentTarget;
+          if (
+            hasMoreEmails &&
+            !isLoadingMoreEmails &&
+            element.scrollTop + element.clientHeight >= element.scrollHeight - 160
+          ) {
+            void requestOlderEmails();
+          }
+        }}
+      >
         {threadGroups.length === 0 && !isUserSyncing && !isBackgroundSyncing && (
           <div className="p-8 text-center text-zinc-600 text-xs">
             {searchQuery
@@ -137,7 +207,7 @@ export function EmailList({
         )}
         {threadGroups.map((group) => {
           const mail = group.latestEmail;
-          const isSelected = selectedMail === mail.id;
+          const isSelected = selectedMail === `${mail.account_id}\u0000${mail.id}`;
           const senderDisplay = activeTab === "sent"
             ? `To: ${(mail.recipient || "").split("<")[0].replace(/"/g, "").trim() || mail.recipient}`
             : group.participants.slice(0, 3).join(", ");
@@ -147,7 +217,8 @@ export function EmailList({
 
           return (
             <div
-              key={mail.thread_id || mail.id}
+              key={`${mail.account_id}\u0000${mail.thread_id || mail.id}`}
+              data-mail-selected={isSelected ? "true" : undefined}
               onClick={() => onMailClick(mail)}
               className={`px-4 py-[var(--mail-row-py)] border-b border-white/[0.03] cursor-pointer transition-all duration-200 relative ${
                 isSelected
@@ -211,6 +282,27 @@ export function EmailList({
             </div>
           );
         })}
+        {threadGroups.length > 0 && (
+          <div className="flex min-h-14 items-center justify-center px-4 text-xs text-zinc-600">
+            {isLoadingMoreEmails ? (
+              <span className="animate-pulse">{tr.mail.loadingOlder}</span>
+            ) : isMailboxBackfilling ? (
+              <span className="animate-pulse">{tr.mail.downloadingHistory}</span>
+            ) : mailboxDownloadPending ? (
+              <span>{tr.mail.historyDownloadPending}</span>
+            ) : hasMoreEmails ? (
+              <button
+                type="button"
+                onClick={() => { void requestOlderEmails(); }}
+                className="rounded-md px-3 py-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-300"
+              >
+                {tr.mail.loadOlder}
+              </button>
+            ) : (
+              <span>{tr.mail.allLoaded}</span>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );
