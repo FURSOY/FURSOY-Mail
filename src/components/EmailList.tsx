@@ -28,6 +28,7 @@ interface EmailListProps {
   notificationFocusVersion: number;
   isMailboxBackfilling: boolean;
   mailboxDownloadPending: boolean;
+  mailboxDownloadState: "waiting" | "running" | "paused" | "error" | "completed" | "relogin_required" | "rate_limited";
   accessToken: string | null;
   accounts?: Account[];
   activeAccountId?: string | null;
@@ -39,7 +40,7 @@ export function EmailList({
   searchQuery, setSearchQuery, searchInputRef,
   activeTab, usesOverlaySidebar, onMenuOpen,
   mailViewPreference, onViewPreferenceChange,
-  onRefresh, onLoadMore, hasMoreEmails, isLoadingMoreEmails, mailAppendVersion, notificationFocusVersion, isMailboxBackfilling, mailboxDownloadPending, accessToken,
+  onRefresh, onLoadMore, hasMoreEmails, isLoadingMoreEmails, mailAppendVersion, notificationFocusVersion, isMailboxBackfilling, mailboxDownloadPending, mailboxDownloadState, accessToken,
   accounts, activeAccountId,
 }: EmailListProps) {
   const tr = useLocale();
@@ -282,12 +283,18 @@ export function EmailList({
             </div>
           );
         })}
-        {threadGroups.length > 0 && (
+        {(threadGroups.length > 0 || ["error", "paused", "relogin_required", "rate_limited"].includes(mailboxDownloadState)) && (
           <div className="flex min-h-14 items-center justify-center px-4 text-xs text-zinc-600">
             {isLoadingMoreEmails ? (
               <span className="animate-pulse">{tr.mail.loadingOlder}</span>
             ) : isMailboxBackfilling ? (
               <span className="animate-pulse">{tr.mail.downloadingHistory}</span>
+            ) : mailboxDownloadState === "relogin_required" ? (
+              <span>{tr.mail.historyDownloadRelogin}</span>
+            ) : mailboxDownloadState === "rate_limited" ? (
+              <span>{tr.mail.historyDownloadRateLimited}</span>
+            ) : mailboxDownloadState === "error" || mailboxDownloadState === "paused" ? (
+              <span>{tr.mail.historyDownloadFailed}</span>
             ) : mailboxDownloadPending ? (
               <span>{tr.mail.historyDownloadPending}</span>
             ) : hasMoreEmails ? (

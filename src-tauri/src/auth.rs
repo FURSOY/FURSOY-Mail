@@ -1,6 +1,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -288,12 +289,11 @@ async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<Auth
     }
 }
 
-#[tauri::command]
-pub async fn refresh_access_token(
+async fn refresh_access_token_once(
     app: tauri::AppHandle,
-    account_id: String,
+    account_id: &str,
 ) -> Result<crate::db::AuthInfo, String> {
-    let (_, refresh_token) = crate::db::load_tokens(&account_id)
+    let (_, refresh_token) = crate::db::load_tokens(account_id)
         .ok_or_else(|| "Oturum bilgisi bulunamadı. Lütfen tekrar giriş yapın.".to_string())?;
 
     if refresh_token.is_empty() {
@@ -329,14 +329,31 @@ pub async fn refresh_access_token(
     let token_resp: AuthResponse = res.json().await.map_err(|e| e.to_string())?;
     let new_refresh = token_resp.refresh_token.unwrap_or(refresh_token);
 
-    crate::db::save_tokens(&account_id, &token_resp.access_token, &new_refresh)?;
+    crate::db::save_tokens(account_id, &token_resp.access_token, &new_refresh)?;
 
-    let picture = crate::db::get_account_picture(&app, &account_id);
+    let picture = crate::db::get_account_picture(&app, account_id);
 
     Ok(crate::db::AuthInfo {
         access_token: token_resp.access_token,
         refresh_token: new_refresh,
-        email: account_id,
+        email: account_id.to_string(),
         picture,
     })
+}
+
+#[tauri::command]
+pub async fn refresh_access_token(
+    app: tauri::AppHandle,
+    account_id: String,
+) -> Result<crate::db::AuthInfo, String> {
+    let flights = app.state::<crate::TokenRefreshFlights>();
+    if let Some(waiter) = flights.join_or_start(&account_id) {
+        return waiter
+            .await
+            .map_err(|_| "Token refresh was interrupted".to_string())?;
+    }
+
+    let result = refresh_access_token_once(app.clone(), &account_id).await;
+    flights.finish(&account_id, result.clone());
+    result
 }

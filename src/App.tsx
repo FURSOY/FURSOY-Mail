@@ -70,6 +70,8 @@ function sameEmail(left: EmailSummary, right: EmailSummary): boolean {
 interface MailboxDownloadStatus {
   running: boolean;
   pending: boolean;
+  state: "waiting" | "running" | "paused" | "error" | "completed" | "relogin_required" | "rate_limited";
+  retryAfter: number | null;
 }
 
 function App() {
@@ -152,6 +154,7 @@ function App() {
   const [notificationFocusVersion, setNotificationFocusVersion] = useState(0);
   const [isMailboxBackfilling, setIsMailboxBackfilling] = useState(false);
   const [mailboxDownloadPending, setMailboxDownloadPending] = useState(false);
+  const [mailboxDownloadState, setMailboxDownloadState] = useState<MailboxDownloadStatus["state"]>("completed");
   const [isResettingLocalMailbox, setIsResettingLocalMailbox] = useState(false);
   const [showReply, setShowReply] = useState(false);
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all">("reply");
@@ -619,7 +622,7 @@ function App() {
       const page = await loadEmails(label, { append: true, cursor: mailPageCursorRef.current });
       const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
         accountId,
-      }).catch(() => ({ running: false, pending: false }));
+      }).catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
       if (!isMailContextCurrent(label, accountId)) return false;
       if (page.length === 0 && status.pending && !status.running) {
         // Never block the list on Gmail. Request a safe per-account sync and
@@ -630,11 +633,12 @@ function App() {
         void Promise.allSettled(
           targets
             .filter((target): target is { id: string; token: string } => !!target.token)
-            .map(target => invoke("sync_emails", { accountId: target.id, accessToken: target.token }))
+            .map(target => invoke("sync_emails", { accountId: target.id, accessToken: target.token, force: true }))
         );
       }
       setIsMailboxBackfilling(status.running);
       setMailboxDownloadPending(status.pending);
+      setMailboxDownloadState(status.state);
       setHasMoreEmails(page.length === MAIL_PAGE_SIZE || status.running || status.pending);
       return page.length > 0;
     } catch (error) {
@@ -714,9 +718,9 @@ function App() {
     }
   };
 
-  const syncAccountWithAutoRefresh = useCallback(async (accountId: string, token: string): Promise<string> => {
+  const syncAccountWithAutoRefresh = useCallback(async (accountId: string, token: string, force = false): Promise<string> => {
     try {
-      await invoke("sync_emails", { accountId, accessToken: token });
+      await invoke("sync_emails", { accountId, accessToken: token, force });
       return token;
     } catch (e: unknown) {
       if (isAuthFailure(e)) {
@@ -729,7 +733,7 @@ function App() {
           setExpiredAccountIds(new Set(expiredAccountsRef.current));
           tokenExpiredRef.current = false;
           setTokenExpired(false);
-          await invoke("sync_emails", { accountId, accessToken: newToken });
+          await invoke("sync_emails", { accountId, accessToken: newToken, force });
           return newToken;
         } catch (refreshError) {
           console.error(`Token refresh failed for ${accountId}:`, refreshError);
@@ -862,7 +866,7 @@ function App() {
         const token = tokens[account.id];
         if (!token || expiredAccountsRef.current.has(account.id)) continue;
         try {
-          await syncAccountWithAutoRefresh(account.id, token);
+          await syncAccountWithAutoRefresh(account.id, token, userInitiated);
           anySuccess = true;
           successfullySyncedAccountIds.add(account.id);
         } catch (e) {
@@ -1041,10 +1045,11 @@ function App() {
     const refreshBackfillStatus = async () => {
       const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
         accountId,
-      }).catch(() => ({ running: false, pending: false }));
+      }).catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
       if (!cancelled && isMailContextCurrent(label, accountId)) {
         setIsMailboxBackfilling(status.running);
         setMailboxDownloadPending(status.pending);
+        setMailboxDownloadState(status.state);
         if (!status.running && !status.pending && MAIL_TABS.has(label)) {
           const cursor = mailPageCursorRef.current;
           const nextPage = await invoke<EmailSummary[]>("get_emails_by_label", {
@@ -1245,6 +1250,15 @@ function App() {
       showToast("Inbox updated", "success");
     } else {
       setAuthStatus("Sync failed. Check your network or session.");
+      showToast(tr.mail.syncFailed, "error");
+      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
+        accountId: activeAccountIdRef.current,
+      }).catch(() => null);
+      if (status) {
+        setIsMailboxBackfilling(status.running);
+        setMailboxDownloadPending(status.pending);
+        setMailboxDownloadState(status.state);
+      }
     }
   };
 
@@ -1853,6 +1867,7 @@ function App() {
               notificationFocusVersion={notificationFocusVersion}
               isMailboxBackfilling={isMailboxBackfilling}
               mailboxDownloadPending={mailboxDownloadPending}
+              mailboxDownloadState={mailboxDownloadState}
               accessToken={accessToken}
               accounts={accounts}
               activeAccountId={activeAccountId}

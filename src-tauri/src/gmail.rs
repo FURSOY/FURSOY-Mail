@@ -1,14 +1,64 @@
 use crate::db::{
     complete_full_sync, delete_emails_by_ids, finalize_full_sync, get_active_full_sync,
-    get_account_cache_generation, get_history_id, get_mailbox_cursor_state, has_pending_mailbox_pages, load_tokens,
+    get_account_cache_generation, get_all_mailbox_sync_states, get_history_id, get_mailbox_cursor_state, get_mailbox_sync_state,
+    has_pending_mailbox_pages, load_tokens,
     next_full_sync_generation, set_history_id, set_mailbox_cursor, upsert_sync_attachments,
-    upsert_sync_emails, set_gmail_inbox_unread_stats, Email,
+    upsert_sync_emails, set_gmail_inbox_unread_stats, set_mailbox_sync_state, Email,
 };
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+
+const RATE_LIMIT_BACKOFF_SECS: i64 = 60;
+
+fn unix_timestamp_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn mailbox_failure_status(error: &str) -> (&'static str, Option<i64>) {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("429")
+        || normalized.contains("ratelimit")
+        || normalized.contains("rate limit")
+        || normalized.contains("userratelimitexceeded")
+    {
+        return ("rate_limited", Some(unix_timestamp_secs() + RATE_LIMIT_BACKOFF_SECS));
+    }
+    if normalized.contains("401")
+        || normalized.contains("invalid credentials")
+        || normalized.contains("unauthenticated")
+    {
+        return ("relogin_required", None);
+    }
+    ("error", Some(unix_timestamp_secs() + 15))
+}
+
+fn persist_mailbox_failure(
+    app: &AppHandle,
+    account_id: &str,
+    account_generation: i64,
+    error: &str,
+) {
+    if error == "Account is no longer available" {
+        return;
+    }
+    let (status, retry_after) = mailbox_failure_status(error);
+    if let Err(status_error) = set_mailbox_sync_state(
+        app,
+        account_id,
+        account_generation,
+        status,
+        Some(error),
+        retry_after,
+    ) {
+        eprintln!("[SYNC:{}] could not save mailbox status: {}", account_id, status_error);
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AttachmentPayload {
@@ -678,6 +728,15 @@ async fn backfill_mailbox(
         );
     }
 
+    set_mailbox_sync_state(
+        app,
+        account_id,
+        account_generation,
+        "completed",
+        None,
+        None,
+    )?;
+
     Ok(())
 }
 
@@ -760,9 +819,21 @@ async fn run_background_backfill_worker(
             return;
         }
 
+        if let Err(error) = set_mailbox_sync_state(
+            &app,
+            &account_id,
+            account_generation,
+            "running",
+            None,
+            None,
+        ) {
+            eprintln!("[SYNC:{}] could not save mailbox status: {}", account_id, error);
+        }
+
         let result = backfill_mailbox(&app, &account_id, account_generation, &token).await;
         if let Err(error) = &result {
             eprintln!("[SYNC:{}] background mailbox download paused: {}", account_id, error);
+            persist_mailbox_failure(&app, &account_id, account_generation, error);
         }
 
         let run_again = {
@@ -784,6 +855,7 @@ async fn run_background_backfill_worker(
             Ok(fresh_token) => token = fresh_token,
             Err(error) => {
                 eprintln!("[SYNC:{}] queued sync failed: {}", account_id, error);
+                persist_mailbox_failure(&app, &account_id, account_generation, &error);
                 if let Ok(mut workers) = app.state::<crate::SyncState>().workers.lock() {
                     workers.release(&account_id, account_generation);
                 }
@@ -809,6 +881,9 @@ fn start_background_backfill(
 pub struct MailboxDownloadStatus {
     pub running: bool,
     pub pending: bool,
+    pub state: String,
+    #[serde(rename = "retryAfter")]
+    pub retry_after: Option<i64>,
 }
 
 #[tauri::command]
@@ -824,7 +899,29 @@ pub fn get_mailbox_download_status(
     let running = workers.is_backfilling(account_id.as_deref());
     drop(workers);
     let pending = has_pending_mailbox_pages(&app, account_id.as_deref())?;
-    Ok(MailboxDownloadStatus { running, pending })
+    let persisted = match account_id.as_deref() {
+        Some(account_id) => get_mailbox_sync_state(&app, account_id)?,
+        None => get_all_mailbox_sync_states(&app)?
+            .into_iter()
+            .max_by_key(|state| match state.status.as_str() {
+                "relogin_required" => 4,
+                "rate_limited" => 3,
+                "error" | "paused" => 2,
+                "waiting" => 1,
+                _ => 0,
+            }),
+    };
+    let retry_after = persisted.as_ref().and_then(|state| state.retry_after);
+    let state = if running {
+        "running".to_string()
+    } else if let Some(state) = persisted {
+        state.status
+    } else if pending {
+        "waiting".to_string()
+    } else {
+        "completed".to_string()
+    };
+    Ok(MailboxDownloadStatus { running, pending, state, retry_after })
 }
 
 #[tauri::command]
@@ -832,8 +929,16 @@ pub async fn sync_emails(
     app: AppHandle,
     account_id: String,
     access_token: String,
+    force: Option<bool>,
 ) -> Result<(), String> {
     let account_generation = get_account_cache_generation(&app, &account_id)?;
+    if !force.unwrap_or(false) {
+        if let Some(state) = get_mailbox_sync_state(&app, &account_id)? {
+            if state.retry_after.is_some_and(|at| at > unix_timestamp_secs()) {
+                return Ok(());
+            }
+        }
+    }
     let state = app.state::<crate::SyncState>();
 
     let owns_worker = state
@@ -845,12 +950,22 @@ pub async fn sync_emails(
         return Ok(());
     }
 
+    set_mailbox_sync_state(
+        &app,
+        &account_id,
+        account_generation,
+        "running",
+        None,
+        None,
+    )?;
+
     let token = match run_sync_cycle(&app, &account_id, account_generation, access_token).await {
         Ok(token) => token,
         Err(error) => {
             if let Ok(mut workers) = state.workers.lock() {
                 workers.release(&account_id, account_generation);
             }
+            persist_mailbox_failure(&app, &account_id, account_generation, &error);
             return Err(error);
         }
     };
@@ -1616,7 +1731,22 @@ pub async fn save_and_reveal_attachment(
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_attachment_filename, GmailLabelStats};
+    use super::{mailbox_failure_status, safe_attachment_filename, GmailLabelStats};
+
+    #[test]
+    fn mailbox_failures_distinguish_rate_limits_and_relogin() {
+        let (rate_limited, retry_after) = mailbox_failure_status("Gmail API Error: 429 rateLimitExceeded");
+        assert_eq!(rate_limited, "rate_limited");
+        assert!(retry_after.is_some());
+
+        let (relogin_required, retry_after) = mailbox_failure_status("Gmail API Error: 401 unauthenticated");
+        assert_eq!(relogin_required, "relogin_required");
+        assert_eq!(retry_after, None);
+
+        let (error, retry_after) = mailbox_failure_status("List fetch error: network unavailable");
+        assert_eq!(error, "error");
+        assert!(retry_after.is_some());
+    }
 
     #[test]
     fn inbox_label_stats_keep_message_and_thread_counts_distinct() {
