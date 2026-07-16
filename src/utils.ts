@@ -11,7 +11,6 @@ export const MAIL_PAGE_SIZE = 100;
 export const STARTUP_NETWORK_DELAY_MS = 5000;
 export const STARTUP_UPDATE_DELAY_MS = 9000;
 export const MAIL_TABS = new Set(["inbox", "sent", "archive", "spam", "trash"]);
-export const AUTH_RELOGIN_MESSAGE = "Session could not be refreshed. Please sign in again.";
 export const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.25, 1.5, 1.75, 2];
 export const MIN_ZOOM = ZOOM_STEPS[0];
 export const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1];

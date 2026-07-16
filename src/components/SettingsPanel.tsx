@@ -121,7 +121,7 @@ export function SettingsPanel({
 
   return (
     <section
-      className="flex-1 overflow-y-scroll overscroll-contain bg-[#0a0a0c] p-8"
+      className="flex-1 overflow-y-scroll overscroll-contain bg-[var(--color-surface-content)] p-8"
       style={isVisible ? { contain: "paint" } : { display: "none" }}
     >
       <div className="max-w-2xl mx-auto">
@@ -131,8 +131,8 @@ export function SettingsPanel({
               type="button"
               onClick={onMenuOpen}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
-              aria-label="Open menu"
-              title="Open menu"
+              aria-label={tr.settings.openMenu}
+              title={tr.settings.openMenu}
             >
               <Menu className="h-4 w-4" />
             </button>
@@ -143,8 +143,8 @@ export function SettingsPanel({
         <div className="space-y-8">
           {/* Accounts */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Accounts</h3>
-            <p className="text-xs text-zinc-500 mb-4">Drag to reorder accounts. The top account is selected automatically on startup.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.accounts.title}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.accounts.description}</p>
             <div className="space-y-1.5">
               {accounts.map((acc, i) => (
                 <div
@@ -171,7 +171,7 @@ export function SettingsPanel({
                     <div className="text-sm font-medium text-zinc-200 truncate">{acc.email.split("@")[0]}</div>
                     <div className="text-xs text-zinc-500 truncate">{acc.email}</div>
                     {i === 0 && (
-                      <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">Primary account</div>
+                      <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">{tr.accounts.primary}</div>
                     )}
                   </div>
                   <button
@@ -179,7 +179,7 @@ export function SettingsPanel({
                     className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors shrink-0"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    Sign out
+                    {tr.accounts.signOut}
                   </button>
                 </div>
               ))}
@@ -188,7 +188,7 @@ export function SettingsPanel({
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-dashed border-white/10 text-zinc-500 hover:text-zinc-300 hover:border-white/20 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span className="text-sm">Add account</span>
+                <span className="text-sm">{tr.accounts.add}</span>
               </button>
             </div>
           </div>
@@ -216,11 +216,11 @@ export function SettingsPanel({
                         className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-all ${
                           active
                             ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-zinc-100"
-                            : "border-white/10 bg-[#09090b] text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                            : "border-[var(--color-border-default)] bg-[var(--color-surface-app)] text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
                         }`}
                       >
                         <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: preset.accent }} />
-                        {preset.label}
+                        {tr.appearance.colors[name]}
                       </button>
                     );
                   })}
@@ -229,7 +229,7 @@ export function SettingsPanel({
 
               <div>
                 <div className="text-xs font-medium text-zinc-300 mb-2">{tr.appearance.density}</div>
-                <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
+                <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
                   {(["comfortable", "compact"] as DensityMode[]).map((mode) => (
                     <button
                       key={mode}
@@ -252,8 +252,8 @@ export function SettingsPanel({
 
           {/* Sync Interval */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Sync Frequency</h3>
-            <p className="text-xs text-zinc-500 mb-4">How many seconds to wait between sync cycles.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.syncFrequencyTitle}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.settings.syncFrequencyDescription}</p>
             <div className="flex items-center gap-3">
               <input
                 type="number"
@@ -265,9 +265,9 @@ export function SettingsPanel({
                   setSyncIntervalValue(val);
                   localStorage.setItem("fursoy_sync_interval", val.toString());
                 }}
-                className="w-24 bg-[#09090b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none"
+                className="w-24 bg-[var(--color-surface-app)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none"
               />
-              <span className="text-sm text-zinc-400">seconds</span>
+              <span className="text-sm text-zinc-400">{tr.common.seconds}</span>
             </div>
           </div>
 
@@ -293,7 +293,7 @@ export function SettingsPanel({
             <p className="text-xs text-zinc-500 mb-4">{tr.language.description}</p>
             <div className="space-y-2">
               <div className="text-xs font-medium text-zinc-400">{tr.language.label}</div>
-              <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
+              <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
                 {(["en", "tr"] as AppLanguage[]).map((lang) => (
                   <button
                     key={lang}
@@ -409,8 +409,8 @@ export function SettingsPanel({
 
           {/* Notification Duration */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Notification Duration</h3>
-            <p className="text-xs text-zinc-500 mb-4">How long new email notifications stay on screen.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.notificationDurationTitle}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.settings.notificationDurationDescription}</p>
 
             <div className="space-y-4">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -423,7 +423,7 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">Keep on screen (no timeout)</span>
+                <span className="text-sm text-zinc-300">{tr.settings.keepOnScreen}</span>
               </label>
 
               <div className={`flex items-center gap-3 transition-opacity ${notifInfinite ? "opacity-40 pointer-events-none" : ""}`}>
@@ -440,15 +440,15 @@ export function SettingsPanel({
                   disabled={notifInfinite}
                   className="w-24 bg-[#09090b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none disabled:bg-transparent"
                 />
-                <span className="text-sm text-zinc-400">seconds</span>
+                <span className="text-sm text-zinc-400">{tr.common.seconds}</span>
               </div>
             </div>
           </div>
 
           {/* Performance Optimization */}
           <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">Performance &amp; Game Mode</h3>
-            <p className="text-xs text-zinc-500 mb-4">Additional settings for efficient system resource usage.</p>
+            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.performanceTitle}</h3>
+            <p className="text-xs text-zinc-500 mb-4">{tr.settings.performanceDescription}</p>
 
             <div className="space-y-5">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -461,11 +461,11 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">Load email content only when opened</span>
+                <span className="text-sm text-zinc-300">{tr.settings.lazyEmailContent}</span>
               </label>
 
               <div>
-                <div className="text-xs font-medium text-zinc-300 mb-2">HTML Render Mode</div>
+                <div className="text-xs font-medium text-zinc-300 mb-2">{tr.settings.htmlRenderMode}</div>
                 <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
                   <button
                     type="button"
@@ -475,7 +475,7 @@ export function SettingsPanel({
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "full" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    Full HTML
+                    {tr.settings.fullHtml}
                   </button>
                   <button
                     type="button"
@@ -485,13 +485,13 @@ export function SettingsPanel({
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "simple" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    Simple
+                    {tr.settings.simpleHtml}
                   </button>
                 </div>
               </div>
 
               <div>
-                <div className="text-xs font-medium text-zinc-300 mb-1">OTP Detection</div>
+                <div className="text-xs font-medium text-zinc-300 mb-1">{tr.settings.otpDetection}</div>
                 <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
                   {(["off", "balanced", "strict"] as OtpMode[]).map((mode) => (
                     <button
@@ -503,7 +503,7 @@ export function SettingsPanel({
                       }}
                       className={`px-3 py-1.5 text-xs rounded-md transition-colors ${otpMode === mode ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                     >
-                      {mode === "off" ? "Off" : mode === "balanced" ? "Balanced" : "Strict"}
+                      {mode === "off" ? tr.settings.otpOff : mode === "balanced" ? tr.settings.otpBalanced : tr.settings.otpStrict}
                     </button>
                   ))}
                 </div>
@@ -519,7 +519,7 @@ export function SettingsPanel({
                   }}
                   className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
                 />
-                <span className="text-sm text-zinc-300">Pause background network activity during fullscreen / game mode</span>
+                <span className="text-sm text-zinc-300">{tr.settings.pauseInFullscreen}</span>
               </label>
 
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-3">

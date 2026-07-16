@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect } from "react";
+import { useLocale } from "../i18n";
 import type { MailZoom } from "../types";
 import { FIXED_LAYOUT_MIN_WIDTH, buildEmailSrcDoc, findEmailUrl, resolveEmailUrl } from "../utils";
 
@@ -17,6 +18,7 @@ export function EmailHtmlView({
   onOpenUrl: (url: string) => void;
   scrollRef?: React.RefObject<HTMLElement | null>;
 }) {
+  const tr = useLocale();
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -216,7 +218,7 @@ export function EmailHtmlView({
       <div ref={stageRef} className="relative mx-auto">
         <iframe
           ref={frameRef}
-          title="Email content"
+          title={tr.common.emailContent}
           sandbox="allow-same-origin allow-popups"
           className="absolute left-0 top-0 block border-0 bg-white"
           style={{ transformOrigin: "top left", width: 0, height: 0 }}

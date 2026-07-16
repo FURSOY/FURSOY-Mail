@@ -276,10 +276,10 @@ export function ComposeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg bg-[#111113] border border-white/10 rounded-xl shadow-2xl flex flex-col overflow-hidden" style={{ height: "min(560px, 90vh)" }}>
+      <div className="w-full max-w-lg bg-[var(--color-surface-panel)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] shadow-2xl flex flex-col overflow-hidden" style={{ height: "min(560px, 90vh)" }}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-          <h3 className="text-sm font-semibold text-zinc-200">{composeHtmlAppend ? "Forward" : tr.compose.title}</h3>
+          <h3 className="text-sm font-semibold text-zinc-200">{composeHtmlAppend ? tr.mail.forward : tr.compose.title}</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-zinc-400 transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -294,7 +294,7 @@ export function ComposeModal({
                 onClick={() => setFromOpen(o => !o)}
                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors text-left"
               >
-                <span className="text-[10px] text-zinc-600 shrink-0 w-10">From</span>
+                <span className="text-[10px] text-zinc-600 shrink-0 w-10">{tr.compose.from}</span>
                 {activeAccount?.picture ? (
                   <img src={activeAccount.picture} className="w-5 h-5 rounded-full shrink-0" alt="" />
                 ) : (
@@ -307,7 +307,7 @@ export function ComposeModal({
                 <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 shrink-0 transition-transform ${fromOpen ? "rotate-180" : ""}`} />
               </button>
               {fromOpen && (
-                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-[#18181b] border border-white/10 rounded-lg shadow-xl overflow-hidden">
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] shadow-xl overflow-hidden">
                   {accounts.map(acc => (
                     <button key={acc.id} type="button"
                       onClick={() => { setComposeAccountId(acc.id); setFromOpen(false); }}
@@ -350,7 +350,7 @@ export function ComposeModal({
               />
             </div>
             {suggOpen && suggestions.length > 0 && (
-              <div ref={suggRef} className="absolute left-0 right-0 top-full mt-1 z-20 bg-[#18181b] border border-white/10 rounded-lg shadow-xl overflow-hidden">
+              <div ref={suggRef} className="absolute left-0 right-0 top-full mt-1 z-20 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] shadow-xl overflow-hidden">
                 {suggestions.map((s, i) => (
                   <button
                     key={s.email}
@@ -437,7 +437,7 @@ export function ComposeModal({
             {showFormatBar && (
               <div className="relative px-2 py-1 border-t border-white/[0.06] flex items-center gap-0.5 shrink-0">
                 {linkPopover && (
-                  <div className="absolute bottom-full left-0 mb-1 bg-[#18181b] border border-white/10 rounded-xl p-3 shadow-2xl z-50 w-64">
+                  <div className="absolute bottom-full left-0 mb-1 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] p-3 shadow-2xl z-50 w-64">
                     <div className="flex flex-col gap-2">
                       <input autoFocus value={linkText} onChange={e => setLinkText(e.target.value)} placeholder={tr.compose.linkText}
                         className="w-full bg-white/[0.05] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 placeholder:text-zinc-600" />
@@ -445,9 +445,9 @@ export function ComposeModal({
                         className="w-full bg-white/[0.05] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 placeholder:text-zinc-600"
                         onKeyDown={e => e.key === "Enter" && applyLink()} />
                       <div className="flex gap-2 justify-end pt-0.5">
-                        <button type="button" onClick={() => setLinkPopover(false)} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Cancel</button>
+                        <button type="button" onClick={() => setLinkPopover(false)} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">{tr.common.cancel}</button>
                         <button type="button" onClick={applyLink} disabled={!linkUrl}
-                          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors">Apply</button>
+                          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors">{tr.common.apply}</button>
                       </div>
                     </div>
                   </div>
@@ -465,7 +465,7 @@ export function ComposeModal({
                   { cmd: "bold",          label: "B", cls: "font-bold",    title: tr.compose.bold },
                   { cmd: "italic",        label: "I", cls: "italic",       title: tr.compose.italic },
                   { cmd: "underline",     label: "U", cls: "underline",    title: tr.compose.underline },
-                  { cmd: "strikeThrough", label: "S", cls: "line-through", title: "Strikethrough" },
+                  { cmd: "strikeThrough", label: "S", cls: "line-through", title: tr.compose.strikethrough },
                 ] as { cmd: string; label: string; cls: string; title: string }[]).map(({ cmd, label, cls, title }) => (
                   <button key={cmd} type="button" title={title}
                     onMouseDown={e => { e.preventDefault(); applyFormat(cmd); }}
@@ -500,7 +500,7 @@ export function ComposeModal({
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
               <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
-              <button type="button" title="Formatting"
+              <button type="button" title={tr.compose.formatting}
                 onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                 className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"}`}>
                 <Type className="w-3.5 h-3.5" />

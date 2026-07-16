@@ -1,4 +1,5 @@
 import { Mail, ShieldCheck, Cpu, Zap } from "lucide-react";
+import { useLocale } from "../i18n";
 
 interface OnboardingProps {
   onConnect: () => void;
@@ -6,8 +7,9 @@ interface OnboardingProps {
 }
 
 export function Onboarding({ onConnect, isConnecting }: OnboardingProps) {
+  const tr = useLocale();
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0c] px-8 select-none">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[var(--color-surface-content)] px-8 select-none">
       <div className="w-full max-w-sm flex flex-col items-center gap-8">
 
         {/* Logo */}
@@ -17,15 +19,15 @@ export function Onboarding({ onConnect, isConnecting }: OnboardingProps) {
           </div>
           <div className="text-center">
             <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">FURSOY Mail</h1>
-            <p className="text-sm text-zinc-500 mt-0.5">Instant Gmail notifications on Windows</p>
+            <p className="text-sm text-zinc-500 mt-0.5">{tr.onboarding.tagline}</p>
           </div>
         </div>
 
         {/* Features */}
         <div className="w-full flex flex-col gap-3">
-          <Feature icon={<Zap className="w-4 h-4 text-blue-400" />} text="OTP codes detected and copied in one click" />
-          <Feature icon={<ShieldCheck className="w-4 h-4 text-blue-400" />} text="No servers — your emails stay on your device" />
-          <Feature icon={<Cpu className="w-4 h-4 text-blue-400" />} text="5 MB app · ~45 MB RAM · launches with Windows" />
+          <Feature icon={<Zap className="w-4 h-4 text-blue-400" />} text={tr.onboarding.otpFeature} />
+          <Feature icon={<ShieldCheck className="w-4 h-4 text-blue-400" />} text={tr.onboarding.privacyFeature} />
+          <Feature icon={<Cpu className="w-4 h-4 text-blue-400" />} text={tr.onboarding.performanceFeature} />
         </div>
 
         {/* CTA */}
@@ -41,17 +43,17 @@ export function Onboarding({ onConnect, isConnecting }: OnboardingProps) {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
                 </svg>
-                Waiting for browser…
+                {tr.auth.waitingForBrowser}
               </>
             ) : (
               <>
                 <GoogleIcon />
-                Connect Gmail Account
+                {tr.onboarding.connect}
               </>
             )}
           </button>
           <p className="text-xs text-zinc-600 text-center">
-            Read-only OAuth access · no data leaves your computer
+            {tr.onboarding.privacy}
           </p>
         </div>
 

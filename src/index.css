@@ -6,17 +6,89 @@
 
 @layer base {
   :root {
+    /* Brand */
     --app-accent: #3b82f6;
     --app-accent-hover: #2563eb;
     --app-accent-soft: rgb(59 130 246 / 0.14);
-    --app-surface: #09090b;
-    --app-surface-raised: #111113;
-    --app-border-subtle: rgb(255 255 255 / 0.05);
-    --app-border-strong: rgb(255 255 255 / 0.1);
-    --app-radius-control: 8px;
-    --app-font-size-body: 14px;
-    --app-font-size-compact: 12px;
-    --app-font-weight-strong: 600;
+    --app-accent-shadow: rgb(59 130 246 / 0.25);
+
+    /* Semantic surfaces */
+    --color-surface-app: #09090b;
+    --color-surface-content: #0a0a0c;
+    --color-surface-sidebar: #0c0c0e;
+    --color-surface-panel: #111113;
+    --color-surface-popover: #18181b;
+    --color-surface-subtle: rgb(255 255 255 / 0.02);
+    --color-surface-control: rgb(255 255 255 / 0.03);
+    --color-surface-hover: rgb(255 255 255 / 0.05);
+    --color-surface-hover-strong: rgb(255 255 255 / 0.1);
+
+    /* Semantic text */
+    --color-text-primary: #f4f4f5;
+    --color-text-secondary: #d4d4d8;
+    --color-text-muted: #a1a1aa;
+    --color-text-subtle: #71717a;
+    --color-text-disabled: #52525b;
+    --color-text-faint: #3f3f46;
+    --color-text-on-accent: #ffffff;
+
+    /* Borders and states */
+    --color-border-subtle: rgb(255 255 255 / 0.05);
+    --color-border-default: rgb(255 255 255 / 0.1);
+    --color-border-strong: rgb(255 255 255 / 0.2);
+    --color-status-info: #60a5fa;
+    --color-status-success: #34d399;
+    --color-status-warning: #fbbf24;
+    --color-status-danger: #f87171;
+    --color-status-info-soft: rgb(59 130 246 / 0.1);
+    --color-status-success-soft: rgb(52 211 153 / 0.1);
+    --color-status-warning-soft: rgb(251 191 36 / 0.1);
+    --color-status-danger-soft: rgb(239 68 68 / 0.15);
+    --color-action-danger: #dc2626;
+    --color-action-danger-hover: #b91c1c;
+
+    /* Type scale */
+    --font-size-micro: 8px;
+    --font-size-caption: 10px;
+    --font-size-metadata: 11px;
+    --font-size-compact: 12px;
+    --font-size-body: 14px;
+    --font-size-title: 20px;
+    --font-size-page-title: 24px;
+    --font-weight-medium: 500;
+    --font-weight-strong: 600;
+    --font-weight-bold: 700;
+
+    /* Spacing scale */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    /* Shape and elevation */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+    --shadow-panel: 0 24px 64px rgb(0 0 0 / 0.45);
+    --shadow-accent-lg: 0 10px 15px -3px var(--app-accent-shadow), 0 4px 6px -4px var(--app-accent-shadow);
+    --duration-fast: 150ms;
+    --duration-normal: 200ms;
+
+    /* Compatibility aliases for existing consumers */
+    --app-surface: var(--color-surface-app);
+    --app-surface-raised: var(--color-surface-panel);
+    --app-border-subtle: var(--color-border-subtle);
+    --app-border-strong: var(--color-border-default);
+    --app-radius-control: var(--radius-md);
+    --app-font-size-body: var(--font-size-body);
+    --app-font-size-compact: var(--font-size-compact);
+    --app-font-weight-strong: var(--font-weight-strong);
     --mail-row-py: 0.75rem;
     --font-heading: 'Outfit', var(--font-sans);
     --font-sans: 'Outfit', sans-serif;
@@ -97,8 +169,8 @@
   }
   html[data-density="compact"] {
     --mail-row-py: 0.55rem;
-    --app-font-size-body: 13px;
-    --app-font-size-compact: 11px;
+    --font-size-body: 13px;
+    --font-size-compact: 11px;
   }
 }
 
