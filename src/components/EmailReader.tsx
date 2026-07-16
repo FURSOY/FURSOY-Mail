@@ -5,18 +5,11 @@ import {
   Settings, X, RefreshCw, Copy, ChevronDown, ChevronUp,
   Download, FileText, Image, ImageOff, File, Type, Link2, List, ListOrdered, Paperclip, Undo2, Redo2,
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import { useLocale } from "../i18n";
 import type { EmailSummary, MailViewMode, MailZoom, RenderMode, AttachmentPayload } from "../types";
+import { tauriApi, type EmailAttachmentInfo } from "../tauriApi";
 
-interface AttachmentInfo {
-  id: string;
-  filename: string;
-  mime_type: string;
-  size: number;
-  attachment_id: string | null;
-  data: string | null;
-}
+type AttachmentInfo = EmailAttachmentInfo;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -83,7 +76,7 @@ function ThreadCard({
     if (!expanded && !isActive && lazyBody === null && !lazyLoading) {
       setLazyLoading(true);
       try {
-        const raw = await invoke<string>("get_email_body", { id: email.id, accountId: email.account_id });
+        const raw = await tauriApi.getEmailBody(email.id, email.account_id);
         setLazyBody(raw || "");
       } catch {
         setLazyBody("");
@@ -310,7 +303,7 @@ export function EmailReader({
   useEffect(() => {
     setAttachments([]);
     setThumbnails({});
-    invoke<AttachmentInfo[]>("get_email_attachments", { emailId: activeMail.id, accountId: activeMail.account_id })
+    tauriApi.getEmailAttachments(activeMail.id, activeMail.account_id)
       .then(atts => {
         setAttachments(atts);
         if (!accessToken) return;
@@ -321,12 +314,8 @@ export function EmailReader({
         const token = accessToken;
         Promise.allSettled(
           imageAtts.map(a =>
-            invoke<string>("fetch_attachment_data", {
-              emailId,
-              accountId: activeMail.account_id,
-              attachmentDbId: a.id,
-              accessToken: token,
-            }).then(data => ({ id: a.id, data }))
+            tauriApi.fetchAttachmentData(emailId, activeMail.account_id, a.id, token)
+              .then(data => ({ id: a.id, data }))
           )
         ).then(results => {
           const map: Record<string, string> = {};
@@ -343,12 +332,12 @@ export function EmailReader({
     if (!accessToken) return;
     setDownloadingId(att.id);
     try {
-      const savedName = await invoke<string>("save_and_reveal_attachment", {
-        emailId: activeMail.id,
-        accountId: activeMail.account_id,
-        attachmentDbId: att.id,
+      const savedName = await tauriApi.saveAndRevealAttachment(
+        activeMail.id,
+        activeMail.account_id,
+        att.id,
         accessToken,
-      });
+      );
       showToast(`Saved to Downloads: ${savedName}`, "success");
     } catch (e) {
       showToast(tr.mail.downloadFailed, "error");

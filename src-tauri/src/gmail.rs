@@ -1187,6 +1187,16 @@ pub async fn archive_email(
     Ok(())
 }
 
+fn gmail_trash_request(client: &Client, url: &str, access_token: &str) -> reqwest::RequestBuilder {
+    client
+        .post(url)
+        .bearer_auth(access_token)
+        // Reqwest may omit Content-Length for an empty body. Gmail's action
+        // endpoint requires the header even when the payload is zero bytes.
+        .header(reqwest::header::CONTENT_LENGTH, "0")
+        .body(Vec::<u8>::new())
+}
+
 #[tauri::command]
 pub async fn trash_email(
     app: AppHandle,
@@ -1201,9 +1211,7 @@ pub async fn trash_email(
         message_id
     );
 
-    let res = client
-        .post(&url)
-        .bearer_auth(&access_token)
+    let res = gmail_trash_request(&client, &url, &access_token)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1808,12 +1816,28 @@ pub async fn save_and_reveal_attachment(
 #[cfg(test)]
 mod tests {
     use super::{
-        gmail_get_with_retry, gmail_retry_delay, is_retryable_gmail_status, mailbox_failure_status,
-        parse_retry_after_delay, safe_attachment_filename, GmailLabelStats,
+        gmail_get_with_retry, gmail_retry_delay, gmail_trash_request, is_retryable_gmail_status,
+        mailbox_failure_status, parse_retry_after_delay, safe_attachment_filename, GmailLabelStats,
         GMAIL_GET_MAX_RETRY_AFTER_SECS,
     };
     use reqwest::{Client, StatusCode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn gmail_trash_post_has_explicit_zero_content_length() {
+        let request = gmail_trash_request(
+            &Client::new(),
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/test/trash",
+            "test-token",
+        )
+        .build()
+        .expect("build trash request");
+
+        assert_eq!(
+            request.headers().get(reqwest::header::CONTENT_LENGTH).unwrap(),
+            "0"
+        );
+    }
 
     #[tokio::test]
     async fn gmail_get_retries_a_transient_response_then_succeeds() {

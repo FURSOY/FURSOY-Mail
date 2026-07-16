@@ -1,0 +1,276 @@
+import { useCallback, useEffect, useRef, useState, useTransition, type MutableRefObject } from "react";
+import type { AppLocale, AppLanguage } from "../i18n";
+import type { Account, AppControls, EmailSummary, OtpMode } from "../types";
+import { tauriApi } from "../tauriApi";
+import { extractVerificationCode, isAuthFailure, isInQuietHours, MAIL_PAGE_SIZE, MAIL_TABS } from "../utils";
+
+interface SyncOptions {
+  userInitiated?: boolean;
+  suppressNotifications?: boolean;
+}
+
+interface UseMailSyncOptions {
+  accountsRef: MutableRefObject<Account[]>;
+  accountTokensRef: MutableRefObject<Record<string, string>>;
+  activeAccountIdRef: MutableRefObject<string | null>;
+  expiredAccountsRef: MutableRefObject<Set<string>>;
+  tokenExpiredRef: MutableRefObject<boolean>;
+  appControlsRef: MutableRefObject<AppControls>;
+  activeTabRef: MutableRefObject<string>;
+  syncIntervalRef: MutableRefObject<number | null>;
+  syncChainIdRef: MutableRefObject<number>;
+  backgroundSyncRef: MutableRefObject<(options?: SyncOptions) => Promise<boolean>>;
+  recentNotificationsRef: MutableRefObject<Record<string, { accountId: string; messageId: string } | null>>;
+  knownEmailIdsRef: MutableRefObject<Set<string>>;
+  notificationReadyAccountIdsRef: MutableRefObject<Set<string>>;
+  notificationBaselineEpochRef: MutableRefObject<number>;
+  pendingUnreadBadgeDeltasRef: MutableRefObject<Map<string, { delta: number; expiresAt: number }>>;
+  emailsLength: number;
+  syncIntervalSeconds: number;
+  notificationDuration: number;
+  notificationInfinite: boolean;
+  otpMode: OtpMode;
+  appLanguage: AppLanguage;
+  locale: AppLocale;
+  loadEmails: () => Promise<EmailSummary[]>;
+  shouldDeferNetwork: (userInitiated?: boolean) => Promise<boolean>;
+  refreshAccessToken: (accountId: string) => Promise<{ access_token: string }>;
+  upsertToken: (accountId: string, accessToken: string) => void;
+  clearExpiredAccount: (accountId: string) => void;
+  setSessionExpired: (expired: boolean) => void;
+  markAccountExpired: (accountId: string, showMessage?: boolean) => void;
+  markSessionExpired: (showMessage?: boolean) => void;
+  showToast: (message: string, type?: "error" | "success" | "info") => void;
+}
+
+function emailKey(email: EmailSummary) {
+  return `${email.account_id}\u0000${email.id}`;
+}
+
+export function useMailSync(options: UseMailSyncOptions) {
+  const {
+    accountsRef, accountTokensRef, activeAccountIdRef,
+    expiredAccountsRef, tokenExpiredRef, appControlsRef, activeTabRef,
+    syncIntervalRef, syncChainIdRef, backgroundSyncRef, recentNotificationsRef,
+    knownEmailIdsRef, notificationReadyAccountIdsRef, notificationBaselineEpochRef,
+    pendingUnreadBadgeDeltasRef, emailsLength, syncIntervalSeconds,
+    notificationDuration, notificationInfinite, otpMode, appLanguage, locale,
+    loadEmails, shouldDeferNetwork, refreshAccessToken, upsertToken,
+    clearExpiredAccount, setSessionExpired, markAccountExpired,
+    markSessionExpired, showToast,
+  } = options;
+
+  const [isUserSyncing, setIsUserSyncing] = useState(false);
+  const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
+  const [inboxUnread, setInboxUnread] = useState(0);
+  const [, startDataTransition] = useTransition();
+  const syncIntervalSecondsRef = useRef(syncIntervalSeconds);
+  const notificationDurationRef = useRef(notificationDuration);
+  const notificationInfiniteRef = useRef(notificationInfinite);
+  syncIntervalSecondsRef.current = syncIntervalSeconds;
+  notificationDurationRef.current = notificationDuration;
+  notificationInfiniteRef.current = notificationInfinite;
+
+  const syncAccountWithAutoRefresh = useCallback(async (
+    accountId: string,
+    token: string,
+    force = false,
+  ): Promise<string> => {
+    try {
+      await tauriApi.syncEmails(accountId, token, force);
+      return token;
+    } catch (error) {
+      if (!isAuthFailure(error)) throw error;
+      try {
+        const refreshed = await refreshAccessToken(accountId);
+        upsertToken(accountId, refreshed.access_token);
+        clearExpiredAccount(accountId);
+        setSessionExpired(false);
+        await tauriApi.syncEmails(accountId, refreshed.access_token, force);
+        return refreshed.access_token;
+      } catch (refreshError) {
+        console.error(`Token refresh failed for ${accountId}:`, refreshError);
+        markAccountExpired(accountId);
+        throw new Error(locale.messages.reloginRequired);
+      }
+    }
+  }, [clearExpiredAccount, locale, markAccountExpired, refreshAccessToken, setSessionExpired, upsertToken]);
+
+  const adjustUnreadBadge = useCallback((accountId: string, delta: number) => {
+    const activeAccountId = activeAccountIdRef.current;
+    if (activeAccountId !== null && activeAccountId !== accountId) return;
+    const now = Date.now();
+    const previous = pendingUnreadBadgeDeltasRef.current.get(accountId);
+    const nextDelta = (previous?.expiresAt && previous.expiresAt > now ? previous.delta : 0) + delta;
+    if (nextDelta === 0) pendingUnreadBadgeDeltasRef.current.delete(accountId);
+    else pendingUnreadBadgeDeltasRef.current.set(accountId, { delta: nextDelta, expiresAt: now + 30_000 });
+    setInboxUnread(current => Math.max(0, current + delta));
+  }, [activeAccountIdRef, pendingUnreadBadgeDeltasRef]);
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const accountId = activeAccountIdRef.current;
+      const count = await tauriApi.getInboxUnreadCount(accountId);
+      const now = Date.now();
+      let pendingDelta = 0;
+      for (const [id, pending] of pendingUnreadBadgeDeltasRef.current) {
+        if (pending.expiresAt <= now) pendingUnreadBadgeDeltasRef.current.delete(id);
+        else if (accountId === null || accountId === id) pendingDelta += pending.delta;
+      }
+      startDataTransition(() => setInboxUnread(Math.max(0, count + pendingDelta)));
+      return count;
+    } catch {
+      return 0;
+    }
+  }, [activeAccountIdRef, pendingUnreadBadgeDeltasRef]);
+
+  const notifyNewEmails = useCallback(async (newEmails: EmailSummary[]) => {
+    if (newEmails.length === 0) return;
+    const controls = appControlsRef.current;
+    if (controls.notificationsMuted || isInQuietHours(controls)) return;
+    try {
+      for (const email of newEmails.slice(0, 5)) {
+        const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
+        const body = otpMode === "off" ? "" : await tauriApi.getEmailBody(email.id, email.account_id).catch(() => "");
+        const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
+        const account = accountsRef.current.find(item => item.id === email.account_id);
+        const title = senderName.slice(0, 64);
+        const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || locale.messages.newMessage;
+        const notificationKey = title + notificationBody;
+        const previous = recentNotificationsRef.current[notificationKey];
+        recentNotificationsRef.current[notificationKey] = previous &&
+          (previous.accountId !== email.account_id || previous.messageId !== email.id)
+          ? null
+          : { accountId: email.account_id, messageId: email.id };
+        await tauriApi.showCustomNotification({
+          title,
+          body: notificationBody,
+          kind: "mail",
+          code: code || null,
+          emailId: email.id,
+          duration: notificationInfiniteRef.current ? 0 : notificationDurationRef.current * 1000,
+          accountId: email.account_id || null,
+          accountPicture: account?.picture || null,
+          multiAccount: accountsRef.current.length > 1,
+        });
+      }
+    } catch (error) {
+      console.error("Notification error:", error);
+    }
+  }, [accountsRef, appControlsRef, appLanguage, locale, otpMode, recentNotificationsRef]);
+
+  const clearPeriodicSync = useCallback(() => {
+    syncChainIdRef.current += 1;
+    if (syncIntervalRef.current !== null) {
+      clearTimeout(syncIntervalRef.current);
+      syncIntervalRef.current = null;
+    }
+  }, [syncChainIdRef, syncIntervalRef]);
+
+  const startPeriodicSync = useCallback(() => {
+    clearPeriodicSync();
+    const chainId = syncChainIdRef.current;
+    const scheduleNext = () => {
+      if (syncChainIdRef.current !== chainId) return;
+      syncIntervalRef.current = window.setTimeout(async () => {
+        if (syncChainIdRef.current !== chainId) return;
+        if (Object.keys(accountTokensRef.current).length > 0 && !tokenExpiredRef.current) {
+          await backgroundSyncRef.current();
+        }
+        scheduleNext();
+      }, syncIntervalSecondsRef.current * 1000);
+    };
+    scheduleNext();
+  }, [accountTokensRef, backgroundSyncRef, clearPeriodicSync, syncChainIdRef, syncIntervalRef, tokenExpiredRef]);
+
+  useEffect(() => {
+    if (Object.keys(accountTokensRef.current).length > 0) startPeriodicSync();
+  }, [syncIntervalSeconds]);
+
+  const backgroundSync = useCallback(async (syncOptions?: SyncOptions): Promise<boolean> => {
+    const currentAccounts = accountsRef.current;
+    const tokens = accountTokensRef.current;
+    if (currentAccounts.length === 0) return false;
+    const userInitiated = syncOptions?.userInitiated ?? false;
+    const baselineEpoch = notificationBaselineEpochRef.current;
+    if (appControlsRef.current.mailSyncPaused && !userInitiated) return false;
+    if (await shouldDeferNetwork(userInitiated)) {
+      console.log("System in fullscreen/game mode, skipping background sync.");
+      return false;
+    }
+
+    try {
+      if (userInitiated) setIsUserSyncing(true);
+      else setIsBackgroundSyncing(true);
+      let anySuccess = false;
+      const successfullySyncedAccountIds = new Set<string>();
+      for (const account of currentAccounts) {
+        const token = tokens[account.id];
+        if (!token || expiredAccountsRef.current.has(account.id)) continue;
+        try {
+          await syncAccountWithAutoRefresh(account.id, token, userInitiated);
+          anySuccess = true;
+          successfullySyncedAccountIds.add(account.id);
+        } catch (error) {
+          if (!isAuthFailure(error)) console.error(`Sync failed for ${account.id}:`, error);
+        }
+      }
+
+      if (anySuccess) {
+        const readyAccountIds = notificationReadyAccountIdsRef.current;
+        const establishesBaseline = [...successfullySyncedAccountIds]
+          .some(accountId => !readyAccountIds.has(accountId));
+        // The first successful sync builds a broad local baseline. Later syncs
+        // read only the normal first page and merge it into the known-id set.
+        const freshInbox = await tauriApi.getEmailsByLabel({
+          label: "inbox",
+          accountId: null,
+          limit: establishesBaseline ? 5_000 : undefined,
+        });
+        const suppressNotifications = syncOptions?.suppressNotifications === true ||
+          baselineEpoch !== notificationBaselineEpochRef.current;
+        const newUnreadEmails = freshInbox.filter(email =>
+          !suppressNotifications && email.unread && readyAccountIds.has(email.account_id) &&
+          !knownEmailIdsRef.current.has(emailKey(email))
+        );
+        for (const email of freshInbox) knownEmailIdsRef.current.add(emailKey(email));
+        for (const accountId of successfullySyncedAccountIds) readyAccountIds.add(accountId);
+        void notifyNewEmails(newUnreadEmails);
+        if (MAIL_TABS.has(activeTabRef.current) && emailsLength <= MAIL_PAGE_SIZE) await loadEmails();
+        await refreshUnreadCount();
+      }
+      return anySuccess;
+    } catch (error) {
+      console.error("Background sync failed:", error);
+      if (isAuthFailure(error)) {
+        markSessionExpired();
+        return false;
+      }
+      showToast(`${locale.messages.syncFailedDetail}: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return false;
+    } finally {
+      if (userInitiated) setIsUserSyncing(false);
+      else setIsBackgroundSyncing(false);
+    }
+  }, [
+    accountsRef, accountTokensRef, activeTabRef, appControlsRef, emailsLength,
+    expiredAccountsRef, knownEmailIdsRef, loadEmails, locale, markSessionExpired,
+    notificationBaselineEpochRef, notificationReadyAccountIdsRef, notifyNewEmails,
+    refreshUnreadCount, shouldDeferNetwork, showToast, syncAccountWithAutoRefresh,
+  ]);
+
+  backgroundSyncRef.current = backgroundSync;
+
+  return {
+    isUserSyncing,
+    isBackgroundSyncing,
+    inboxUnread,
+    setIsUserSyncing,
+    setIsBackgroundSyncing,
+    adjustUnreadBadge,
+    refreshUnreadCount,
+    clearPeriodicSync,
+    startPeriodicSync,
+    backgroundSync,
+  };
+}

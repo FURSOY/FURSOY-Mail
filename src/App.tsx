@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useTransition } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Minus, Square, Copy, X, Edit3, Menu, Inbox, AlertTriangle, CheckCircle, XCircle,
 } from "lucide-react";
@@ -14,17 +10,16 @@ import { surfaces, themePresets, type ThemePresetName } from "./theme";
 import "./index.css";
 
 import {
-  type Account, type EmailSummary, type ThreadGroup, type AuthInfo, type AppControls, type OtpMode, type RenderMode,
+  type EmailSummary, type ThreadGroup, type AppControls, type OtpMode, type RenderMode,
   type MailZoom, type DensityMode, type MailViewMode, type MailViewPreference,
   type RemoteImageMode, DEFAULT_APP_CONTROLS,
 } from "./types";
 import { useMemo } from "react";
 import {
-  MAIL_TABS, STARTUP_NETWORK_DELAY_MS, STARTUP_UPDATE_DELAY_MS,
+  MAIL_TABS, STARTUP_NETWORK_DELAY_MS,
   MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
-  isNoUpdateError, isAuthFailure, extractVerificationCode,
+  isAuthFailure, extractVerificationCode,
   readMailZoom, readThemePreset, getAutoMailViewMode,
-  isInQuietHours, formatDateFull,
 } from "./utils";
 
 import { Sidebar } from "./components/Sidebar";
@@ -35,6 +30,12 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { ComposeModal } from "./components/ComposeModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { ToolbarTip } from "./components/ToolbarTip";
+import { useUpdater } from "./hooks/useUpdater";
+import { useAccounts } from "./hooks/useAccounts";
+import { useMailSync } from "./hooks/useMailSync";
+import { useMailActions } from "./hooks/useMailActions";
+import { useMailReader } from "./hooks/useMailReader";
+import { tauriApi, type MailboxDownloadStatus } from "./tauriApi";
 
 function readTrustedImageSenders(): Record<string, string[]> {
   try {
@@ -67,19 +68,10 @@ function sameEmail(left: EmailSummary, right: EmailSummary): boolean {
   return left.id === right.id && left.account_id === right.account_id;
 }
 
-interface MailboxDownloadStatus {
-  running: boolean;
-  pending: boolean;
-  state: "waiting" | "running" | "paused" | "error" | "completed" | "relogin_required" | "rate_limited";
-  retryAfter: number | null;
-}
-
 function App() {
   const [activeTab, setActiveTab] = useState<"inbox" | "sent" | "archive" | "spam" | "trash" | "settings">("inbox");
   const [selectedMail, setSelectedMail] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<string>("");
-  const [isUserSyncing, setIsUserSyncing] = useState(false);
-  const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
 
   // Settings
   const [syncIntervalValue, setSyncIntervalValue] = useState(() => {
@@ -130,18 +122,13 @@ function App() {
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [singlePanelView, setSinglePanelView] = useState<"list" | "reader">("list");
   const [emails, setEmails] = useState<EmailSummary[]>([]);
-  const [selectedMailBody, setSelectedMailBody] = useState("");
-  const [selectedMailBodyId, setSelectedMailBodyId] = useState<string | null>(null);
-  const [isBodyLoading, setIsBodyLoading] = useState(false);
-  const [bodyError, setBodyError] = useState<string | null>(null);
-  const [threadEmails, setThreadEmails] = useState<EmailSummary[]>([]);
-  const [threadRefreshKey, setThreadRefreshKey] = useState(0);
-  // multi-account
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [accountsLoaded, setAccountsLoaded] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [accountTokens, setAccountTokens] = useState<Record<string, string>>({});
-  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const {
+    accounts, accountsLoaded, isConnecting, accountTokens, activeAccountId,
+    tokenExpired, expiredAccountIds,
+    accountsRef, accountTokensRef, activeAccountIdRef, expiredAccountsRef, tokenExpiredRef,
+    setIsConnecting, selectAccount, upsertToken, clearExpiredAccount, expireAccount, setSessionExpired,
+    initializeAccounts, connectAccount, disconnectAccount, reorderAndReloadAccounts, refreshAccessToken,
+  } = useAccounts();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EmailSummary[] | null>(null);
@@ -153,34 +140,11 @@ function App() {
   const [mailboxDownloadPending, setMailboxDownloadPending] = useState(false);
   const [mailboxDownloadState, setMailboxDownloadState] = useState<MailboxDownloadStatus["state"]>("completed");
   const [isResettingLocalMailbox, setIsResettingLocalMailbox] = useState(false);
-  const [showReply, setShowReply] = useState(false);
-  const [replyMode, setReplyMode] = useState<"reply" | "reply-all">("reply");
-  const [replyText, setReplyText] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [showCompose, setShowCompose] = useState(false);
-  const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [readingToolsOpen, setReadingToolsOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
-  const [composeTo, setComposeTo] = useState("");
-  const [composeSubject, setComposeSubject] = useState("");
-  const [composeBody, setComposeBody] = useState("");
-  const [composeHtmlAppend, setComposeHtmlAppend] = useState("");
-  const [composeAccountId, setComposeAccountId] = useState<string | null>(null);
-  const [composeSendError, setComposeSendError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; msg: string; type: "error" | "success" | "info" }[]>([]);
   const [verificationCopyState, setVerificationCopyState] = useState<"idle" | "copied">("idle");
-  const [inboxUnread, setInboxUnread] = useState(0);
-  const [tokenExpired, setTokenExpired] = useState(false);
-  const [expiredAccountIds, setExpiredAccountIds] = useState<Set<string>>(new Set());
-
-  // Updater
-  const [currentVersion, setCurrentVersion] = useState<string>("");
-  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [updateAvailable, setUpdateAvailable] = useState<{ version: string; date: string; body: string } | null>(null);
-  const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number } | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<string>("");
 
   // Refs
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -188,15 +152,8 @@ function App() {
   const syncIntervalRef = useRef<number | null>(null);
   const syncChainIdRef = useRef(0);
   const recentNotificationsRef = useRef<Record<string, { accountId: string; messageId: string } | null>>({});
-  const notifiedUpdateVersionRef = useRef<string | null>(null);
   const lastToastRef = useRef<{ msg: string; type: "error" | "success" | "info"; at: number } | null>(null);
   const previousAutoMailViewModeRef = useRef<MailViewMode | null>(null);
-  const tokenExpiredRef = useRef(tokenExpired);
-  // multi-account refs
-  const accountTokensRef = useRef<Record<string, string>>({});
-  const accountsRef = useRef<Account[]>([]);
-  const activeAccountIdRef = useRef<string | null>(null);
-  const expiredAccountsRef = useRef<Set<string>>(new Set());
   const backgroundSyncRef = useRef<
     (opts?: { userInitiated?: boolean; suppressNotifications?: boolean }) => Promise<boolean>
   >(async () => false);
@@ -214,22 +171,10 @@ function App() {
   const [, startDataTransition] = useTransition();
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
-  const syncIntervalValueRef = useRef(syncIntervalValue);
-  syncIntervalValueRef.current = syncIntervalValue;
-  const notifDurationRef = useRef(notifDuration);
-  notifDurationRef.current = notifDuration;
-  const notifInfiniteRef = useRef(notifInfinite);
-  notifInfiniteRef.current = notifInfinite;
   const pauseOnFullscreenRef = useRef(pauseOnFullscreen);
   pauseOnFullscreenRef.current = pauseOnFullscreen;
   const appControlsRef = useRef(appControls);
   appControlsRef.current = appControls;
-  tokenExpiredRef.current = tokenExpired;
-
-  // Keep refs in sync
-  useEffect(() => { accountTokensRef.current = accountTokens; }, [accountTokens]);
-  useEffect(() => { accountsRef.current = accounts; }, [accounts]);
-  useEffect(() => { activeAccountIdRef.current = activeAccountId; }, [activeAccountId]);
 
   // Derive a "current context" access token (for UI checks and email-less operations)
   const accessToken = (() => {
@@ -284,9 +229,8 @@ function App() {
   }, [themePreset, densityMode]);
 
   useEffect(() => {
-    getVersion().then(setCurrentVersion).catch(console.error);
-    invoke<boolean>("get_launch_at_startup").then(setLaunchAtStartup).catch(console.error);
-    invoke<AppControls>("get_app_controls")
+    tauriApi.getLaunchAtStartup().then(setLaunchAtStartup).catch(console.error);
+    tauriApi.getAppControls()
       .then((controls) => {
         const savedLanguage: AppLanguage = controls.appLanguage === "tr" ? "tr" : "en";
         const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...controls, appLanguage: savedLanguage };
@@ -319,9 +263,8 @@ function App() {
   }, []);
 
   const markAccountExpired = useCallback((accountId: string, showMessage = true) => {
-    if (expiredAccountsRef.current.has(accountId)) return;
-    expiredAccountsRef.current.add(accountId);
-    setExpiredAccountIds(new Set(expiredAccountsRef.current));
+    const { newlyExpired, allExpired } = expireAccount(accountId);
+    if (!newlyExpired) return;
 
     // Per-account notification (only when single account expires, not via markSessionExpired)
     if (showMessage) {
@@ -330,10 +273,8 @@ function App() {
     }
 
     // All accounts expired → banner + stop sync
-    const allExpired = accountsRef.current.every(a => expiredAccountsRef.current.has(a.id));
     if (allExpired && !tokenExpiredRef.current) {
-      tokenExpiredRef.current = true;
-      setTokenExpired(true);
+      setSessionExpired(true);
       setIsUserSyncing(false);
       setIsBackgroundSyncing(false);
       syncChainIdRef.current++;
@@ -342,7 +283,7 @@ function App() {
         syncIntervalRef.current = null;
       }
     }
-  }, [showToast, tr]);
+  }, [expireAccount, setSessionExpired, showToast, tokenExpiredRef, tr]);
 
   // backward-compat alias used in a few places
   const markSessionExpired = useCallback((showMessage = true) => {
@@ -372,109 +313,33 @@ function App() {
   const shouldDeferNetworkForGameMode = useCallback(async (userInitiated = false) => {
     if (userInitiated || !pauseOnFullscreenRef.current) return false;
     try {
-      return await invoke<boolean>("is_system_fullscreen");
+      return await tauriApi.isSystemFullscreen();
     } catch (e) {
       console.error("Fullscreen check failed:", e);
       return false;
     }
   }, []);
 
-  const checkForUpdates = async (showUIMessages = false) => {
-    try {
-      if (showUIMessages) setIsCheckingUpdate(true);
-      setUpdateError(null);
-      setUpdateStatus("");
-      if (await shouldDeferNetworkForGameMode(showUIMessages)) {
-        console.log("System in fullscreen/game mode, skipping automatic update check.");
-        return;
-      }
-      const update = await check();
-      if (update) {
-        setUpdateAvailable({ version: update.version, date: update.date || "", body: update.body || "" });
-        setUpdateStatus(tr.update.available.replace("{version}", update.version));
-        if (showUIMessages) {
-          showToast(tr.update.available.replace("{version}", update.version), "info");
-        } else if (notifiedUpdateVersionRef.current !== update.version) {
-          notifiedUpdateVersionRef.current = update.version;
-          await invoke("show_custom_notification", {
-            title: tr.update.readyTitle,
-            body: tr.update.readyBody.replace("{version}", update.version),
-            kind: "update", code: null, emailId: null, duration: 10000,
-          });
-        }
-      } else {
-        setUpdateAvailable(null);
-        setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast(tr.update.upToDate, "success");
-      }
-    } catch (e) {
-      console.error("Update check failed:", e);
-      if (isNoUpdateError(e)) {
-        setUpdateAvailable(null);
-        setUpdateError(null);
-        setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast(tr.update.upToDate, "success");
-        return;
-      }
-      const message = e instanceof Error ? e.message : String(e);
-      setUpdateError(`${tr.update.checkFailed}: ${message}`);
-      setUpdateStatus("");
-      if (showUIMessages) showToast(tr.update.checkFailed, "error");
-    } finally {
-      if (showUIMessages) setIsCheckingUpdate(false);
-    }
-  };
-
-  const installUpdate = async () => {
-    try {
-      setUpdateError(null);
-      setUpdateStatus("");
-      const update = await check();
-      if (!update) {
-        setUpdateAvailable(null);
-        setUpdateStatus(tr.update.upToDate);
-        return;
-      }
-      setUpdateProgress({ downloaded: 0, total: 100 });
-      let downloaded = 0;
-      let totalLength = 0;
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case "Started":
-            totalLength = event.data.contentLength || 0;
-            setUpdateProgress({ downloaded: 0, total: totalLength });
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            setUpdateProgress({ downloaded, total: totalLength });
-            break;
-          case "Finished":
-            setUpdateProgress(null);
-            break;
-        }
-      });
-      await relaunch();
-    } catch (e) {
-      console.error("Update install failed", e);
-      if (isNoUpdateError(e)) {
-        setUpdateAvailable(null);
-        setUpdateError(null);
-        setUpdateStatus(tr.update.upToDate);
-        setUpdateProgress(null);
-        return;
-      }
-      const message = e instanceof Error ? e.message : String(e);
-      setUpdateError(`${tr.update.installFailed}: ${message}`);
-      setUpdateProgress(null);
-    }
-  };
+  const {
+    currentVersion,
+    isCheckingUpdate,
+    updateAvailable,
+    updateProgress,
+    updateError,
+    updateStatus,
+    checkForUpdates,
+    installUpdate,
+  } = useUpdater({
+    locale: tr,
+    showToast,
+    shouldDeferNetwork: shouldDeferNetworkForGameMode,
+  });
 
   useEffect(() => {
     const openNotificationMail = async (messageId: string, accountId?: string) => {
       if (!messageId || !accountId) return;
       if (accountId && accountId !== activeAccountIdRef.current) {
-        setActiveAccountId(accountId);
-        activeAccountIdRef.current = accountId;
+        selectAccount(accountId);
         tabEmailCacheRef.current = {};
       }
       setMobileMenuOpen(false);
@@ -523,11 +388,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => { void checkForUpdates(false); }, STARTUP_UPDATE_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
-
   const isMailContextCurrent = (label: string, accountId: string | null) =>
     activeTabRef.current === label && activeAccountIdRef.current === accountId;
 
@@ -544,7 +404,7 @@ function App() {
       const accountId = activeAccountIdRef.current; // null = all accounts
       const cursor = options?.cursor ?? null;
       const requestId = ++mailListRequestIdRef.current;
-      const result = await invoke<EmailSummary[]>("get_emails_by_label", {
+      const result = await tauriApi.getEmailsByLabel({
         label,
         accountId,
         limit: MAIL_PAGE_SIZE,
@@ -607,9 +467,8 @@ function App() {
     setIsLoadingMoreEmails(true);
     try {
       const page = await loadEmails(label, { append: true, cursor: mailPageCursorRef.current });
-      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
-        accountId,
-      }).catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
+      const status = await tauriApi.getMailboxDownloadStatus(accountId)
+        .catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
       if (!isMailContextCurrent(label, accountId)) return false;
       if (page.length === 0 && status.pending && !status.running) {
         // Never block the list on Gmail. Request a safe per-account sync and
@@ -620,7 +479,7 @@ function App() {
         void Promise.allSettled(
           targets
             .filter((target): target is { id: string; token: string } => !!target.token)
-            .map(target => invoke("sync_emails", { accountId: target.id, accessToken: target.token, force: true }))
+            .map(target => tauriApi.syncEmails(target.id, target.token, true))
         );
       }
       setIsMailboxBackfilling(status.running);
@@ -655,7 +514,7 @@ function App() {
           setSelectedMailBody("");
           setSelectedMailBodyId(null);
           resetMailPagination();
-          await invoke("reset_local_mail_cache", { accountId: null });
+          await tauriApi.resetLocalMailCache(null);
           recentNotificationsRef.current = {};
           recentlyReadRef.current.clear();
           knownEmailIdsRef.current.clear();
@@ -679,7 +538,7 @@ function App() {
     const previous = launchAtStartup;
     setLaunchAtStartup(checked);
     try {
-      const actual = await invoke<boolean>("set_launch_at_startup", { enabled: checked });
+      const actual = await tauriApi.setLaunchAtStartup(checked);
       setLaunchAtStartup(actual);
       showToast(actual ? tr.startup.enabled : tr.startup.disabled, "success");
     } catch (e) {
@@ -696,7 +555,7 @@ function App() {
     const merged = { ...DEFAULT_APP_CONTROLS, ...next };
     setAppControls(merged);
     try {
-      const saved = await invoke<AppControls>("set_app_controls", { controls: merged });
+      const saved = await tauriApi.setAppControls(merged);
       setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved });
     } catch (e) {
       console.error("Failed to update app controls:", e);
@@ -705,201 +564,49 @@ function App() {
     }
   };
 
-  const syncAccountWithAutoRefresh = useCallback(async (accountId: string, token: string, force = false): Promise<string> => {
-    try {
-      await invoke("sync_emails", { accountId, accessToken: token, force });
-      return token;
-    } catch (e: unknown) {
-      if (isAuthFailure(e)) {
-        try {
-          const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId });
-          const newToken = refreshed.access_token;
-          accountTokensRef.current = { ...accountTokensRef.current, [accountId]: newToken };
-          setAccountTokens(prev => ({ ...prev, [accountId]: newToken }));
-          expiredAccountsRef.current.delete(accountId);
-          setExpiredAccountIds(new Set(expiredAccountsRef.current));
-          tokenExpiredRef.current = false;
-          setTokenExpired(false);
-          await invoke("sync_emails", { accountId, accessToken: newToken, force });
-          return newToken;
-        } catch (refreshError) {
-          console.error(`Token refresh failed for ${accountId}:`, refreshError);
-          markAccountExpired(accountId);
-          throw new Error(tr.messages.reloginRequired);
-        }
-      }
-      throw e;
-    }
-  }, [markAccountExpired, tr]);
-
-  const adjustUnreadBadge = (accountId: string, delta: number) => {
-    const activeAccountId = activeAccountIdRef.current;
-    if (activeAccountId !== null && activeAccountId !== accountId) return;
-
-    const now = Date.now();
-    const previous = pendingUnreadBadgeDeltasRef.current.get(accountId);
-    const nextDelta = (previous?.expiresAt && previous.expiresAt > now ? previous.delta : 0) + delta;
-    if (nextDelta === 0) {
-      pendingUnreadBadgeDeltasRef.current.delete(accountId);
-    } else {
-      // Gmail's label counters can lag a successful message modification briefly.
-      pendingUnreadBadgeDeltasRef.current.set(accountId, { delta: nextDelta, expiresAt: now + 30_000 });
-    }
-    setInboxUnread(current => Math.max(0, current + delta));
-  };
-
-  const refreshUnreadCount = async () => {
-    try {
-      const accountId = activeAccountIdRef.current;
-      const count = await invoke<number>("get_inbox_unread_count", { accountId });
-      const now = Date.now();
-      let pendingDelta = 0;
-      for (const [id, pending] of pendingUnreadBadgeDeltasRef.current) {
-        if (pending.expiresAt <= now) {
-          pendingUnreadBadgeDeltasRef.current.delete(id);
-        } else if (accountId === null || accountId === id) {
-          pendingDelta += pending.delta;
-        }
-      }
-      startDataTransition(() => setInboxUnread(Math.max(0, count + pendingDelta)));
-      return count;
-    } catch { return 0; }
-  };
-
-  const notifyNewEmails = useCallback(async (newEmails: EmailSummary[]) => {
-    if (newEmails.length === 0) return;
-    const controls = appControlsRef.current;
-    if (controls.notificationsMuted || isInQuietHours(controls)) return;
-    try {
-      for (const email of newEmails.slice(0, 5)) {
-        const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
-        const body = otpMode === "off" ? "" : await invoke<string>("get_email_body", { id: email.id, accountId: email.account_id }).catch(() => "");
-        const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
-        const account = accountsRef.current.find(a => a.id === email.account_id);
-        const title = senderName.slice(0, 64);
-        const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || tr.messages.newMessage;
-        const notificationKey = title + notificationBody;
-        const previous = recentNotificationsRef.current[notificationKey];
-        recentNotificationsRef.current[notificationKey] = previous &&
-          (previous.accountId !== email.account_id || previous.messageId !== email.id)
-          ? null
-          : { accountId: email.account_id, messageId: email.id };
-        await invoke("show_custom_notification", {
-          title,
-          body: notificationBody,
-          kind: "mail",
-          code: code || null,
-          emailId: email.id,
-          duration: notifInfiniteRef.current ? 0 : notifDurationRef.current * 1000,
-          accountId: email.account_id || null,
-          accountPicture: account?.picture || null,
-          multiAccount: accountsRef.current.length > 1,
-        });
-      }
-    } catch (e) {
-      console.error("Notification error:", e);
-    }
-  }, [appLanguage, otpMode, tr]);
-
-  const clearPeriodicSync = () => {
-    syncChainIdRef.current++;
-    if (syncIntervalRef.current !== null) {
-      clearTimeout(syncIntervalRef.current);
-      syncIntervalRef.current = null;
-    }
-  };
-
-  const startPeriodicSync = () => {
-    clearPeriodicSync();
-    const chainId = syncChainIdRef.current;
-    const scheduleNext = () => {
-      if (syncChainIdRef.current !== chainId) return;
-      syncIntervalRef.current = window.setTimeout(async () => {
-        if (syncChainIdRef.current !== chainId) return;
-        const hasAnyToken = Object.keys(accountTokensRef.current).length > 0;
-        if (hasAnyToken && !tokenExpiredRef.current) {
-          await backgroundSyncRef.current();
-        }
-        scheduleNext();
-      }, syncIntervalValueRef.current * 1000);
-    };
-    scheduleNext();
-  };
-
-  useEffect(() => {
-    if (Object.keys(accountTokens).length > 0) startPeriodicSync();
-  }, [syncIntervalValue]);
-
-  const backgroundSync = async (opts?: { userInitiated?: boolean; suppressNotifications?: boolean }): Promise<boolean> => {
-    const accts = accountsRef.current;
-    const tokens = accountTokensRef.current;
-    if (accts.length === 0) return false;
-
-    const userInitiated = opts?.userInitiated ?? false;
-    const notificationBaselineEpoch = notificationBaselineEpochRef.current;
-    if (appControlsRef.current.mailSyncPaused && !userInitiated) return false;
-    if (await shouldDeferNetworkForGameMode(userInitiated)) {
-      console.log("System in fullscreen/game mode, skipping background sync.");
-      return false;
-    }
-
-    try {
-      if (userInitiated) setIsUserSyncing(true);
-      else setIsBackgroundSyncing(true);
-
-      let anySuccess = false;
-      const successfullySyncedAccountIds = new Set<string>();
-      for (const account of accts) {
-        const token = tokens[account.id];
-        if (!token || expiredAccountsRef.current.has(account.id)) continue;
-        try {
-          await syncAccountWithAutoRefresh(account.id, token, userInitiated);
-          anySuccess = true;
-          successfullySyncedAccountIds.add(account.id);
-        } catch (e) {
-          if (!isAuthFailure(e)) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.error(`Sync failed for ${account.id}:`, msg);
-          }
-        }
-      }
-
-      if (anySuccess) {
-        const freshInbox = await invoke<EmailSummary[]>("get_emails_by_label", { label: "inbox", accountId: null });
-        const readyAccountIds = notificationReadyAccountIdsRef.current;
-        const suppressNotifications = opts?.suppressNotifications === true ||
-          notificationBaselineEpoch !== notificationBaselineEpochRef.current;
-        const newUnreadEmails = freshInbox.filter(
-          e => !suppressNotifications && e.unread && readyAccountIds.has(e.account_id) && !knownEmailIdsRef.current.has(emailKey(e))
-        );
-        knownEmailIdsRef.current = new Set(freshInbox.map(emailKey));
-        // The first successful sync for an account establishes its baseline.
-        // Existing cache and initial Gmail history never create notifications.
-        for (const accountId of successfullySyncedAccountIds) readyAccountIds.add(accountId);
-        notifyNewEmails(newUnreadEmails);
-
-        // Do not replace a list the user has paged through while background
-        // sync is running; new mail will appear on the next refresh instead.
-        if (MAIL_TABS.has(activeTabRef.current) && emails.length <= MAIL_PAGE_SIZE) {
-          await loadEmails();
-        }
-        await refreshUnreadCount();
-      }
-
-      return anySuccess;
-    } catch (e) {
-      console.error("Background sync failed:", e);
-      if (isAuthFailure(e)) { markSessionExpired(); return false; }
-      const msg = e instanceof Error ? e.message : String(e);
-      showToast(`${tr.messages.syncFailedDetail}: ${msg}`, "error");
-      return false;
-    } finally {
-      if (userInitiated) setIsUserSyncing(false);
-      else setIsBackgroundSyncing(false);
-    }
-  };
-
-  backgroundSyncRef.current = backgroundSync;
+  const {
+    isUserSyncing,
+    isBackgroundSyncing,
+    inboxUnread,
+    setIsUserSyncing,
+    setIsBackgroundSyncing,
+    adjustUnreadBadge,
+    refreshUnreadCount,
+    clearPeriodicSync,
+    startPeriodicSync,
+  } = useMailSync({
+    accountsRef,
+    accountTokensRef,
+    activeAccountIdRef,
+    expiredAccountsRef,
+    tokenExpiredRef,
+    appControlsRef,
+    activeTabRef,
+    syncIntervalRef,
+    syncChainIdRef,
+    backgroundSyncRef,
+    recentNotificationsRef,
+    knownEmailIdsRef,
+    notificationReadyAccountIdsRef,
+    notificationBaselineEpochRef,
+    pendingUnreadBadgeDeltasRef,
+    emailsLength: emails.length,
+    syncIntervalSeconds: syncIntervalValue,
+    notificationDuration: notifDuration,
+    notificationInfinite: notifInfinite,
+    otpMode,
+    appLanguage,
+    locale: tr,
+    loadEmails: () => loadEmails(),
+    shouldDeferNetwork: shouldDeferNetworkForGameMode,
+    refreshAccessToken,
+    upsertToken,
+    clearExpiredAccount,
+    setSessionExpired,
+    markAccountExpired,
+    markSessionExpired,
+    showToast,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -908,31 +615,9 @@ function App() {
     refreshUnreadCount();
 
     // Multi-account startup: load all accounts and their tokens
-    invoke<Account[]>("get_accounts")
+    initializeAccounts()
       .then(async (loadedAccounts) => {
-        setAccountsLoaded(true);
         if (loadedAccounts.length === 0) return;
-
-        setAccounts(loadedAccounts);
-        accountsRef.current = loadedAccounts;
-
-        // Primary account (first by display_order) becomes active
-        const primary = loadedAccounts[0];
-        setActiveAccountId(primary.id);
-        activeAccountIdRef.current = primary.id;
-
-        // Load tokens for each account
-        const tokens: Record<string, string> = {};
-        for (const acc of loadedAccounts) {
-          try {
-            const auth = await invoke<AuthInfo | null>("get_account_auth", { accountId: acc.id });
-            if (auth?.access_token) tokens[acc.id] = auth.access_token;
-          } catch (e) {
-            console.error(`Failed to load auth for ${acc.id}:`, e);
-          }
-        }
-        setAccountTokens(tokens);
-        accountTokensRef.current = tokens;
 
         startupSyncTimer = window.setTimeout(() => {
           void (async () => {
@@ -944,12 +629,10 @@ function App() {
               // since refresh_access_token reads the refresh token directly from keyring.
               for (const acc of loadedAccounts) {
                 try {
-                  const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId: acc.id });
+                  const refreshed = await refreshAccessToken(acc.id);
                   if (cancelled) return;
-                  accountTokensRef.current = { ...accountTokensRef.current, [acc.id]: refreshed.access_token };
-                  setAccountTokens(prev => ({ ...prev, [acc.id]: refreshed.access_token }));
-                  expiredAccountsRef.current.delete(acc.id);
-                  setExpiredAccountIds(new Set(expiredAccountsRef.current));
+                  upsertToken(acc.id, refreshed.access_token);
+                  clearExpiredAccount(acc.id);
                 } catch (refreshError) {
                   if (isAuthFailure(refreshError)) {
                     // Only force re-login if we also have no cached token.
@@ -1030,16 +713,15 @@ function App() {
     const label = activeTab;
     const accountId = activeAccountId;
     const refreshBackfillStatus = async () => {
-      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
-        accountId,
-      }).catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
+      const status = await tauriApi.getMailboxDownloadStatus(accountId)
+        .catch(() => ({ running: false, pending: false, state: "completed" as const, retryAfter: null }));
       if (!cancelled && isMailContextCurrent(label, accountId)) {
         setIsMailboxBackfilling(status.running);
         setMailboxDownloadPending(status.pending);
         setMailboxDownloadState(status.state);
         if (!status.running && !status.pending && MAIL_TABS.has(label)) {
           const cursor = mailPageCursorRef.current;
-          const nextPage = await invoke<EmailSummary[]>("get_emails_by_label", {
+          const nextPage = await tauriApi.getEmailsByLabel({
             label,
             accountId,
             limit: 1,
@@ -1069,11 +751,7 @@ function App() {
 
     const accountId = activeAccountId;
     const timer = window.setTimeout(() => {
-      void invoke<EmailSummary[]>("search_local_emails", {
-        query,
-        accountId,
-        limit: 500,
-      })
+      void tauriApi.searchLocalEmails(query, accountId, 500)
         .then(results => {
           if (
             searchRequestIdRef.current !== requestId ||
@@ -1094,7 +772,7 @@ function App() {
   useEffect(() => {
     if (activeTab !== "settings") return;
     const timer = window.setTimeout(() => {
-      invoke<boolean>("get_launch_at_startup").then(setLaunchAtStartup).catch(console.error);
+      tauriApi.getLaunchAtStartup().then(setLaunchAtStartup).catch(console.error);
     }, 250);
     return () => window.clearTimeout(timer);
   }, [activeTab]);
@@ -1113,29 +791,11 @@ function App() {
     setIsConnecting(true);
     try {
       setAuthStatus(tr.auth.waitingForBrowser);
-      const res = await invoke<AuthInfo>("start_google_oauth");
-
-      // Update accounts list
-      const updatedAccounts = await invoke<Account[]>("get_accounts");
-      setAccounts(updatedAccounts);
-      accountsRef.current = updatedAccounts;
-
-      // Store new token
-      accountTokensRef.current = { ...accountTokensRef.current, [res.email]: res.access_token };
-      setAccountTokens(prev => ({ ...prev, [res.email]: res.access_token }));
-      expiredAccountsRef.current.delete(res.email);
-      setExpiredAccountIds(new Set(expiredAccountsRef.current));
-
-      // If this is the first account, set it active
-      if (updatedAccounts.length === 1) {
-        setActiveAccountId(res.email);
-        activeAccountIdRef.current = res.email;
-      }
+      await connectAccount();
 
       setAuthStatus(tr.auth.loggedInSyncing);
       const stillExpired = expiredAccountsRef.current.size > 0;
-      tokenExpiredRef.current = stillExpired;
-      if (!stillExpired) setTokenExpired(false);
+      setSessionExpired(stillExpired);
       // The first download for a newly added account is a baseline, not new-mail activity.
       const ok = await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
       if (ok) {
@@ -1156,36 +816,17 @@ function App() {
 
   async function handleLogoutAccount(accountId: string) {
     try {
-      await invoke("remove_account", { accountId });
-
-      // Remove from local state
-      const newTokens = { ...accountTokensRef.current };
-      delete newTokens[accountId];
-      accountTokensRef.current = newTokens;
-      setAccountTokens(newTokens);
-      expiredAccountsRef.current.delete(accountId);
-      setExpiredAccountIds(new Set(expiredAccountsRef.current));
       notificationReadyAccountIdsRef.current.delete(accountId);
       const removedAccountPrefix = `${accountId}\u0000`;
       knownEmailIdsRef.current = new Set(
         [...knownEmailIdsRef.current].filter(key => !key.startsWith(removedAccountPrefix))
       );
 
-      const updatedAccounts = await invoke<Account[]>("get_accounts");
-      setAccounts(updatedAccounts);
-      accountsRef.current = updatedAccounts;
-
-      // Switch active account if needed
-      if (activeAccountIdRef.current === accountId) {
-        const nextId = updatedAccounts.length > 0 ? updatedAccounts[0].id : null;
-        setActiveAccountId(nextId);
-        activeAccountIdRef.current = nextId;
-      }
+      const updatedAccounts = await disconnectAccount(accountId);
 
       if (updatedAccounts.length === 0) {
         clearPeriodicSync();
-        tokenExpiredRef.current = false;
-        setTokenExpired(false);
+        setSessionExpired(false);
         setEmails([]);
         setSelectedMail(null);
         setSelectedMailBody("");
@@ -1206,18 +847,14 @@ function App() {
 
   async function handleReorderAccounts(orderedIds: string[]) {
     try {
-      await invoke("reorder_accounts", { orderedIds });
-      const updatedAccounts = await invoke<Account[]>("get_accounts");
-      setAccounts(updatedAccounts);
-      accountsRef.current = updatedAccounts;
+      await reorderAndReloadAccounts(orderedIds);
     } catch (e) {
       console.error("Reorder failed:", e);
     }
   }
 
   async function handleSwitchAccount(accountId: string | null) {
-    setActiveAccountId(accountId);
-    activeAccountIdRef.current = accountId;
+    selectAccount(accountId);
     tabEmailCacheRef.current = {};
     resetMailPagination();
     setSelectedMail(null);
@@ -1238,9 +875,7 @@ function App() {
     } else {
       setAuthStatus(tr.messages.refreshFailed);
       showToast(tr.mail.syncFailed, "error");
-      const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
-        accountId: activeAccountIdRef.current,
-      }).catch(() => null);
+      const status = await tauriApi.getMailboxDownloadStatus(activeAccountIdRef.current).catch(() => null);
       if (status) {
         setIsMailboxBackfilling(status.running);
         setMailboxDownloadPending(status.pending);
@@ -1260,7 +895,7 @@ function App() {
       setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m) ?? null);
       adjustUnreadBadge(mail.account_id, -1);
       try {
-        await invoke("mark_as_read", { accountId: mail.account_id, accessToken: getTokenForEmail(mail), messageId: mail.id });
+        await tauriApi.markAsRead(mail.account_id, getTokenForEmail(mail), mail.id);
       } catch (e) {
         console.error("Failed to mark as read:", e);
         recentlyReadRef.current.delete(emailKey(mail));
@@ -1272,200 +907,11 @@ function App() {
     }
   };
 
-  const handleArchive = async (mail: EmailSummary) => {
-    const token = getTokenForEmail(mail);
-    if (!mail || !token) return;
-    setEmails(prev => prev.map(e => sameEmail(e, mail) ? { ...e, label: "archive" } : e));
-    setSelectedMail(null);
-    try {
-      await invoke("archive_email", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-      await loadEmails(activeTabRef.current);
-      await refreshUnreadCount();
-    } catch {
-      showToast(tr.messages.archiveFailed, "error");
-      loadEmails(activeTabRef.current);
-    }
-  };
-
-  const handleTrash = async (mail: EmailSummary) => {
-    const token = getTokenForEmail(mail);
-    if (!mail || !token) return;
-    setEmails(prev => prev.map(e => sameEmail(e, mail) ? { ...e, label: "trash" } : e));
-    setSelectedMail(null);
-    try {
-      await invoke("trash_email", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-      await loadEmails(activeTabRef.current);
-      await refreshUnreadCount();
-    } catch {
-      showToast(tr.messages.deleteFailed, "error");
-      loadEmails(activeTabRef.current);
-    }
-  };
-
-  const handleMoveToInbox = async (mail: EmailSummary) => {
-    const token = getTokenForEmail(mail);
-    if (!mail || !token) return;
-    setEmails(prev => prev.filter(e => !sameEmail(e, mail)));
-    setSelectedMail(null);
-    try {
-      await invoke("move_to_inbox", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-      showToast(tr.messages.movedToInbox, "success");
-      void loadEmails(activeTabRef.current);
-      void refreshUnreadCount();
-    } catch {
-      showToast(tr.messages.moveFailed, "error");
-      loadEmails(activeTabRef.current);
-    }
-  };
-
-  const handlePermanentDelete = (mail: EmailSummary) => {
-    const token = getTokenForEmail(mail);
-    if (!mail || !token) return;
-    setConfirmModal({
-      message: tr.messages.permanentDeleteConfirm,
-      onConfirm: async () => {
-        setEmails(prev => prev.filter(e => !sameEmail(e, mail)));
-        setSelectedMail(null);
-        try {
-          await invoke("permanently_delete", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-          showToast(tr.messages.permanentlyDeleted, "success");
-        } catch {
-          showToast(tr.messages.deleteFailed, "error");
-          loadEmails(activeTabRef.current);
-        }
-      },
-    });
-  };
-
-  const handleReply = async (replyAttachments: import("./types").AttachmentPayload[] = [], body = "") => {
-    if (!activeMail || !body.trim()) return;
-    const accessToken = getTokenForEmail(activeMail);
-    if (!accessToken) return;
-    setIsSending(true);
-    try {
-      const extractAddress = (raw: string) => {
-        const m = raw.match(/<([^>]+)>/);
-        return m ? m[1].trim() : raw.trim();
-      };
-      const senderAddr = extractAddress(activeMail.sender);
-      let toField: string;
-      if (replyMode === "reply-all") {
-        const myAddr = activeMail.account_id ?? "";
-        const toAddrs = activeMail.recipient
-          .split(",")
-          .map(a => extractAddress(a.trim()))
-          .filter(a => a.length > 0 && a.toLowerCase() !== myAddr.toLowerCase());
-        const ccAddrs = activeMail.cc
-          .split(",")
-          .map(a => extractAddress(a.trim()))
-          .filter(a => a.length > 0 && a.toLowerCase() !== myAddr.toLowerCase());
-        toField = [senderAddr, ...toAddrs, ...ccAddrs].join(", ");
-      } else {
-        toField = senderAddr;
-      }
-      const quotedDate = formatDateFull(activeMail.date);
-      const quoteHeading = tr.compose.wroteOn
-        .replace("{date}", quotedDate)
-        .replace("{sender}", `<b>${activeMail.sender}</b>`);
-      const quotedHtml = `<br/><br/><div style="border-left:3px solid #ccc;padding-left:12px;color:#888;margin-top:8px"><div style="margin-bottom:6px;font-size:12px">${quoteHeading}</div>${selectedMailBody || activeMail.snippet}</div>`;
-      await invoke("send_reply", {
-        accountId: activeMail.account_id,
-        accessToken,
-        to: toField,
-        subject: activeMail.subject,
-        body: body + quotedHtml,
-        threadId: activeMail.thread_id || activeMail.id,
-        messageId: activeMail.id,
-        attachments: replyAttachments.length > 0 ? replyAttachments : null,
-      });
-      setReplyText("");
-      setShowReply(false);
-      setThreadRefreshKey(k => k + 1);
-    } catch {
-      showToast(tr.messages.replySendFailed, "error");
-    }
-    setIsSending(false);
-  };
-
-  const handleComposeSend = async (attachments: import("./types").AttachmentPayload[], body: string) => {
-    if (!composeTo.trim() || !composeSubject.trim()) return;
-    const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
-    if (!sendFromId) { setComposeSendError(tr.messages.noSendAccount); return; }
-
-    setComposeSendError(null);
-    setIsSending(true);
-
-    // Resolve token — refresh if missing or stale
-    let token = accountTokens[sendFromId];
-    if (!token) {
-      try {
-        const refreshed = await invoke<AuthInfo>("refresh_access_token", { accountId: sendFromId });
-        token = refreshed.access_token;
-        accountTokensRef.current = { ...accountTokensRef.current, [sendFromId]: token };
-        setAccountTokens(prev => ({ ...prev, [sendFromId]: token }));
-        expiredAccountsRef.current.delete(sendFromId);
-        setExpiredAccountIds(new Set(expiredAccountsRef.current));
-      } catch {
-        setComposeSendError(tr.messages.reloginRequired);
-        setIsSending(false);
-        return;
-      }
-    }
-
-    try {
-      const finalBody = body + composeHtmlAppend;
-      await invoke("send_email", { accessToken: token, to: composeTo, subject: composeSubject, body: finalBody, attachments: attachments.length > 0 ? attachments : null });
-      setShowCompose(false);
-      setComposeTo("");
-      setComposeSubject("");
-      setComposeBody("");
-      setComposeHtmlAppend("");
-      setComposeSendError(null);
-      showToast(tr.messages.emailSent, "success");
-    } catch (e) {
-      const raw = String(e);
-      // Token expired mid-send → mark expired
-      if (isAuthFailure(raw)) {
-        markAccountExpired(sendFromId);
-        setComposeSendError(tr.messages.reloginRequired);
-      } else {
-        const msg = raw.replace(/^Error:\s*/i, "").replace(/Gmail send error:\s*/i, "");
-        setComposeSendError(msg || tr.messages.sendFailed);
-      }
-    }
-    setIsSending(false);
-  };
-
-  const handleMarkAsUnread = async (mail: EmailSummary) => {
-    const token = getTokenForEmail(mail);
-    if (!mail || !token) return;
-    recentlyReadRef.current.delete(emailKey(mail));
-    setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m));
-    adjustUnreadBadge(mail.account_id, 1);
-    try {
-      await invoke("mark_as_unread", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-    } catch {
-      adjustUnreadBadge(mail.account_id, -1);
-      showToast(tr.messages.operationFailed, "error");
-      loadEmails(activeTabRef.current);
-    }
-  };
-
-  const handleForward = (mail: EmailSummary) => {
-    const fwdHeader = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- ${tr.compose.forwardedMessage} ----------</b><br/>${tr.compose.senderLabel}: ${mail.sender}<br/>${tr.compose.subject}: ${mail.subject}<br/>${tr.compose.dateLabel}: ${formatDateFull(mail.date)}<br/><br/></div>`;
-    setComposeTo("");
-    setComposeSubject(`Fwd: ${mail.subject.replace(/^(Fwd:\s*)+/i, "")}`);
-    setComposeBody("");
-    setComposeHtmlAppend(fwdHeader + (selectedMailBody || mail.snippet));
-    setComposeAccountId(mail.account_id ?? activeAccountId ?? accounts[0]?.id ?? null);
-    setShowCompose(true);
-  };
-
   const handleAppLanguageChange = async (language: AppLanguage) => {
     const previous = appLanguage;
     setAppLanguage(language);
     try {
-      const saved = await invoke<AppControls>("set_app_language", { language });
+      const saved = await tauriApi.setAppLanguage(language);
       const savedLanguage: AppLanguage = saved.appLanguage === "tr" ? "tr" : "en";
       setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved, appLanguage: savedLanguage });
       setAppLanguage(savedLanguage);
@@ -1507,6 +953,61 @@ function App() {
   const selectedMailViewMode = mailViewPreference === "auto" ? getAutoMailViewMode(windowWidth) : mailViewPreference;
   const mailViewMode: MailViewMode = selectedMailViewMode === "single-toggle" ? "split" : selectedMailViewMode;
 
+  const {
+    selectedMailBody,
+    setSelectedMailBody,
+    selectedMailBodyId,
+    setSelectedMailBodyId,
+    isBodyLoading,
+    bodyError,
+    threadEmails,
+    setThreadEmails,
+    setThreadRefreshKey,
+  } = useMailReader({
+    selectedMail,
+    activeMail,
+    activeMailKey,
+    locale: tr,
+    mailScrollRef,
+    recentlyReadRef,
+    setEmails,
+    setSearchResults,
+    setReadingToolsOpen,
+    getTokenForEmail,
+    adjustUnreadBadge,
+  });
+
+  const {
+    showReply, setShowReply, replyMode, setReplyMode, replyText, setReplyText,
+    isSending, showCompose, setShowCompose, confirmModal, setConfirmModal,
+    composeTo, setComposeTo, composeSubject, setComposeSubject, composeBody, setComposeBody,
+    composeHtmlAppend, setComposeHtmlAppend, composeAccountId, setComposeAccountId,
+    composeSendError, setComposeSendError,
+    handleArchive, handleTrash, handleMoveToInbox, handlePermanentDelete,
+    handleReply, handleComposeSend, handleMarkAsUnread, handleForward,
+  } = useMailActions({
+    locale: tr,
+    accounts,
+    accountTokens,
+    activeAccountId,
+    activeMail,
+    selectedMailBody,
+    activeTabRef,
+    recentlyReadRef,
+    setEmails,
+    setSelectedMail,
+    setThreadRefreshKey,
+    getTokenForEmail,
+    loadEmails,
+    refreshUnreadCount,
+    adjustUnreadBadge,
+    refreshAccessToken,
+    upsertToken,
+    clearExpiredAccount,
+    markAccountExpired,
+    showToast,
+  });
+
   useEffect(() => {
     if (mailViewPreference !== "auto") {
       previousAutoMailViewModeRef.current = null;
@@ -1546,93 +1047,7 @@ function App() {
 
   const effectiveZoomPct = Math.round((mailZoom === "fit" ? mailFitScale : mailZoom) * 100);
 
-  useEffect(() => {
-    let cancelled = false;
-    setSelectedMailBody("");
-    setSelectedMailBodyId(null);
-    setBodyError(null);
-    setIsBodyLoading(false);
-    setReadingToolsOpen(false);
-    if (mailScrollRef.current) mailScrollRef.current.scrollTop = 0;
-    if (!selectedMail || !activeMail) return;
-
-    setIsBodyLoading(true);
-    invoke<string>("get_email_body", { id: activeMail?.id, accountId: activeMail?.account_id })
-      .then((body) => {
-        if (cancelled) return;
-        setSelectedMailBody(body || "");
-        setSelectedMailBodyId(selectedMail);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        console.error("Failed to load email body:", e);
-        setBodyError(tr.mail.bodyLoadFailed);
-      })
-      .finally(() => { if (!cancelled) setIsBodyLoading(false); });
-
-    return () => { cancelled = true; };
-  }, [selectedMail, activeMailKey]);
-
-  useEffect(() => {
-    if (!activeMail || !activeMailKey) return;
-    const token = getTokenForEmail(activeMail);
-    if (!token) return;
-    let cancelled = false;
-
-    // The reader is already showing SQLite data. Refresh only this message in
-    // the background, then replace the body only if it is still open.
-    void invoke("refresh_email_from_gmail", {
-      accountId: activeMail.account_id,
-      accessToken: token,
-      messageId: activeMail.id,
-    })
-      .then(() => invoke<string>("get_email_body", { id: activeMail.id, accountId: activeMail.account_id }))
-      .then((body) => {
-        if (cancelled || selectedMail !== activeMailKey) return;
-        setSelectedMailBody(body || "");
-        setSelectedMailBodyId(activeMailKey);
-      })
-      .catch(() => {
-        // Local data remains usable when an individual Gmail refresh fails.
-      });
-
-    return () => { cancelled = true; };
-  }, [activeMailKey]);
-
   useEffect(() => { setVerificationCopyState("idle"); }, [selectedMail]);
-
-  const selectedMailThreadId = activeMail?.thread_id;
-  useEffect(() => {
-    if (!selectedMail || !selectedMailThreadId) { setThreadEmails([]); return; }
-    let cancelled = false;
-    invoke<EmailSummary[]>("get_thread_emails", { threadId: selectedMailThreadId, accountId: activeMail?.account_id })
-      .then(all => {
-        if (cancelled) return;
-        setThreadEmails(all);
-        for (const email of all) {
-          if (email.unread && !recentlyReadRef.current.has(emailKey(email))) {
-            recentlyReadRef.current.add(emailKey(email));
-            setEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: false } : m));
-            setSearchResults(prev => prev?.map(m => sameEmail(m, email) ? { ...m, unread: false } : m) ?? null);
-            adjustUnreadBadge(email.account_id, -1);
-            const token = getTokenForEmail(email);
-            if (token) {
-              invoke("mark_as_read", { accountId: email.account_id, accessToken: token, messageId: email.id }).catch(error => {
-                console.error("Failed to mark thread email as read:", error);
-                recentlyReadRef.current.delete(emailKey(email));
-                setEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: true } : m));
-                setSearchResults(prev => prev?.map(m => sameEmail(m, email) ? { ...m, unread: true } : m) ?? null);
-                setThreadEmails(prev => prev.map(m => sameEmail(m, email) ? { ...m, unread: true } : m));
-                adjustUnreadBadge(email.account_id, 1);
-              });
-            }
-          }
-        }
-      })
-      .catch(() => { if (!cancelled) setThreadEmails([]); });
-    return () => { cancelled = true; };
-  }, [selectedMail, selectedMailThreadId, threadRefreshKey]);
-
   const threadGroups = useMemo((): ThreadGroup[] => {
     const map = new Map<string, ThreadGroup>();
     for (const email of displayEmails) {
