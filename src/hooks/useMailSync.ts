@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useTransition, type MutableRefObject } from "react";
 import type { AppLocale, AppLanguage } from "../i18n";
+import { updateNotificationBaseline } from "../mailSyncState";
 import type { Account, AppControls, EmailSummary, OtpMode } from "../types";
 import { tauriApi } from "../tauriApi";
 import { extractVerificationCode, isAuthFailure, isInQuietHours, MAIL_PAGE_SIZE, MAIL_TABS } from "../utils";
@@ -41,10 +42,6 @@ interface UseMailSyncOptions {
   markAccountExpired: (accountId: string, showMessage?: boolean) => void;
   markSessionExpired: (showMessage?: boolean) => void;
   showToast: (message: string, type?: "error" | "success" | "info") => void;
-}
-
-function emailKey(email: EmailSummary) {
-  return `${email.account_id}\u0000${email.id}`;
 }
 
 export function useMailSync(options: UseMailSyncOptions) {
@@ -229,12 +226,13 @@ export function useMailSync(options: UseMailSyncOptions) {
         });
         const suppressNotifications = syncOptions?.suppressNotifications === true ||
           baselineEpoch !== notificationBaselineEpochRef.current;
-        const newUnreadEmails = freshInbox.filter(email =>
-          !suppressNotifications && email.unread && readyAccountIds.has(email.account_id) &&
-          !knownEmailIdsRef.current.has(emailKey(email))
-        );
-        for (const email of freshInbox) knownEmailIdsRef.current.add(emailKey(email));
-        for (const accountId of successfullySyncedAccountIds) readyAccountIds.add(accountId);
+        const newUnreadEmails = updateNotificationBaseline({
+          freshInbox,
+          knownEmailIds: knownEmailIdsRef.current,
+          readyAccountIds,
+          successfullySyncedAccountIds,
+          suppressNotifications,
+        });
         void notifyNewEmails(newUnreadEmails);
         if (MAIL_TABS.has(activeTabRef.current) && emailsLength <= MAIL_PAGE_SIZE) await loadEmails();
         await refreshUnreadCount();
