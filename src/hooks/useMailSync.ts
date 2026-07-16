@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useTransition, type MutableRefObject } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppLocale, AppLanguage } from "../i18n";
 import { updateNotificationBaseline } from "../mailSyncState";
 import type { Account, AppControls, EmailSummary, OtpMode } from "../types";
@@ -124,12 +125,13 @@ export function useMailSync(options: UseMailSyncOptions) {
   const notifyNewEmails = useCallback(async (newEmails: EmailSummary[]) => {
     if (newEmails.length === 0) return;
     const controls = appControlsRef.current;
-    if (controls.notificationsMuted || isInQuietHours(controls)) return;
+    if (controls.notificationMode === "off" || isInQuietHours(controls)) return;
     try {
       for (const email of newEmails.slice(0, 5)) {
         const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
         const body = otpMode === "off" ? "" : await tauriApi.getEmailBody(email.id, email.account_id).catch(() => "");
         const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
+        if (controls.notificationMode === "otpOnly" && !code) continue;
         const account = accountsRef.current.find(item => item.id === email.account_id);
         const title = senderName.slice(0, 64);
         const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || locale.messages.newMessage;
@@ -191,6 +193,10 @@ export function useMailSync(options: UseMailSyncOptions) {
     const userInitiated = syncOptions?.userInitiated ?? false;
     const baselineEpoch = notificationBaselineEpochRef.current;
     if (appControlsRef.current.mailSyncPaused && !userInitiated) return false;
+    if (appControlsRef.current.notificationMode === "off" && !userInitiated) {
+      const isVisible = await getCurrentWindow().isVisible().catch(() => true);
+      if (!isVisible) return false;
+    }
     if (await shouldDeferNetwork(userInitiated)) {
       console.log("System in fullscreen/game mode, skipping background sync.");
       return false;

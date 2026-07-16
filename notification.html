@@ -18,6 +18,10 @@
       --notif-text-soft: #a1a1aa;
       --notif-info: #60a5fa;
       --notif-info-hover: #93bbfd;
+      --notif-success: #4ade80;
+      --notif-success-surface: rgba(34, 197, 94, 0.18);
+      --notif-error: #f87171;
+      --notif-error-surface: rgba(239, 68, 68, 0.18);
       --notif-warning: #fbbf24;
       --notif-warning-title: #fff7ed;
       --notif-warning-body: #fcd9a8;
@@ -26,6 +30,7 @@
       --notif-font-body: 11px;
       --notif-font-title: 12.5px;
       --notif-font-control: 13px;
+      --notif-space-xs: 4px;
       --notif-radius-xs: 4px;
       --notif-radius-sm: 5px;
       --notif-radius-full: 9999px;
@@ -63,9 +68,10 @@
     /* ── Single notification card ── */
     .card {
       padding: 10px 12px;
-      display: flex;
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) 18px;
       gap: 8px;
-      align-items: center;
+      align-items: start;
       cursor: pointer;
       position: relative;
       animation: fadeIn 0.2s ease;
@@ -174,16 +180,10 @@
       color: var(--notif-warning-body);
     }
 
-    /* Right-side actions */
-    .actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
-
     /* Copy button */
     .code-btn {
+      width: fit-content;
+      margin-top: var(--notif-space-xs);
       padding: 3px 8px;
       border: none;
       border-radius: var(--notif-radius-sm);
@@ -202,6 +202,24 @@
     .code-btn:hover {
       background: rgba(59, 130, 246, 0.22);
       color: var(--notif-info-hover);
+    }
+
+    .code-btn.copying {
+      cursor: wait;
+      opacity: 0.8;
+    }
+
+    .code-btn.copied,
+    .code-btn.copied:hover {
+      background: var(--notif-success-surface);
+      color: var(--notif-success);
+      cursor: default;
+    }
+
+    .code-btn.copy-error,
+    .code-btn.copy-error:hover {
+      background: var(--notif-error-surface);
+      color: var(--notif-error);
     }
 
     /* Close button */
@@ -393,11 +411,9 @@
             <div class="title">${esc(n.title)}</div>
             ${toLineHtml}
             <div class="body">${esc(n.body)}</div>
-          </div>
-          <div class="actions">
             ${copyBtnHtml}
-            <button class="close-btn" data-id="${n.id}">&times;</button>
           </div>
+          <button class="close-btn" data-id="${n.id}">&times;</button>
         `;
 
         card.addEventListener('click', (e) => {
@@ -418,7 +434,7 @@
       stack.querySelectorAll('.code-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
-          copyAndDismiss(parseInt(btn.dataset.id), btn.dataset.code);
+          void copyAndDismiss(parseInt(btn.dataset.id), btn.dataset.code);
         });
       });
 
@@ -505,10 +521,39 @@
       dismissById(id);
     }
 
-    // ── Copy code + dismiss ──
-    function copyAndDismiss(id, code) {
-      if (code) writeText(code).catch(() => {});
-      dismissById(id);
+    // ── Copy code + show result ──
+    async function copyAndDismiss(id, code) {
+      const button = document.querySelector(`.code-btn[data-id="${id}"]`);
+      if (!button || !code || button.dataset.copyState === 'copying' || button.dataset.copyState === 'copied') return;
+
+      button.dataset.copyState = 'copying';
+      button.disabled = true;
+      button.classList.remove('copy-error');
+      button.classList.add('copying');
+
+      try {
+        await writeText(code);
+        button.dataset.copyState = 'copied';
+        button.classList.remove('copying');
+        button.classList.add('copied');
+        button.innerHTML = `
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>Kopyalandı</span>
+        `;
+        setTimeout(() => dismissById(id), 700);
+      } catch (error) {
+        console.error('[NOTIF] clipboard error:', error);
+        button.dataset.copyState = 'error';
+        button.disabled = false;
+        button.classList.remove('copying');
+        button.classList.add('copy-error');
+        button.innerHTML = `
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          <span>Kopyalanamadı · Tekrar dene</span>
+        `;
+        if (timerDuration > 0) extendTimer(5000);
+        await resizeWindow();
+      }
     }
 
     document.getElementById('dismissAll').addEventListener('click', dismissAll);

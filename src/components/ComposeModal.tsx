@@ -162,9 +162,7 @@ export function ComposeModal({
     } else if (e.key === "Escape") { setSuggOpen(false); }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
+  const addAttachmentFiles = (files: File[]) => {
     if (files.length === 0) return;
 
     setAttachError(null);
@@ -201,6 +199,23 @@ export function ComposeModal({
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    addAttachmentFiles(files);
+  };
+
+  const handleBodyPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const imageFiles = Array.from(e.clipboardData.items)
+      .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (imageFiles.length === 0) return;
+
+    e.preventDefault();
+    addAttachmentFiles(imageFiles);
   };
 
   const removeAttachment = (idx: number) => {
@@ -267,7 +282,10 @@ export function ComposeModal({
     setLinkUrl("");
   };
 
-  const canSend = composeTo.trim().length > 0 && composeSubject.trim().length > 0 && !isSending && !bodyEmpty;
+  const canSend = composeTo.trim().length > 0
+    && composeSubject.trim().length > 0
+    && !isSending
+    && (!bodyEmpty || attachments.length > 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -394,6 +412,7 @@ export function ComposeModal({
                 ref={bodyEditableRef}
                 contentEditable
                 suppressContentEditableWarning
+                onPaste={handleBodyPaste}
                 onInput={() => {
                   setBodyEmpty(!(bodyEditableRef.current?.innerText.trim()));
                   syncUndoRedo();

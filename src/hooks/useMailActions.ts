@@ -165,7 +165,7 @@ export function useMailActions(options: UseMailActionsOptions) {
   }, [activeTabRef, getTokenForEmail, loadEmails, locale, runAuthenticatedAction, setEmails, setSelectedMail, showToast]);
 
   const handleReply = useCallback(async (attachments: AttachmentPayload[] = [], body = "") => {
-    if (!activeMail || !body.trim()) return;
+    if (!activeMail || (!body.trim() && attachments.length === 0)) return;
     const accessToken = getTokenForEmail(activeMail);
     if (!accessToken) return;
     setIsSending(true);

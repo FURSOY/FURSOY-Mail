@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical } from "lucide-react";
 import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
-import type { Account, AppControls, DensityMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
+import type { Account, AppControls, DensityMode, NotificationMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
 
 interface SettingsPanelProps {
   isVisible: boolean;
@@ -250,287 +250,171 @@ export function SettingsPanel({
             </div>
           </div>
 
-          {/* Sync Interval */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.syncFrequencyTitle}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.settings.syncFrequencyDescription}</p>
-            <div className="flex items-center gap-3">
-              <input
-                type="number"
-                min="1"
-                max="300"
-                value={syncIntervalValue}
-                onChange={(e) => {
-                  const val = Math.max(1, parseInt(e.target.value, 10) || 1);
-                  setSyncIntervalValue(val);
-                  localStorage.setItem("fursoy_sync_interval", val.toString());
-                }}
-                className="w-24 bg-[var(--color-surface-app)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none"
-              />
-              <span className="text-sm text-zinc-400">{tr.common.seconds}</span>
-            </div>
-          </div>
-
-          {/* Startup */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.startup.title}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.startup.description}</p>
-            <label className={`flex items-center gap-2 ${startupSettingLoading ? "opacity-60" : "cursor-pointer"}`}>
-              <input
-                type="checkbox"
-                checked={launchAtStartup}
-                disabled={startupSettingLoading}
-                onChange={(e) => onLaunchAtStartupChange(e.target.checked)}
-                className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-50"
-              />
-              <span className="text-sm text-zinc-300">{tr.startup.launchAtStartup}</span>
-            </label>
-          </div>
-
-          {/* Language */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.language.title}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.language.description}</p>
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-zinc-400">{tr.language.label}</div>
-              <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
-                {(["en", "tr"] as AppLanguage[]).map((lang) => (
-                  <button
-                    key={lang}
-                    type="button"
-                    onClick={() => {
-                      setAppLanguage(lang);
-                    }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${appLanguage === lang ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                  >
-                    {tr.language[lang]}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Remote images */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.remoteImages.title}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.remoteImages.description}</p>
-            <div className="space-y-2">
-              {(["always", "trusted", "ask"] as RemoteImageMode[]).map((mode) => {
-                const label = tr.remoteImages[mode];
-                return (
-                  <label
-                    key={mode}
-                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${
-                      remoteImageMode === mode
-                        ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
-                        : "border-white/10 bg-[#09090b] hover:bg-white/[0.03]"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="remote-image-mode"
-                      value={mode}
-                      checked={remoteImageMode === mode}
-                      onChange={() => {
-                        setRemoteImageMode(mode);
-                        localStorage.setItem("fursoy_remote_image_mode", mode);
-                      }}
-                      className="h-3.5 w-3.5 border-white/20 bg-[#09090b] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0"
-                    />
-                    <span className="text-zinc-200">{label}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Notification and Sync Controls */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.notifications.title}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.notifications.description}</p>
-
-            <div className="space-y-5">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={appControls.notificationsMuted}
-                  onChange={(e) => onUpdateAppControls({ ...appControls, notificationsMuted: e.target.checked })}
-                  className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-zinc-300">{tr.notifications.muteNotifications}</span>
-              </label>
-
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={appControls.mailSyncPaused}
-                  onChange={(e) => onUpdateAppControls({ ...appControls, mailSyncPaused: e.target.checked })}
-                  className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-zinc-300">{tr.notifications.pauseMailSync}</span>
-              </label>
-
-              <div className="rounded-lg border border-white/5 bg-[#09090b] p-3">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={appControls.quietHoursEnabled}
-                    onChange={(e) => onUpdateAppControls({ ...appControls, quietHoursEnabled: e.target.checked })}
-                    className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                  />
-                  <span className="text-sm text-zinc-300">{tr.notifications.quietHours}</span>
-                </label>
-                <p className="mt-1 text-[10px] text-zinc-600">{tr.notifications.quietHoursHint}</p>
-                <div className={`mt-3 grid grid-cols-2 gap-3 transition-opacity ${appControls.quietHoursEnabled ? "" : "opacity-40"}`}>
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-zinc-500">{tr.notifications.start}</span>
-                    <input
-                      type="time"
-                      value={appControls.quietHoursStart}
-                      disabled={!appControls.quietHoursEnabled}
-                      onChange={(e) => onUpdateAppControls({ ...appControls, quietHoursStart: e.target.value })}
-                      className="w-full rounded-lg border border-white/10 bg-[#0c0c0e] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 disabled:cursor-not-allowed"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-zinc-500">{tr.notifications.end}</span>
-                    <input
-                      type="time"
-                      value={appControls.quietHoursEnd}
-                      disabled={!appControls.quietHoursEnabled}
-                      onChange={(e) => onUpdateAppControls({ ...appControls, quietHoursEnd: e.target.value })}
-                      className="w-full rounded-lg border border-white/10 bg-[#0c0c0e] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 disabled:cursor-not-allowed"
-                    />
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Notification Duration */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.notificationDurationTitle}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.settings.notificationDurationDescription}</p>
-
-            <div className="space-y-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={notifInfinite}
-                  onChange={(e) => {
-                    setNotifInfinite(e.target.checked);
-                    localStorage.setItem("fursoy_notif_infinite", e.target.checked.toString());
-                  }}
-                  className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-zinc-300">{tr.settings.keepOnScreen}</span>
-              </label>
-
-              <div className={`flex items-center gap-3 transition-opacity ${notifInfinite ? "opacity-40 pointer-events-none" : ""}`}>
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  value={notifDuration}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10) || 1;
-                    setNotifDuration(val);
-                    localStorage.setItem("fursoy_notif_duration", val.toString());
-                  }}
-                  disabled={notifInfinite}
-                  className="w-24 bg-[#09090b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:border-blue-500/50 outline-none disabled:bg-transparent"
-                />
-                <span className="text-sm text-zinc-400">{tr.common.seconds}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Performance Optimization */}
-          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">{tr.settings.performanceTitle}</h3>
-            <p className="text-xs text-zinc-500 mb-4">{tr.settings.performanceDescription}</p>
-
-            <div className="space-y-5">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={lazyBodyLoading}
-                  onChange={(e) => {
-                    setLazyBodyLoading(e.target.checked);
-                    localStorage.setItem("fursoy_lazy_body_loading", e.target.checked.toString());
-                  }}
-                  className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-zinc-300">{tr.settings.lazyEmailContent}</span>
-              </label>
-
+          {/* General */}
+          <div className={`${ui.card} p-5`}>
+            <h3 className={`${typography.sectionTitle} mb-1`}>{tr.settings.generalTitle}</h3>
+            <p className={`${typography.bodyMuted} mb-5`}>{tr.settings.generalDescription}</p>
+            <div className="grid gap-5 sm:grid-cols-2">
               <div>
-                <div className="text-xs font-medium text-zinc-300 mb-2">{tr.settings.htmlRenderMode}</div>
-                <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRenderMode("full");
-                      localStorage.setItem("fursoy_render_mode", "full");
-                    }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "full" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                  >
-                    {tr.settings.fullHtml}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRenderMode("simple");
-                      localStorage.setItem("fursoy_render_mode", "simple");
-                    }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${renderMode === "simple" ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                  >
-                    {tr.settings.simpleHtml}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-zinc-300 mb-1">{tr.settings.otpDetection}</div>
-                <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
-                  {(["off", "balanced", "strict"] as OtpMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        setOtpMode(mode);
-                        localStorage.setItem("fursoy_otp_mode", mode);
-                      }}
-                      className={`px-3 py-1.5 text-xs rounded-md transition-colors ${otpMode === mode ? "bg-white/10 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                    >
-                      {mode === "off" ? tr.settings.otpOff : mode === "balanced" ? tr.settings.otpBalanced : tr.settings.otpStrict}
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.language.label}</div>
+                <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
+                  {(["en", "tr"] as AppLanguage[]).map((lang) => (
+                    <button key={lang} type="button" onClick={() => setAppLanguage(lang)} className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs transition-colors ${appLanguage === lang ? "bg-[var(--color-surface-hover-strong)] text-[var(--color-text-primary)]" : "text-[var(--color-text-subtle)] hover:text-[var(--color-text-secondary)]"}`}>
+                      {tr.language[lang]}
                     </button>
                   ))}
                 </div>
               </div>
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.startup.title}</div>
+                <label className={`flex items-center gap-2 ${startupSettingLoading ? "opacity-60" : "cursor-pointer"}`}>
+                  <input type="checkbox" checked={launchAtStartup} disabled={startupSettingLoading} onChange={(e) => onLaunchAtStartupChange(e.target.checked)} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                  <span className="text-sm text-[var(--color-text-secondary)]">{tr.startup.launchAtStartup}</span>
+                </label>
+              </div>
+            </div>
+          </div>
 
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={pauseOnFullscreen}
-                  onChange={(e) => {
-                    setPauseOnFullscreen(e.target.checked);
-                    localStorage.setItem("fursoy_pause_on_fullscreen", e.target.checked.toString());
-                  }}
-                  className="w-4 h-4 rounded border-white/20 bg-[#09090b] text-blue-500 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-zinc-300">{tr.settings.pauseInFullscreen}</span>
+          {/* Notifications and OTP */}
+          <div className={`${ui.card} p-5`}>
+            <h3 className={`${typography.sectionTitle} mb-1`}>{tr.notifications.title}</h3>
+            <p className={`${typography.bodyMuted} mb-5`}>{tr.notifications.description}</p>
+            <div className="space-y-6">
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.notifications.deliveryTitle}</div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {(["all", "otpOnly", "off"] as NotificationMode[]).map((mode) => {
+                    const label = mode === "all" ? tr.notifications.all : mode === "otpOnly" ? tr.notifications.otpOnly : tr.notifications.off;
+                    const description = mode === "all" ? tr.notifications.allDescription : mode === "otpOnly" ? tr.notifications.otpOnlyDescription : tr.notifications.offDescription;
+                    const active = appControls.notificationMode === mode;
+                    return (
+                      <label key={mode} className={`cursor-pointer rounded-[var(--radius-md)] border p-3 transition-colors ${active ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]" : "border-[var(--color-border-default)] bg-[var(--color-surface-app)] hover:bg-[var(--color-surface-hover)]"}`}>
+                        <div className="flex items-start gap-2">
+                          <input
+                            type="radio"
+                            name="notification-mode"
+                            checked={active}
+                            onChange={() => {
+                              onUpdateAppControls({ ...appControls, notificationMode: mode });
+                              if (mode === "otpOnly" && otpMode === "off") {
+                                setOtpMode("balanced");
+                                localStorage.setItem("fursoy_otp_mode", "balanced");
+                              }
+                            }}
+                            className="mt-0.5 h-3.5 w-3.5 border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0"
+                          />
+                          <div>
+                            <div className="text-xs font-medium text-[var(--color-text-secondary)]">{label}</div>
+                            <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-text-subtle)]">{description}</p>
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid gap-5 border-t border-[var(--color-border-subtle)] pt-5 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">{tr.settings.otpDetection}</div>
+                  <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
+                    {(["off", "balanced", "strict"] as OtpMode[]).map((mode) => (
+                      <button key={mode} type="button" onClick={() => { setOtpMode(mode); localStorage.setItem("fursoy_otp_mode", mode); }} className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs transition-colors ${otpMode === mode ? "bg-[var(--color-surface-hover-strong)] text-[var(--color-text-primary)]" : "text-[var(--color-text-subtle)] hover:text-[var(--color-text-secondary)]"}`}>
+                        {mode === "off" ? tr.settings.otpOff : mode === "balanced" ? tr.settings.otpBalanced : tr.settings.otpStrict}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">{tr.settings.notificationDurationTitle}</div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input type="checkbox" checked={notifInfinite} onChange={(e) => { setNotifInfinite(e.target.checked); localStorage.setItem("fursoy_notif_infinite", e.target.checked.toString()); }} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                      <span className="text-xs text-[var(--color-text-secondary)]">{tr.settings.keepOnScreen}</span>
+                    </label>
+                    <div className={`flex items-center gap-2 ${notifInfinite ? "pointer-events-none opacity-40" : ""}`}>
+                      <input type="number" min="1" max="60" value={notifDuration} disabled={notifInfinite} onChange={(e) => { const val = parseInt(e.target.value, 10) || 1; setNotifDuration(val); localStorage.setItem("fursoy_notif_duration", val.toString()); }} className="w-20 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] px-2 py-1.5 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--app-accent)]/50" />
+                      <span className="text-xs text-[var(--color-text-subtle)]">{tr.common.seconds}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-app)] p-3">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls({ ...appControls, quietHoursEnabled: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                  <span className="text-sm text-[var(--color-text-secondary)]">{tr.notifications.quietHours}</span>
+                </label>
+                <p className="mt-1 text-[10px] text-[var(--color-text-subtle)]">{tr.notifications.quietHoursHint}</p>
+                <div className={`mt-3 grid grid-cols-2 gap-3 ${appControls.quietHoursEnabled ? "" : "opacity-40"}`}>
+                  {(["start", "end"] as const).map((edge) => (
+                    <label key={edge} className="space-y-1">
+                      <span className="text-[10px] text-[var(--color-text-subtle)]">{tr.notifications[edge]}</span>
+                      <input type="time" value={edge === "start" ? appControls.quietHoursStart : appControls.quietHoursEnd} disabled={!appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls(edge === "start" ? { ...appControls, quietHoursStart: e.target.value } : { ...appControls, quietHoursEnd: e.target.value })} className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-control)] px-2 py-1.5 text-xs text-[var(--color-text-secondary)] outline-none focus:border-[var(--app-accent)]/50" />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Sync and performance */}
+          <div className={`${ui.card} p-5`}>
+            <h3 className={`${typography.sectionTitle} mb-1`}>{tr.settings.syncPerformanceTitle}</h3>
+            <p className={`${typography.bodyMuted} mb-5`}>{tr.settings.syncPerformanceDescription}</p>
+            <div className="space-y-5">
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.settings.syncFrequencyTitle}</div>
+                <div className="flex items-center gap-3">
+                  <input type="number" min="1" max="300" value={syncIntervalValue} onChange={(e) => { const val = Math.max(1, parseInt(e.target.value, 10) || 1); setSyncIntervalValue(val); localStorage.setItem("fursoy_sync_interval", val.toString()); }} className="w-24 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--app-accent)]/50" />
+                  <span className="text-sm text-[var(--color-text-subtle)]">{tr.common.seconds}</span>
+                </div>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={appControls.mailSyncPaused} onChange={(e) => onUpdateAppControls({ ...appControls, mailSyncPaused: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                <span className="text-sm text-[var(--color-text-secondary)]">{tr.notifications.pauseMailSync}</span>
               </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={pauseOnFullscreen} onChange={(e) => { setPauseOnFullscreen(e.target.checked); localStorage.setItem("fursoy_pause_on_fullscreen", e.target.checked.toString()); }} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                <span className="text-sm text-[var(--color-text-secondary)]">{tr.settings.pauseInFullscreen}</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={lazyBodyLoading} onChange={(e) => { setLazyBodyLoading(e.target.checked); localStorage.setItem("fursoy_lazy_body_loading", e.target.checked.toString()); }} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                <span className="text-sm text-[var(--color-text-secondary)]">{tr.settings.lazyEmailContent}</span>
+              </label>
+            </div>
+          </div>
 
-              <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-3">
-                <div className="text-xs font-medium text-zinc-200">{tr.localMailbox.title}</div>
-                <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{tr.localMailbox.description}</p>
-                <button
-                  type="button"
-                  onClick={onResetLocalMailbox}
-                  disabled={isResettingLocalMailbox}
-                  className="mt-3 rounded-md border border-amber-500/30 px-3 py-1.5 text-xs text-amber-200 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60"
-                >
+          {/* Mail content and local data */}
+          <div className={`${ui.card} p-5`}>
+            <h3 className={`${typography.sectionTitle} mb-1`}>{tr.settings.mailContentTitle}</h3>
+            <p className={`${typography.bodyMuted} mb-5`}>{tr.settings.mailContentDescription}</p>
+            <div className="space-y-6">
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.remoteImages.title}</div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {(["always", "trusted", "ask"] as RemoteImageMode[]).map((mode) => (
+                    <label key={mode} className={`flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] border px-3 py-2 text-xs transition-colors ${remoteImageMode === mode ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]" : "border-[var(--color-border-default)] bg-[var(--color-surface-app)] hover:bg-[var(--color-surface-hover)]"}`}>
+                      <input type="radio" name="remote-image-mode" checked={remoteImageMode === mode} onChange={() => { setRemoteImageMode(mode); localStorage.setItem("fursoy_remote_image_mode", mode); }} className="h-3.5 w-3.5 border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                      <span className="text-[var(--color-text-secondary)]">{tr.remoteImages[mode]}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{tr.settings.htmlRenderMode}</div>
+                <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
+                  {(["full", "simple"] as RenderMode[]).map((mode) => (
+                    <button key={mode} type="button" onClick={() => { setRenderMode(mode); localStorage.setItem("fursoy_render_mode", mode); }} className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs transition-colors ${renderMode === mode ? "bg-[var(--color-surface-hover-strong)] text-[var(--color-text-primary)]" : "text-[var(--color-text-subtle)] hover:text-[var(--color-text-secondary)]"}`}>
+                      {mode === "full" ? tr.settings.fullHtml : tr.settings.simpleHtml}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-[var(--radius-md)] border border-[var(--color-status-warning)]/20 bg-[var(--color-status-warning-soft)] p-3">
+                <div className="text-xs font-medium text-[var(--color-text-secondary)]">{tr.localMailbox.title}</div>
+                <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-text-subtle)]">{tr.localMailbox.description}</p>
+                <button type="button" onClick={onResetLocalMailbox} disabled={isResettingLocalMailbox} className="mt-3 rounded-[var(--radius-sm)] border border-[var(--color-status-warning)]/30 px-3 py-1.5 text-xs text-[var(--color-status-warning)] transition-colors hover:bg-[var(--color-status-warning-soft)] disabled:cursor-wait disabled:opacity-60">
                   {isResettingLocalMailbox ? tr.localMailbox.resetting : tr.localMailbox.reset}
                 </button>
               </div>
