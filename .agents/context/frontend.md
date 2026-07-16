@@ -1,10 +1,12 @@
 # Frontend map
 
-`src/App.tsx` is the orchestration shell: account/token state, sync scheduling, Tauri invocations, selection, mail actions, updater UI, and panel composition. Locate a named `handle*`, `loadEmails`, `syncAccountWithAutoRefresh`, or relevant effect with `rg` before opening a narrow range.
+`src/App.tsx` is the remaining composition shell: navigation, mailbox list/cache state, preferences, window events, and panel composition. Locate a named handler or relevant effect with `rg` before opening a narrow range. Account/token state, sync scheduling, updater, mail actions, and reader/thread loading live in `src/hooks/`; typed Tauri commands live in `src/tauriApi.ts`.
 
 | Area | Files |
 | --- | --- |
 | App-wide contracts | `src/types.ts`, `src/i18n.ts`, `src/theme.ts` |
+| Accounts, sync, updater, actions, reader | `src/hooks/useAccounts.ts`, `useMailSync.ts`, `useUpdater.ts`, `useMailActions.ts`, `useMailReader.ts` |
+| Typed Tauri boundary | `src/tauriApi.ts` |
 | Email normalization/render safety | `src/utils.ts`, `components/EmailHtmlView.tsx`, `components/EmailReader.tsx` |
 | Navigation/list | `components/Sidebar.tsx`, `components/EmailList.tsx` |
 | Compose/reply/delete confirmation | `components/ComposeModal.tsx`, `components/ConfirmModal.tsx` |

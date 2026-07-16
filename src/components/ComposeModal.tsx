@@ -1,9 +1,9 @@
 import { X, RefreshCw, Send, ChevronDown, AlertCircle, Paperclip, FileText, Image, File, Type, Link2, List, ListOrdered, Undo2, Redo2 } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useLocale } from "../i18n";
 import { ui } from "../theme";
 import type { Account, AttachmentPayload } from "../types";
+import { tauriApi, type ContactSuggestion } from "../tauriApi";
 
 // Gmail blocks these extensions (and so do we)
 const BLOCKED_EXTENSIONS = new Set([
@@ -14,11 +14,6 @@ const BLOCKED_EXTENSIONS = new Set([
 // Gmail's total attachment limit is 25 MB (MIME encoded).
 // Base64 adds ~33% overhead, so we cap raw file bytes at 20 MB total.
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-
-interface ContactSuggestion {
-  name: string;
-  email: string;
-}
 
 interface ComposeModalProps {
   composeTo: string;
@@ -134,7 +129,7 @@ export function ComposeModal({
     const requestId = ++contactSearchRequestIdRef.current;
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await invoke<ContactSuggestion[]>("search_contacts", { query: trimmed, accountId });
+        const res = await tauriApi.searchContacts(trimmed, accountId);
         if (requestId !== contactSearchRequestIdRef.current || activeAccount?.id !== accountId) return;
         setSuggestions(res);
         setSuggOpen(res.length > 0);
