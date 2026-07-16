@@ -12,5 +12,8 @@
 | Compose/reply/delete confirmation | `components/ComposeModal.tsx`, `components/ConfirmModal.tsx` |
 | Preferences | `components/SettingsPanel.tsx` |
 | Global and app styling | `src/index.css`, `src/App.css` |
+| Frontend unit tests | `src/__tests__/`; run with `npm test` or `npm run test:watch` |
 
 Important: email HTML and remote-image handling are security-sensitive. Keep sanitization, URL validation, size caps, iframe messaging, and proxy behavior intact unless the user approves a behavior/security change. Use `src/i18n.ts` for new interface strings; do not add a second state store unless asked.
+
+Run the complete frontend and Rust suite with `npm run test:all`. Pure sync/action state belongs in testable modules such as `src/mailSyncState.ts` and `src/mailActionState.ts`; keep React hooks focused on orchestration.

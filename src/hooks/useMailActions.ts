@@ -2,6 +2,7 @@ import { useCallback, useState, type Dispatch, type MutableRefObject, type SetSt
 import type { AppLocale } from "../i18n";
 import type { Account, AttachmentPayload, EmailSummary } from "../types";
 import { tauriApi } from "../tauriApi";
+import { inboxUnreadDelta, runAuthenticatedMailAction } from "../mailActionState";
 import { formatDateFull, isAuthFailure } from "../utils";
 
 export interface ConfirmModalState {
@@ -74,21 +75,16 @@ export function useMailActions(options: UseMailActionsOptions) {
     action: (accessToken: string) => Promise<void>,
   ) => {
     const currentToken = getTokenForEmail(mail);
-    if (!currentToken) throw new Error(locale.messages.reloginRequired);
-    try {
-      await action(currentToken);
-    } catch (error) {
-      if (!isAuthFailure(error)) throw error;
-      try {
-        const refreshed = await refreshAccessToken(mail.account_id);
-        upsertToken(mail.account_id, refreshed.access_token);
-        clearExpiredAccount(mail.account_id);
-        await action(refreshed.access_token);
-      } catch (refreshError) {
-        markAccountExpired(mail.account_id);
-        throw refreshError;
-      }
-    }
+    await runAuthenticatedMailAction({
+      accountId: mail.account_id,
+      currentToken,
+      reloginRequiredMessage: locale.messages.reloginRequired,
+      action,
+      refreshAccessToken,
+      upsertToken,
+      clearExpiredAccount,
+      markAccountExpired,
+    });
   }, [
     clearExpiredAccount, getTokenForEmail, locale, markAccountExpired,
     refreshAccessToken, upsertToken,
@@ -96,8 +92,8 @@ export function useMailActions(options: UseMailActionsOptions) {
 
   const handleArchive = useCallback(async (mail: EmailSummary) => {
     if (!getTokenForEmail(mail)) return;
-    const changesInboxUnread = mail.label === "inbox" && mail.unread;
-    if (changesInboxUnread) adjustUnreadBadge(mail.account_id, -1);
+    const unreadDelta = inboxUnreadDelta(mail, "archive");
+    if (unreadDelta) adjustUnreadBadge(mail.account_id, unreadDelta);
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, label: "archive" } : email));
     setSelectedMail(null);
     try {
@@ -105,7 +101,7 @@ export function useMailActions(options: UseMailActionsOptions) {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch (error) {
-      if (changesInboxUnread) adjustUnreadBadge(mail.account_id, 1);
+      if (unreadDelta) adjustUnreadBadge(mail.account_id, -unreadDelta);
       console.error("Archive email failed:", error);
       showToast(actionFailureMessage(locale.messages.archiveFailed, error), "error");
       void loadEmails(activeTabRef.current);
@@ -114,8 +110,8 @@ export function useMailActions(options: UseMailActionsOptions) {
 
   const handleTrash = useCallback(async (mail: EmailSummary) => {
     if (!getTokenForEmail(mail)) return;
-    const changesInboxUnread = mail.label === "inbox" && mail.unread;
-    if (changesInboxUnread) adjustUnreadBadge(mail.account_id, -1);
+    const unreadDelta = inboxUnreadDelta(mail, "trash");
+    if (unreadDelta) adjustUnreadBadge(mail.account_id, unreadDelta);
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, label: "trash" } : email));
     setSelectedMail(null);
     try {
@@ -123,7 +119,7 @@ export function useMailActions(options: UseMailActionsOptions) {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch (error) {
-      if (changesInboxUnread) adjustUnreadBadge(mail.account_id, 1);
+      if (unreadDelta) adjustUnreadBadge(mail.account_id, -unreadDelta);
       console.error("Trash email failed:", error);
       showToast(actionFailureMessage(locale.messages.deleteFailed, error), "error");
       void loadEmails(activeTabRef.current);
@@ -132,8 +128,8 @@ export function useMailActions(options: UseMailActionsOptions) {
 
   const handleMoveToInbox = useCallback(async (mail: EmailSummary) => {
     if (!getTokenForEmail(mail)) return;
-    const changesInboxUnread = mail.label !== "inbox" && mail.unread;
-    if (changesInboxUnread) adjustUnreadBadge(mail.account_id, 1);
+    const unreadDelta = inboxUnreadDelta(mail, "inbox");
+    if (unreadDelta) adjustUnreadBadge(mail.account_id, unreadDelta);
     setEmails(previous => previous.filter(email => !sameEmail(email, mail)));
     setSelectedMail(null);
     try {
@@ -142,7 +138,7 @@ export function useMailActions(options: UseMailActionsOptions) {
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
     } catch (error) {
-      if (changesInboxUnread) adjustUnreadBadge(mail.account_id, -1);
+      if (unreadDelta) adjustUnreadBadge(mail.account_id, -unreadDelta);
       console.error("Move email to inbox failed:", error);
       showToast(actionFailureMessage(locale.messages.moveFailed, error), "error");
       void loadEmails(activeTabRef.current);

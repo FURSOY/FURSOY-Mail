@@ -11,5 +11,8 @@
 | Native notifications and window focus | `notify.rs` |
 | Persisted window geometry | `window_state.rs` |
 | Remote email-image proxy | `img_proxy.rs` |
+| Rust regression tests | Inline `#[cfg(test)]` modules beside the owning code; run with `npm run test:rust` or `cargo test` from `src-tauri` |
 
 The database is user data and the Gmail methods have external effects. Ask before migrations, retention/deletion changes, OAuth scope changes, or altered send/sync semantics. Avoid logging tokens, message bodies, or attachment contents.
+
+Gmail HTTP tests use a local test server; DB tests use isolated in-memory SQLite databases. Tests must not require real Google credentials or touch the user's application database.
