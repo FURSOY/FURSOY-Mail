@@ -7,11 +7,85 @@ use crate::db::{
 };
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use reqwest::Client;
+use reqwest::{header::RETRY_AFTER, Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 const RATE_LIMIT_BACKOFF_SECS: i64 = 60;
+const GMAIL_GET_MAX_ATTEMPTS: u32 = 3;
+const GMAIL_GET_BASE_BACKOFF_MS: u64 = 400;
+const GMAIL_GET_MAX_BACKOFF_MS: u64 = 5_000;
+const GMAIL_GET_MAX_RETRY_AFTER_SECS: u64 = 30;
+
+fn is_retryable_gmail_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn parse_retry_after_delay(value: &str) -> Option<std::time::Duration> {
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| std::time::Duration::from_secs(seconds.min(GMAIL_GET_MAX_RETRY_AFTER_SECS)))
+}
+
+fn retry_after_delay(response: &Response) -> Option<std::time::Duration> {
+    response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after_delay)
+}
+
+fn gmail_retry_delay(
+    failed_attempt: u32,
+    retry_after: Option<std::time::Duration>,
+) -> std::time::Duration {
+    let exponential_cap = GMAIL_GET_BASE_BACKOFF_MS
+        .saturating_mul(1_u64 << failed_attempt.min(10))
+        .min(GMAIL_GET_MAX_BACKOFF_MS);
+    // Equal jitter keeps a meaningful delay while preventing concurrent account
+    // syncs from retrying in lockstep.
+    let half = exponential_cap / 2;
+    let jittered_ms = half + rand::random::<u64>() % (exponential_cap - half + 1);
+    std::time::Duration::from_millis(jittered_ms).max(retry_after.unwrap_or_default())
+}
+
+fn is_retryable_gmail_transport_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request()
+}
+
+/// Retry only idempotent Gmail GETs. Mutating POST/DELETE requests deliberately
+/// stay on their existing single-attempt path so an ambiguous response cannot
+/// duplicate a user action.
+async fn gmail_get_with_retry(
+    client: &Client,
+    access_token: &str,
+    url: String,
+    error_context: &str,
+) -> Result<Response, String> {
+    for attempt in 0..GMAIL_GET_MAX_ATTEMPTS {
+        match client.get(&url).bearer_auth(access_token).send().await {
+            Ok(response)
+                if is_retryable_gmail_status(response.status())
+                    && attempt + 1 < GMAIL_GET_MAX_ATTEMPTS =>
+            {
+                let delay = gmail_retry_delay(attempt, retry_after_delay(&response));
+                tokio::time::sleep(delay).await;
+            }
+            Ok(response) => return Ok(response),
+            Err(error)
+                if is_retryable_gmail_transport_error(&error)
+                    && attempt + 1 < GMAIL_GET_MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(gmail_retry_delay(attempt, None)).await;
+            }
+            Err(error) => return Err(format!("{}: {}", error_context, error)),
+        }
+    }
+
+    unreachable!("Gmail GET retry loop always returns on its final attempt")
+}
 
 fn unix_timestamp_secs() -> i64 {
     std::time::SystemTime::now()
@@ -126,12 +200,13 @@ struct GmailLabelStats {
 
 // ── Get current historyId from Gmail profile ──
 async fn get_profile_history_id(client: &Client, access_token: &str) -> Result<String, String> {
-    let res = client
-        .get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| format!("Profile fetch error: {}", e))?;
+    let res = gmail_get_with_retry(
+        client,
+        access_token,
+        "https://gmail.googleapis.com/gmail/v1/users/me/profile".to_string(),
+        "Profile fetch error",
+    )
+    .await?;
 
     if !res.status().is_success() {
         return Err(format!("Profile API error: {}", res.status()));
@@ -143,13 +218,17 @@ async fn get_profile_history_id(client: &Client, access_token: &str) -> Result<S
 
 /// Gmail exposes both message and thread counts. The product badge intentionally
 /// uses messagesUnread, matching the user's Gmail unread-message count.
-async fn get_inbox_unread_stats(client: &Client, access_token: &str) -> Result<GmailLabelStats, String> {
-    let res = client
-        .get("https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX")
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| format!("Inbox label fetch error: {e}"))?;
+async fn get_inbox_unread_stats(
+    client: &Client,
+    access_token: &str,
+) -> Result<GmailLabelStats, String> {
+    let res = gmail_get_with_retry(
+        client,
+        access_token,
+        "https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX".to_string(),
+        "Inbox label fetch error",
+    )
+    .await?;
 
     if !res.status().is_success() {
         return Err(format!("Inbox label API error: {}", res.status()));
@@ -180,12 +259,7 @@ async fn fetch_history(
             url.push_str(&format!("&pageToken={}", token));
         }
 
-        let res = client
-            .get(&url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| format!("History fetch error: {}", e))?;
+        let res = gmail_get_with_retry(client, access_token, url, "History fetch error").await?;
 
         let status = res.status();
         if status.as_u16() == 404 {
@@ -603,16 +677,19 @@ async fn fetch_message_page(
         }
     }
 
-    let res = client
-        .get(url)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| format!("List fetch error: {}", e))?;
+    let res = gmail_get_with_retry(
+        client,
+        access_token,
+        url.to_string(),
+        "List fetch error",
+    )
+    .await?;
 
     if !res.status().is_success() {
+        let status = res.status();
         return Err(format!(
-            "Gmail API Error: {}",
+            "Gmail API error {}: {}",
+            status,
             res.text().await.unwrap_or_default()
         ));
     }
@@ -634,12 +711,7 @@ async fn fetch_message_detail(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}?format=full",
         msg_id
     );
-    let res = client
-        .get(&url)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| format!("Detail fetch error: {}", e))?;
+    let res = gmail_get_with_retry(client, access_token, url, "Detail fetch error").await?;
 
     if !res.status().is_success() {
         return Err(format!("Detail fetch API error: {}", res.status()));
@@ -1606,10 +1678,14 @@ async fn get_attachment_bytes(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/attachments/{}",
             email_id, gmail_att_id
         );
-        let res = client.get(&url).bearer_auth(access_token).send().await
-            .map_err(|e| format!("Fetch error: {}", e))?;
+        let res = gmail_get_with_retry(&client, access_token, url, "Fetch error").await?;
         if !res.status().is_success() {
-            return Err(format!("Gmail API error: {}", res.text().await.unwrap_or_default()));
+            let status = res.status();
+            return Err(format!(
+                "Gmail API error {}: {}",
+                status,
+                res.text().await.unwrap_or_default()
+            ));
         }
         #[derive(serde::Deserialize)]
         struct AttachmentResponse { data: String }
@@ -1731,7 +1807,81 @@ pub async fn save_and_reveal_attachment(
 
 #[cfg(test)]
 mod tests {
-    use super::{mailbox_failure_status, safe_attachment_filename, GmailLabelStats};
+    use super::{
+        gmail_get_with_retry, gmail_retry_delay, is_retryable_gmail_status, mailbox_failure_status,
+        parse_retry_after_delay, safe_attachment_filename, GmailLabelStats,
+        GMAIL_GET_MAX_RETRY_AFTER_SECS,
+    };
+    use reqwest::{Client, StatusCode};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn gmail_get_retries_a_transient_response_then_succeeds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake Gmail endpoint");
+        let address = listener.local_addr().expect("read fake endpoint address");
+        let server = tokio::spawn(async move {
+            for status_line in [
+                "HTTP/1.1 503 Service Unavailable",
+                "HTTP/1.1 200 OK",
+            ] {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut request = [0_u8; 1024];
+                socket.read(&mut request).await.expect("read request");
+                let response = format!(
+                    "{status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+
+        let response = gmail_get_with_retry(
+            &Client::new(),
+            "test-token",
+            format!("http://{address}/gmail/v1/users/me/profile"),
+            "Fake Gmail fetch error",
+        )
+        .await
+        .expect("retry fake Gmail request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        server.await.expect("finish fake Gmail endpoint");
+    }
+
+    #[test]
+    fn gmail_get_retries_only_rate_limits_and_server_failures() {
+        assert!(is_retryable_gmail_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_gmail_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_gmail_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!is_retryable_gmail_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_gmail_status(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn gmail_get_backoff_is_exponential_with_equal_jitter() {
+        let first = gmail_retry_delay(0, None);
+        assert!(first.as_millis() >= 200 && first.as_millis() <= 400);
+
+        let second = gmail_retry_delay(1, None);
+        assert!(second.as_millis() >= 400 && second.as_millis() <= 800);
+    }
+
+    #[test]
+    fn gmail_get_honors_and_caps_numeric_retry_after() {
+        assert_eq!(parse_retry_after_delay("7").unwrap().as_secs(), 7);
+        assert_eq!(
+            parse_retry_after_delay("999").unwrap().as_secs(),
+            GMAIL_GET_MAX_RETRY_AFTER_SECS
+        );
+        assert!(parse_retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT").is_none());
+
+        let delayed = gmail_retry_delay(0, parse_retry_after_delay("7"));
+        assert_eq!(delayed.as_secs(), 7);
+    }
 
     #[test]
     fn mailbox_failures_distinguish_rate_limits_and_relogin() {

@@ -187,6 +187,21 @@ fn migrate_account_scoped_primary_keys(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Remove attachment rows left behind by older deletion paths. Account scope is
+/// part of the relationship because Gmail message IDs can appear in more than
+/// one signed-in account.
+fn purge_orphaned_attachments_from_conn(conn: &Connection) -> Result<usize> {
+    conn.execute(
+        "DELETE FROM attachments AS attachment
+         WHERE NOT EXISTS (
+             SELECT 1 FROM emails AS email
+             WHERE email.account_id = attachment.account_id
+               AND email.id = attachment.email_id
+         )",
+        [],
+    )
+}
+
 // ── init_db ────────────────────────────────────────────────────────────────────
 
 pub fn init_db(app: &AppHandle) -> Result<()> {
@@ -292,6 +307,9 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
     }
 
     migrate_account_scoped_primary_keys(&conn)?;
+    // Idempotent maintenance migration for rows created before mail deletion
+    // became attachment-aware.
+    purge_orphaned_attachments_from_conn(&conn)?;
 
     // If thread_id column was just added, all existing rows have thread_id=''.
     // Also handle the case where emails exist with empty thread_ids from old syncs.
@@ -410,6 +428,10 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
     )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_emails_account_generation ON emails(account_id, sync_generation)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_attachments_account_email ON attachments(account_id, email_id)",
         [],
     )?;
 
@@ -1242,8 +1264,8 @@ pub fn update_email_label(app: &AppHandle, id: &str, account_id: &str, label: &s
 
 pub fn delete_email_from_db(app: &AppHandle, id: &str, account_id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM emails WHERE id = ?1 AND account_id = ?2", params![id, account_id])
+    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    delete_emails_by_ids_from_conn(&mut conn, account_id, &[id.to_string()])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1742,7 +1764,7 @@ pub fn get_email_attachments(
 }
 
 fn delete_emails_by_ids_from_conn(
-    conn: &Connection,
+    conn: &mut Connection,
     account_id: &str,
     ids: &[String],
 ) -> Result<usize> {
@@ -1751,12 +1773,19 @@ fn delete_emails_by_ids_from_conn(
     }
 
     let placeholders = vec!["?"; ids.len()].join(",");
-    let sql = format!(
+    let attachment_sql = format!(
+        "DELETE FROM attachments WHERE account_id = ? AND email_id IN ({placeholders})"
+    );
+    let email_sql = format!(
         "DELETE FROM emails WHERE account_id = ? AND id IN ({placeholders})"
     );
     let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&account_id];
     params.extend(ids.iter().map(|s| s as &dyn rusqlite::types::ToSql));
-    conn.execute(&sql, params.as_slice())
+    let tx = conn.transaction()?;
+    tx.execute(&attachment_sql, params.as_slice())?;
+    let deleted = tx.execute(&email_sql, params.as_slice())?;
+    tx.commit()?;
+    Ok(deleted)
 }
 
 pub fn delete_emails_by_ids(
@@ -1766,9 +1795,9 @@ pub fn delete_emails_by_ids(
     ids: &[String],
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     ensure_account_generation(&conn, account_id, account_generation).map_err(|_| "Account is no longer available")?;
-    delete_emails_by_ids_from_conn(&conn, account_id, ids).map_err(|e| e.to_string())?;
+    delete_emails_by_ids_from_conn(&mut conn, account_id, ids).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1778,10 +1807,16 @@ mod tests {
 
     #[test]
     fn delete_emails_by_ids_scopes_every_id_to_the_requested_account() {
-        let conn = Connection::open_in_memory().expect("open in-memory database");
+        let mut conn = Connection::open_in_memory().expect("open in-memory database");
         conn.execute_batch(
             "CREATE TABLE emails (
                 id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                PRIMARY KEY (account_id, id)
+            );
+            CREATE TABLE attachments (
+                id TEXT NOT NULL,
+                email_id TEXT NOT NULL,
                 account_id TEXT NOT NULL,
                 PRIMARY KEY (account_id, id)
             );
@@ -1789,12 +1824,17 @@ mod tests {
                 ('delete-1', 'account-a'),
                 ('delete-2', 'account-a'),
                 ('keep-a', 'account-a'),
-                ('delete-1', 'account-b');",
+                ('delete-1', 'account-b');
+            INSERT INTO attachments (id, email_id, account_id) VALUES
+                ('delete-att-1', 'delete-1', 'account-a'),
+                ('delete-att-2', 'delete-2', 'account-a'),
+                ('keep-att-a', 'keep-a', 'account-a'),
+                ('keep-att-b', 'delete-1', 'account-b');",
         )
-        .expect("seed emails");
+        .expect("seed emails and attachments");
 
         let ids = vec!["delete-1".to_string(), "delete-2".to_string()];
-        let deleted = delete_emails_by_ids_from_conn(&conn, "account-a", &ids)
+        let deleted = delete_emails_by_ids_from_conn(&mut conn, "account-a", &ids)
             .expect("delete selected account emails");
 
         assert_eq!(deleted, 2);
@@ -1812,6 +1852,48 @@ mod tests {
                 ("account-b".to_string(), "delete-1".to_string()),
             ]
         );
+        let remaining_attachments: Vec<(String, String)> = conn
+            .prepare("SELECT account_id, id FROM attachments ORDER BY account_id, id")
+            .expect("prepare remaining attachments")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query remaining attachments")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("read remaining attachments");
+        assert_eq!(
+            remaining_attachments,
+            vec![
+                ("account-a".to_string(), "keep-att-a".to_string()),
+                ("account-b".to_string(), "keep-att-b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn orphaned_attachment_migration_keeps_only_account_scoped_mail_children() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE emails (id TEXT NOT NULL, account_id TEXT NOT NULL);
+             CREATE TABLE attachments (id TEXT, email_id TEXT, account_id TEXT);
+             INSERT INTO emails VALUES ('shared-mail', 'account-a');
+             INSERT INTO attachments VALUES
+                 ('valid', 'shared-mail', 'account-a'),
+                 ('wrong-account', 'shared-mail', 'account-b'),
+                 ('missing-mail', 'missing', 'account-a');",
+        )
+        .expect("seed orphaned attachments");
+
+        let deleted = purge_orphaned_attachments_from_conn(&conn)
+            .expect("purge orphaned attachments");
+
+        assert_eq!(deleted, 2);
+        let remaining: Vec<String> = conn
+            .prepare("SELECT id FROM attachments ORDER BY id")
+            .expect("prepare remaining attachments")
+            .query_map([], |row| row.get(0))
+            .expect("query remaining attachments")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("read remaining attachments");
+        assert_eq!(remaining, vec!["valid".to_string()]);
     }
 
     #[test]
