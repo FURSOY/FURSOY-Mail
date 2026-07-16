@@ -338,7 +338,7 @@ export function EmailReader({
         att.id,
         accessToken,
       );
-      showToast(`Saved to Downloads: ${savedName}`, "success");
+      showToast(tr.mail.savedToDownloads.replace("{name}", savedName), "success");
     } catch (e) {
       showToast(tr.mail.downloadFailed, "error");
       console.error("Download failed:", e);
@@ -412,9 +412,7 @@ export function EmailReader({
   const BLOCKED_EXT = new Set(["exe","bat","cmd","com","msi","scr","pif","vbs","vbe","js","jse","jar","wsf","wsh","ps1","reg","inf","lnk"]);
   const MAX_ATT_BYTES = 20 * 1024 * 1024;
 
-  const handleReplyFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
+  const addReplyAttachmentFiles = (files: File[]) => {
     if (!files.length) return;
     setReplyAttachError(null);
     const blocked = files.filter(f => BLOCKED_EXT.has(f.name.split(".").pop()?.toLowerCase() ?? ""));
@@ -432,6 +430,23 @@ export function EmailReader({
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleReplyFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    addReplyAttachmentFiles(files);
+  };
+
+  const handleReplyPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const imageFiles = Array.from(e.clipboardData.items)
+      .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (imageFiles.length === 0) return;
+
+    e.preventDefault();
+    addReplyAttachmentFiles(imageFiles);
   };
 
   // All emails to render: full thread if available, otherwise just activeMail
@@ -805,6 +820,7 @@ export function EmailReader({
                   ref={replyEditableRef}
                   contentEditable
                   suppressContentEditableWarning
+                  onPaste={handleReplyPaste}
                   onInput={() => {
                     setReplyEmpty(!(replyEditableRef.current?.innerText.trim()));
                     syncUndoRedo();
@@ -984,7 +1000,7 @@ export function EmailReader({
                   <button
                     type="button"
                     onClick={() => onSendReply(replyAttachments, replyEditableRef.current?.innerHTML ?? "")}
-                    disabled={replyEmpty || isSending}
+                    disabled={(replyEmpty && replyAttachments.length === 0) || isSending}
                     className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-2"
                   >
                     {isSending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}

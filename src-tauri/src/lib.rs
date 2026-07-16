@@ -205,7 +205,7 @@ pub fn run() {
                 "toggle_mute_notifications",
                 "Bildirimleri sessize al",
                 true,
-                controls.notifications_muted,
+                controls.notifications_disabled(),
                 None::<&str>,
             )?;
             let pause_i = CheckMenuItem::with_id(
@@ -228,9 +228,13 @@ pub fn run() {
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "toggle_mute_notifications" => {
                         let mut controls = settings::read_app_controls(app);
-                        controls.notifications_muted = !controls.notifications_muted;
+                        controls.notification_mode = if controls.notifications_disabled() {
+                            "all".into()
+                        } else {
+                            "off".into()
+                        };
                         let _ = settings::write_app_controls(app, &controls);
-                        let _ = mute_item.set_checked(controls.notifications_muted);
+                        let _ = mute_item.set_checked(controls.notifications_disabled());
                         let _ = app.emit("app-controls-changed", controls);
                     }
                     "toggle_pause_sync" => {

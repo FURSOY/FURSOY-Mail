@@ -21,10 +21,17 @@ fn default_app_language() -> String {
     "en".into()
 }
 
+fn default_notification_mode() -> String {
+    "all".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppControls {
-    pub notifications_muted: bool,
+    #[serde(default = "default_notification_mode")]
+    pub notification_mode: String,
+    #[serde(default, rename = "notificationsMuted", skip_serializing)]
+    legacy_notifications_muted: bool,
     pub mail_sync_paused: bool,
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
@@ -36,12 +43,27 @@ pub struct AppControls {
 impl Default for AppControls {
     fn default() -> Self {
         Self {
-            notifications_muted: false,
+            notification_mode: default_notification_mode(),
+            legacy_notifications_muted: false,
             mail_sync_paused: false,
             quiet_hours_enabled: false,
             quiet_hours_start: "22:00".into(),
             quiet_hours_end: "08:00".into(),
             app_language: "en".into(),
+        }
+    }
+}
+
+impl AppControls {
+    pub fn notifications_disabled(&self) -> bool {
+        self.notification_mode == "off"
+    }
+
+    pub fn allows_notification(&self, kind: Option<&str>, has_code: bool) -> bool {
+        match self.notification_mode.as_str() {
+            "off" => false,
+            "otpOnly" => kind == Some("mail") && has_code,
+            _ => true,
         }
     }
 }
@@ -62,7 +84,18 @@ pub fn read_app_controls(app: &AppHandle) -> AppControls {
     let Ok(text) = fs::read_to_string(path) else {
         return AppControls::default();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut controls: AppControls = serde_json::from_str(&text).unwrap_or_default();
+    if controls.legacy_notifications_muted {
+        controls.notification_mode = "off".into();
+        controls.legacy_notifications_muted = false;
+    }
+    if !matches!(
+        controls.notification_mode.as_str(),
+        "all" | "otpOnly" | "off"
+    ) {
+        controls.notification_mode = default_notification_mode();
+    }
+    controls
 }
 
 pub fn write_app_controls(app: &AppHandle, controls: &AppControls) -> Result<(), String> {
@@ -78,6 +111,12 @@ pub fn get_app_controls(app: AppHandle) -> AppControls {
 
 #[tauri::command]
 pub fn set_app_controls(app: AppHandle, controls: AppControls) -> Result<AppControls, String> {
+    if !matches!(
+        controls.notification_mode.as_str(),
+        "all" | "otpOnly" | "off"
+    ) {
+        return Err("Unsupported notification mode".into());
+    }
     write_app_controls(&app, &controls)?;
     Ok(controls)
 }
@@ -85,7 +124,7 @@ pub fn set_app_controls(app: AppHandle, controls: AppControls) -> Result<AppCont
 #[tauri::command]
 pub fn set_notifications_muted(app: AppHandle, muted: bool) -> Result<AppControls, String> {
     let mut controls = read_app_controls(&app);
-    controls.notifications_muted = muted;
+    controls.notification_mode = if muted { "off" } else { "all" }.into();
     write_app_controls(&app, &controls)?;
     Ok(controls)
 }
@@ -268,5 +307,26 @@ pub fn set_launch_at_startup(enabled: bool) -> Result<bool, String> {
     {
         let _ = enabled;
         Err("Otomatik baslatma bu platformda desteklenmiyor.".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppControls;
+
+    #[test]
+    fn notification_modes_filter_expected_payloads() {
+        let mut controls = AppControls::default();
+        assert!(controls.allows_notification(Some("mail"), false));
+        assert!(controls.allows_notification(Some("update"), false));
+
+        controls.notification_mode = "otpOnly".into();
+        assert!(controls.allows_notification(Some("mail"), true));
+        assert!(!controls.allows_notification(Some("mail"), false));
+        assert!(!controls.allows_notification(Some("update"), true));
+
+        controls.notification_mode = "off".into();
+        assert!(controls.notifications_disabled());
+        assert!(!controls.allows_notification(Some("mail"), true));
     }
 }

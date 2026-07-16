@@ -1,4 +1,5 @@
 export type OtpMode = "off" | "balanced" | "strict";
+export type NotificationMode = "all" | "otpOnly" | "off";
 export type RenderMode = "full" | "simple";
 export type RemoteImageMode = "always" | "trusted" | "ask";
 export type MailZoom = "fit" | number;
@@ -41,7 +42,7 @@ export interface AuthInfo {
 }
 
 export interface AppControls {
-  notificationsMuted: boolean;
+  notificationMode: NotificationMode;
   mailSyncPaused: boolean;
   quietHoursEnabled: boolean;
   quietHoursStart: string;
@@ -56,7 +57,7 @@ export interface AttachmentPayload {
 }
 
 export const DEFAULT_APP_CONTROLS: AppControls = {
-  notificationsMuted: false,
+  notificationMode: "all",
   mailSyncPaused: false,
   quietHoursEnabled: false,
   quietHoursStart: "22:00",

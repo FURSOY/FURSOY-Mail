@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect } from "react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useLocale } from "../i18n";
 import type { MailZoom } from "../types";
 import { FIXED_LAYOUT_MIN_WIDTH, buildEmailSrcDoc, findEmailUrl, resolveEmailUrl } from "../utils";
@@ -162,8 +163,22 @@ export function EmailHtmlView({
         event.stopPropagation();
         onOpenUrl(url);
       };
+      const handleCopy = (event: ClipboardEvent) => {
+        const selectedText = doc.getSelection()?.toString() ?? "";
+        if (!selectedText) return;
+
+        // Email HTML often carries its own background and text styles. Copy the
+        // selection as standard plain text so it works with Windows clipboard
+        // history and does not leak those styles into the compose editor.
+        event.preventDefault();
+        event.clipboardData?.setData("text/plain", selectedText);
+        void writeText(selectedText).catch(error => {
+          console.error("[MAIL] clipboard write failed:", error);
+        });
+      };
       doc.addEventListener("click", handleClick, true);
       doc.addEventListener("submit", handleSubmit, true);
+      doc.addEventListener("copy", handleCopy);
       const handleContextMenu = (e: Event) => e.preventDefault();
       doc.addEventListener("contextmenu", handleContextMenu, true);
 
@@ -177,6 +192,7 @@ export function EmailHtmlView({
         doc.removeEventListener("wheel", handleWheel);
         doc.removeEventListener("click", handleClick, true);
         doc.removeEventListener("submit", handleSubmit, true);
+        doc.removeEventListener("copy", handleCopy);
         doc.removeEventListener("contextmenu", handleContextMenu, true);
       };
     };

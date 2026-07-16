@@ -86,7 +86,11 @@ pub async fn show_custom_notification(
     account_picture: Option<String>,
     multi_account: Option<bool>,
 ) {
-    if crate::settings::read_app_controls(&app).notifications_muted {
+    let controls = crate::settings::read_app_controls(&app);
+    if !controls.allows_notification(
+        kind.as_deref(),
+        code.as_ref().is_some_and(|value| !value.is_empty()),
+    ) {
         return;
     }
 
