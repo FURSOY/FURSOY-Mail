@@ -10,7 +10,7 @@ import {
   Minus, Square, Copy, X, Edit3, Menu, Inbox, AlertTriangle, CheckCircle, XCircle,
 } from "lucide-react";
 import { LocaleContext, locales, type AppLanguage } from "./i18n";
-import { themePresets, type ThemePresetName } from "./theme";
+import { surfaces, themePresets, type ThemePresetName } from "./theme";
 import "./index.css";
 
 import {
@@ -20,7 +20,7 @@ import {
 } from "./types";
 import { useMemo } from "react";
 import {
-  MAIL_TABS, AUTH_RELOGIN_MESSAGE, STARTUP_NETWORK_DELAY_MS, STARTUP_UPDATE_DELAY_MS,
+  MAIL_TABS, STARTUP_NETWORK_DELAY_MS, STARTUP_UPDATE_DELAY_MS,
   MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
   isNoUpdateError, isAuthFailure, extractVerificationCode,
   readMailZoom, readThemePreset, getAutoMailViewMode,
@@ -77,7 +77,7 @@ interface MailboxDownloadStatus {
 function App() {
   const [activeTab, setActiveTab] = useState<"inbox" | "sent" | "archive" | "spam" | "trash" | "settings">("inbox");
   const [selectedMail, setSelectedMail] = useState<string | null>(null);
-  const [authStatus, setAuthStatus] = useState<string>("Not authenticated");
+  const [authStatus, setAuthStatus] = useState<string>("");
   const [isUserSyncing, setIsUserSyncing] = useState(false);
   const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
 
@@ -117,10 +117,7 @@ function App() {
     const saved = localStorage.getItem("fursoy_otp_mode");
     return saved === "off" || saved === "strict" ? saved : "balanced";
   });
-  const [appLanguage, setAppLanguage] = useState<AppLanguage>(() => {
-    const saved = localStorage.getItem("fursoy_app_language");
-    return saved === "tr" ? "tr" : "en";
-  });
+  const [appLanguage, setAppLanguage] = useState<AppLanguage>(DEFAULT_APP_CONTROLS.appLanguage);
   const tr = locales[appLanguage];
   const [themePreset, setThemePreset] = useState<ThemePresetName>(() => readThemePreset());
   const [densityMode, setDensityMode] = useState<DensityMode>(() => {
@@ -282,29 +279,19 @@ function App() {
     root.style.setProperty("--app-accent", preset.accent);
     root.style.setProperty("--app-accent-hover", preset.accentHover);
     root.style.setProperty("--app-accent-soft", preset.accentSoft);
+    root.style.setProperty("--app-accent-shadow", preset.accentShadow);
     root.dataset.density = densityMode;
   }, [themePreset, densityMode]);
-
-  useEffect(() => {
-    localStorage.setItem("fursoy_app_language", appLanguage);
-  }, [appLanguage]);
 
   useEffect(() => {
     getVersion().then(setCurrentVersion).catch(console.error);
     invoke<boolean>("get_launch_at_startup").then(setLaunchAtStartup).catch(console.error);
     invoke<AppControls>("get_app_controls")
       .then((controls) => {
-        const localLanguage = localStorage.getItem("fursoy_app_language") === "tr" ? "tr" : "en";
-        const savedLanguage: AppLanguage = controls.appLanguage === "en" || controls.appLanguage === "tr"
-          ? controls.appLanguage
-          : localLanguage;
+        const savedLanguage: AppLanguage = controls.appLanguage === "tr" ? "tr" : "en";
         const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...controls, appLanguage: savedLanguage };
         setAppControls(normalized);
         setAppLanguage(savedLanguage);
-        localStorage.setItem("fursoy_app_language", savedLanguage);
-        if (controls.appLanguage !== savedLanguage) {
-          void invoke("set_app_language", { language: savedLanguage });
-        }
       })
       .catch(console.error);
   }, []);
@@ -339,7 +326,7 @@ function App() {
     // Per-account notification (only when single account expires, not via markSessionExpired)
     if (showMessage) {
       const email = accountsRef.current.find(a => a.id === accountId)?.email ?? accountId;
-      showToast(`${email} session expired. Please sign in again.`, "error");
+      showToast(tr.messages.accountSessionExpired.replace("{email}", email), "error");
     }
 
     // All accounts expired → banner + stop sync
@@ -355,13 +342,13 @@ function App() {
         syncIntervalRef.current = null;
       }
     }
-  }, [showToast]);
+  }, [showToast, tr]);
 
   // backward-compat alias used in a few places
   const markSessionExpired = useCallback((showMessage = true) => {
     accountsRef.current.forEach(a => markAccountExpired(a.id, false));
-    if (showMessage) showToast(AUTH_RELOGIN_MESSAGE, "error");
-  }, [markAccountExpired, showToast]);
+    if (showMessage) showToast(tr.messages.reloginRequired, "error");
+  }, [markAccountExpired, showToast, tr]);
 
   const openExternalMailUrl = useCallback((url: string) => {
     if (!url || url.startsWith("#")) return;
@@ -380,7 +367,7 @@ function App() {
       console.error("Failed to open mail link:", err);
       showToast(tr.actions.openLinkFailed, "error");
     });
-  }, [showToast]);
+  }, [showToast, tr]);
 
   const shouldDeferNetworkForGameMode = useCallback(async (userInitiated = false) => {
     if (userInitiated || !pauseOnFullscreenRef.current) return false;
@@ -406,19 +393,19 @@ function App() {
         setUpdateAvailable({ version: update.version, date: update.date || "", body: update.body || "" });
         setUpdateStatus(tr.update.available.replace("{version}", update.version));
         if (showUIMessages) {
-          showToast(`New update available: v${update.version}`, "info");
+          showToast(tr.update.available.replace("{version}", update.version), "info");
         } else if (notifiedUpdateVersionRef.current !== update.version) {
           notifiedUpdateVersionRef.current = update.version;
           await invoke("show_custom_notification", {
-            title: "FURSOY Mail update ready",
-            body: `v${update.version} is available. Click to open the update screen.`,
+            title: tr.update.readyTitle,
+            body: tr.update.readyBody.replace("{version}", update.version),
             kind: "update", code: null, emailId: null, duration: 10000,
           });
         }
       } else {
         setUpdateAvailable(null);
         setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast("Already up to date.", "success");
+        if (showUIMessages) showToast(tr.update.upToDate, "success");
       }
     } catch (e) {
       console.error("Update check failed:", e);
@@ -426,13 +413,13 @@ function App() {
         setUpdateAvailable(null);
         setUpdateError(null);
         setUpdateStatus(tr.update.upToDate);
-        if (showUIMessages) showToast("Already up to date.", "success");
+        if (showUIMessages) showToast(tr.update.upToDate, "success");
         return;
       }
       const message = e instanceof Error ? e.message : String(e);
       setUpdateError(`${tr.update.checkFailed}: ${message}`);
       setUpdateStatus("");
-      if (showUIMessages) showToast("Update check failed.", "error");
+      if (showUIMessages) showToast(tr.update.checkFailed, "error");
     } finally {
       if (showUIMessages) setIsCheckingUpdate(false);
     }
@@ -714,7 +701,7 @@ function App() {
     } catch (e) {
       console.error("Failed to update app controls:", e);
       setAppControls(previous);
-      showToast(`Setting could not be saved: ${e}`, "error");
+      showToast(`${tr.messages.settingSaveFailed}: ${e}`, "error");
     }
   };
 
@@ -738,12 +725,12 @@ function App() {
         } catch (refreshError) {
           console.error(`Token refresh failed for ${accountId}:`, refreshError);
           markAccountExpired(accountId);
-          throw new Error(AUTH_RELOGIN_MESSAGE);
+          throw new Error(tr.messages.reloginRequired);
         }
       }
       throw e;
     }
-  }, [markAccountExpired]);
+  }, [markAccountExpired, tr]);
 
   const adjustUnreadBadge = (accountId: string, delta: number) => {
     const activeAccountId = activeAccountIdRef.current;
@@ -790,7 +777,7 @@ function App() {
         const code = extractVerificationCode({ ...email, body_html: body }, otpMode, appLanguage);
         const account = accountsRef.current.find(a => a.id === email.account_id);
         const title = senderName.slice(0, 64);
-        const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || "New message";
+        const notificationBody = (email.subject || email.snippet || "").trim().slice(0, 100) || tr.messages.newMessage;
         const notificationKey = title + notificationBody;
         const previous = recentNotificationsRef.current[notificationKey];
         recentNotificationsRef.current[notificationKey] = previous &&
@@ -812,7 +799,7 @@ function App() {
     } catch (e) {
       console.error("Notification error:", e);
     }
-  }, [otpMode]);
+  }, [appLanguage, otpMode, tr]);
 
   const clearPeriodicSync = () => {
     syncChainIdRef.current++;
@@ -904,7 +891,7 @@ function App() {
       console.error("Background sync failed:", e);
       if (isAuthFailure(e)) { markSessionExpired(); return false; }
       const msg = e instanceof Error ? e.message : String(e);
-      showToast(`Sync failed: ${msg}`, "error");
+      showToast(`${tr.messages.syncFailedDetail}: ${msg}`, "error");
       return false;
     } finally {
       if (userInitiated) setIsUserSyncing(false);
@@ -1153,15 +1140,15 @@ function App() {
       const ok = await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
       if (ok) {
         setAuthStatus(tr.auth.syncComplete);
-        showToast("Signed in!", "success");
+        showToast(tr.auth.loginSuccess, "success");
       } else {
         setAuthStatus(tr.auth.syncFailedAfterLogin);
       }
       startPeriodicSync();
     } catch (e) {
-      setAuthStatus("Error: " + e);
+      setAuthStatus(`${tr.auth.loginFailed}: ${e}`);
       setIsUserSyncing(false);
-      showToast("Sign-in failed: " + e, "error");
+      showToast(`${tr.auth.loginFailed}: ${e}`, "error");
     } finally {
       setIsConnecting(false);
     }
@@ -1210,10 +1197,10 @@ function App() {
         await loadEmails(activeTabRef.current);
         await refreshUnreadCount();
       }
-      showToast("Signed out", "success");
+      showToast(tr.auth.loggedOut, "success");
     } catch (e) {
       console.error("Logout failed:", e);
-      showToast("Sign-out failed: " + e, "error");
+      showToast(`${tr.messages.signOutFailed}: ${e}`, "error");
     }
   }
 
@@ -1240,16 +1227,16 @@ function App() {
 
   const handleRefresh = async () => {
     if (Object.keys(accountTokensRef.current).length === 0) {
-      showToast("Please sign in first.", "error");
+      showToast(tr.messages.pleaseSignIn, "error");
       return;
     }
-    setAuthStatus("Syncing...");
+    setAuthStatus(tr.messages.syncing);
     const ok = await backgroundSyncRef.current({ userInitiated: true });
     if (ok) {
-      setAuthStatus("Up to date.");
-      showToast("Inbox updated", "success");
+      setAuthStatus(tr.messages.upToDate);
+      showToast(tr.messages.inboxUpdated, "success");
     } else {
-      setAuthStatus("Sync failed. Check your network or session.");
+      setAuthStatus(tr.messages.refreshFailed);
       showToast(tr.mail.syncFailed, "error");
       const status = await invoke<MailboxDownloadStatus>("get_mailbox_download_status", {
         accountId: activeAccountIdRef.current,
@@ -1295,7 +1282,7 @@ function App() {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
-      showToast("Archive failed", "error");
+      showToast(tr.messages.archiveFailed, "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -1310,7 +1297,7 @@ function App() {
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch {
-      showToast("Delete failed", "error");
+      showToast(tr.messages.deleteFailed, "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -1322,11 +1309,11 @@ function App() {
     setSelectedMail(null);
     try {
       await invoke("move_to_inbox", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-      showToast("Moved to inbox", "success");
+      showToast(tr.messages.movedToInbox, "success");
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
     } catch {
-      showToast("Move failed", "error");
+      showToast(tr.messages.moveFailed, "error");
       loadEmails(activeTabRef.current);
     }
   };
@@ -1335,15 +1322,15 @@ function App() {
     const token = getTokenForEmail(mail);
     if (!mail || !token) return;
     setConfirmModal({
-      message: "Permanently delete this email? This cannot be undone.",
+      message: tr.messages.permanentDeleteConfirm,
       onConfirm: async () => {
         setEmails(prev => prev.filter(e => !sameEmail(e, mail)));
         setSelectedMail(null);
         try {
           await invoke("permanently_delete", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
-          showToast("Permanently deleted", "success");
+          showToast(tr.messages.permanentlyDeleted, "success");
         } catch {
-          showToast("Delete failed", "error");
+          showToast(tr.messages.deleteFailed, "error");
           loadEmails(activeTabRef.current);
         }
       },
@@ -1377,7 +1364,10 @@ function App() {
         toField = senderAddr;
       }
       const quotedDate = formatDateFull(activeMail.date);
-      const quotedHtml = `<br/><br/><div style="border-left:3px solid #ccc;padding-left:12px;color:#888;margin-top:8px"><div style="margin-bottom:6px;font-size:12px">On ${quotedDate}, <b>${activeMail.sender}</b> wrote:</div>${selectedMailBody || activeMail.snippet}</div>`;
+      const quoteHeading = tr.compose.wroteOn
+        .replace("{date}", quotedDate)
+        .replace("{sender}", `<b>${activeMail.sender}</b>`);
+      const quotedHtml = `<br/><br/><div style="border-left:3px solid #ccc;padding-left:12px;color:#888;margin-top:8px"><div style="margin-bottom:6px;font-size:12px">${quoteHeading}</div>${selectedMailBody || activeMail.snippet}</div>`;
       await invoke("send_reply", {
         accountId: activeMail.account_id,
         accessToken,
@@ -1392,7 +1382,7 @@ function App() {
       setShowReply(false);
       setThreadRefreshKey(k => k + 1);
     } catch {
-      showToast("Failed to send reply", "error");
+      showToast(tr.messages.replySendFailed, "error");
     }
     setIsSending(false);
   };
@@ -1400,7 +1390,7 @@ function App() {
   const handleComposeSend = async (attachments: import("./types").AttachmentPayload[], body: string) => {
     if (!composeTo.trim() || !composeSubject.trim()) return;
     const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
-    if (!sendFromId) { setComposeSendError("No account found to send from."); return; }
+    if (!sendFromId) { setComposeSendError(tr.messages.noSendAccount); return; }
 
     setComposeSendError(null);
     setIsSending(true);
@@ -1416,7 +1406,7 @@ function App() {
         expiredAccountsRef.current.delete(sendFromId);
         setExpiredAccountIds(new Set(expiredAccountsRef.current));
       } catch {
-        setComposeSendError("Session expired. Please sign in to your account again.");
+        setComposeSendError(tr.messages.reloginRequired);
         setIsSending(false);
         return;
       }
@@ -1431,16 +1421,16 @@ function App() {
       setComposeBody("");
       setComposeHtmlAppend("");
       setComposeSendError(null);
-      showToast("Email sent", "success");
+      showToast(tr.messages.emailSent, "success");
     } catch (e) {
       const raw = String(e);
       // Token expired mid-send → mark expired
       if (isAuthFailure(raw)) {
         markAccountExpired(sendFromId);
-        setComposeSendError("Session expired. Please sign in again.");
+        setComposeSendError(tr.messages.reloginRequired);
       } else {
         const msg = raw.replace(/^Error:\s*/i, "").replace(/Gmail send error:\s*/i, "");
-        setComposeSendError(msg || "Send failed. Please try again.");
+        setComposeSendError(msg || tr.messages.sendFailed);
       }
     }
     setIsSending(false);
@@ -1456,13 +1446,13 @@ function App() {
       await invoke("mark_as_unread", { accountId: mail.account_id, accessToken: token, messageId: mail.id });
     } catch {
       adjustUnreadBadge(mail.account_id, -1);
-      showToast("Operation failed", "error");
+      showToast(tr.messages.operationFailed, "error");
       loadEmails(activeTabRef.current);
     }
   };
 
   const handleForward = (mail: EmailSummary) => {
-    const fwdHeader = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- Forwarded Message ----------</b><br/>From: ${mail.sender}<br/>Subject: ${mail.subject}<br/>Date: ${formatDateFull(mail.date)}<br/><br/></div>`;
+    const fwdHeader = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- ${tr.compose.forwardedMessage} ----------</b><br/>${tr.compose.senderLabel}: ${mail.sender}<br/>${tr.compose.subject}: ${mail.subject}<br/>${tr.compose.dateLabel}: ${formatDateFull(mail.date)}<br/><br/></div>`;
     setComposeTo("");
     setComposeSubject(`Fwd: ${mail.subject.replace(/^(Fwd:\s*)+/i, "")}`);
     setComposeBody("");
@@ -1474,14 +1464,14 @@ function App() {
   const handleAppLanguageChange = async (language: AppLanguage) => {
     const previous = appLanguage;
     setAppLanguage(language);
-    localStorage.setItem("fursoy_app_language", language);
     try {
       const saved = await invoke<AppControls>("set_app_language", { language });
-      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved });
+      const savedLanguage: AppLanguage = saved.appLanguage === "tr" ? "tr" : "en";
+      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved, appLanguage: savedLanguage });
+      setAppLanguage(savedLanguage);
     } catch (error) {
       console.error("Failed to save app language:", error);
       setAppLanguage(previous);
-      localStorage.setItem("fursoy_app_language", previous);
     }
   };
 
@@ -1681,12 +1671,12 @@ function App() {
   const showMailReader = !!activeMail && (mailViewMode === "split" || singlePanelView === "reader");
   const mailListClassName =
     mailViewMode === "split"
-      ? `flex min-w-0 flex-col border-r border-white/5 bg-[#09090b] ${selectedMail ? "hidden md:flex md:w-80 lg:w-96" : "flex-1 md:w-80 lg:w-96 md:flex-none"}`
+      ? `flex min-w-0 flex-col border-r border-[var(--color-border-subtle)] ${surfaces.app} ${selectedMail ? "hidden md:flex md:w-80 lg:w-96" : "flex-1 md:w-80 lg:w-96 md:flex-none"}`
       : showMailList
-      ? "flex min-w-0 flex-1 flex-col border-r border-white/5 bg-[#09090b]"
+      ? `flex min-w-0 flex-1 flex-col border-r border-[var(--color-border-subtle)] ${surfaces.app}`
       : "hidden";
   const mailReaderClassName = showMailReader
-    ? "flex-1 min-w-0 flex flex-col bg-[#0a0a0c] relative z-10 select-text"
+    ? `flex-1 min-w-0 flex flex-col ${surfaces.content} relative z-10 select-text`
     : "hidden";
 
   const handleMailViewPreferenceChange = (mode: MailViewPreference) => {
@@ -1699,16 +1689,20 @@ function App() {
   };
 
   if (accountsLoaded && accounts.length === 0) {
-    return <Onboarding onConnect={loginWithGoogle} isConnecting={isConnecting} />;
+    return (
+      <LocaleContext.Provider value={tr}>
+        <Onboarding onConnect={loginWithGoogle} isConnecting={isConnecting} />
+      </LocaleContext.Provider>
+    );
   }
 
   return (
     <LocaleContext.Provider value={tr}>
-    <div className="flex flex-col h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden select-none">
+    <div className={`flex flex-col h-screen ${surfaces.app} text-[var(--color-text-secondary)] font-sans overflow-hidden select-none`}>
       {/* CUSTOM TITLEBAR */}
       <div
         data-tauri-drag-region
-        className="relative z-[60] h-9 shrink-0 flex items-center justify-between pl-2 pr-0 border-b border-white/5 bg-[#09090b]"
+        className={`relative z-[60] h-9 shrink-0 flex items-center justify-between pl-2 pr-0 border-b border-[var(--color-border-subtle)] ${surfaces.app}`}
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
         onMouseDown={(event) => {
           if (!mobileMenuOpen) return;
@@ -1722,23 +1716,25 @@ function App() {
             onClick={() => setMobileMenuOpen(open => !open)}
             className="hidden"
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            aria-label="Open menu"
+            aria-label={tr.common.openMenu}
           >
             <Menu className="h-4 w-4" />
           </button>
-          <img src="/logo.svg" className="w-4 h-4 object-contain" alt="MailApp Logo" />
+          <img src="/logo.svg" className="w-4 h-4 object-contain" alt={tr.app.name} />
           <span className="text-zinc-400">{tr.app.name}</span>
         </div>
         <div className="flex items-center" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <button
+            aria-label={tr.common.minimize}
+            title={tr.common.minimize}
             onClick={() => getCurrentWindow().minimize()}
             className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 transition-colors"
           >
             <Minus className="w-4 h-4" />
           </button>
           <button
-            aria-label={isWindowMaximized ? "Asagi geri yukle" : "Ekrani kapla"}
-            title={isWindowMaximized ? "Asagi geri yukle" : "Ekrani kapla"}
+            aria-label={isWindowMaximized ? tr.common.restore : tr.common.maximize}
+            title={isWindowMaximized ? tr.common.restore : tr.common.maximize}
             onClick={async () => {
               const win = getCurrentWindow();
               await win.toggleMaximize();
@@ -1749,6 +1745,8 @@ function App() {
             {isWindowMaximized ? <Copy className="w-3.5 h-3.5" /> : <Square className="w-3 h-3" />}
           </button>
           <button
+            aria-label={tr.common.close}
+            title={tr.common.close}
             onClick={async () => { await getCurrentWindow().hide(); }}
             className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-red-500/80 hover:text-white transition-colors"
           >
@@ -1779,11 +1777,11 @@ function App() {
         {/* Compose FAB */}
         {accounts.length > 0 && (
           <div className="fixed bottom-6 right-6 z-50">
-            <ToolbarTip label="Yeni e-posta">
+            <ToolbarTip label={tr.actions.newEmail}>
               <button
                 type="button"
                 onClick={() => { setComposeAccountId(activeAccountId ?? accounts[0]?.id ?? null); setShowCompose(true); }}
-                className="w-12 h-12 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/25 transition-all hover:scale-105 active:scale-95"
+                className="w-12 h-12 rounded-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--color-text-on-accent)] flex items-center justify-center shadow-[var(--shadow-accent-lg)] transition-all hover:scale-105 active:scale-95"
               >
                 <Edit3 className="w-5 h-5" />
               </button>
@@ -1920,7 +1918,7 @@ function App() {
               />
             ) : (
               <main
-                className={`${mailViewMode === "split" ? "hidden md:flex" : "hidden"} flex-1 items-center justify-center bg-[#0a0a0c]`}
+                className={`${mailViewMode === "split" ? "hidden md:flex" : "hidden"} flex-1 items-center justify-center ${surfaces.content}`}
               >
                 <div className="text-center">
                   <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3">
@@ -1941,14 +1939,17 @@ function App() {
           <div className="flex items-center gap-2 text-white text-xs font-medium">
             <AlertTriangle className="w-3.5 h-3.5" />
             {accounts.length > 1
-              ? `${[...expiredAccountIds].map(id => accounts.find(a => a.id === id)?.email ?? id).join(", ")} session expired — signing in to any account will refresh it`
-              : AUTH_RELOGIN_MESSAGE}
+              ? tr.messages.multipleSessionsExpired.replace(
+                  "{emails}",
+                  [...expiredAccountIds].map(id => accounts.find(a => a.id === id)?.email ?? id).join(", "),
+                )
+              : tr.messages.reloginRequired}
           </div>
           <button
             onClick={loginWithGoogle}
             className="px-3 py-1 bg-white text-red-600 text-xs font-semibold rounded hover:bg-red-50 transition-colors"
           >
-            Sign In
+            {tr.messages.signIn}
           </button>
         </div>
       )}

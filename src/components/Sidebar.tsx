@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Inbox, Send, Archive, ShieldAlert, Trash2, Settings, LogOut, RefreshCw, Plus, Users, AlertTriangle } from "lucide-react";
 import { useLocale } from "../i18n";
+import { surfaces, ui } from "../theme";
 import type { Account } from "../types";
 
 type TabName = "inbox" | "sent" | "archive" | "spam" | "trash" | "settings";
@@ -37,8 +38,8 @@ export function Sidebar({
     usesOverlaySidebar && mobileMenuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
   }`;
   const asideCls = usesOverlaySidebar
-    ? `fixed left-0 top-9 bottom-0 z-50 flex w-56 flex-col border-r border-white/5 bg-[#0c0c0e]/95 shadow-2xl shadow-black/40 backdrop-blur-xl transition-transform duration-200 ease-out ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"}`
-    : "static z-auto flex w-56 flex-col border-r border-white/5 bg-[#0c0c0e] shadow-none";
+    ? `fixed left-0 top-9 bottom-0 z-50 flex w-56 flex-col border-r border-[var(--color-border-subtle)] ${surfaces.sidebarOverlay} shadow-2xl shadow-black/40 backdrop-blur-xl transition-transform duration-200 ease-out ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"}`
+    : `static z-auto flex w-56 flex-col border-r border-[var(--color-border-subtle)] ${surfaces.sidebar} shadow-none`;
 
   const navItem = (tab: TabName, icon: React.ReactNode, label: string, badge?: React.ReactNode) => (
     <button
@@ -61,9 +62,9 @@ export function Sidebar({
     const isExpired = accountId !== null && expiredAccountIds.has(accountId);
 
     const avatarRingCls = isExpired
-      ? "ring-2 ring-orange-500 ring-offset-1 ring-offset-[#0c0c0e]"
+      ? "ring-2 ring-orange-500 ring-offset-1 ring-offset-[var(--color-surface-sidebar)]"
       : isActive
-      ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]"
+      ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[var(--color-surface-sidebar)]"
       : "";
 
     return (
@@ -84,7 +85,7 @@ export function Sidebar({
           {/* Avatar with optional expired indicator */}
           <div className="relative shrink-0">
             {isAll ? (
-              <div className={`w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[#0c0c0e]" : ""}`}>
+              <div className={`w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center ${isActive ? "ring-2 ring-[var(--app-accent)] ring-offset-1 ring-offset-[var(--color-surface-sidebar)]" : ""}`}>
                 <Users className="w-3.5 h-3.5 text-zinc-400" />
               </div>
             ) : picture ? (
@@ -110,7 +111,7 @@ export function Sidebar({
               {isAll ? tr.mail.allAccounts : email.split("@")[0]}
             </div>
             {!isAll && (
-              <div className={`text-[10px] truncate ${isExpired ? "text-orange-600" : "text-zinc-600"}`}>
+              <div className={`text-[length:var(--font-size-caption)] truncate ${isExpired ? "text-orange-600" : "text-[var(--color-text-disabled)]"}`}>
                 {isExpired ? tr.mail.sessionExpired : email}
               </div>
             )}
@@ -128,8 +129,8 @@ export function Sidebar({
               >
                 <RefreshCw className="w-3 h-3" />
               </button>
-              <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/relogin:opacity-100">
-                Re-authenticate
+              <span className={`pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max opacity-0 transition-opacity duration-150 delay-75 group-hover/relogin:opacity-100 ${ui.tooltip}`}>
+                {tr.accounts.reauthenticate}
               </span>
             </div>
           ) : (
@@ -141,8 +142,8 @@ export function Sidebar({
               >
                 <LogOut className="w-3 h-3" />
               </button>
-              <span className="pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max rounded-md border border-white/10 bg-zinc-950 px-2 py-1 text-[10px] font-medium text-zinc-200 opacity-0 shadow-lg transition-opacity duration-150 delay-75 group-hover/logout:opacity-100">
-                Sign out
+              <span className={`pointer-events-none absolute right-0 top-full mt-1 z-[200] w-max opacity-0 transition-opacity duration-150 delay-75 group-hover/logout:opacity-100 ${ui.tooltip}`}>
+                {tr.accounts.signOut}
               </span>
             </div>
           )
@@ -214,7 +215,7 @@ export function Sidebar({
                 <div className="w-7 h-7 rounded-full border border-dashed border-zinc-700 flex items-center justify-center shrink-0">
                   <Plus className="w-3.5 h-3.5" />
                 </div>
-                <span className="text-xs">Add account</span>
+                <span className="text-xs">{tr.accounts.add}</span>
               </button>
             </>
           )}

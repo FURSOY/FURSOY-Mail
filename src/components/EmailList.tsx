@@ -111,12 +111,12 @@ export function EmailList({
             {activeTab}
           </h2>
           {isUserSyncing && (
-            <span className="text-[10px] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">
+            <span className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">
               Syncing…
             </span>
           )}
           {isBackgroundSyncing && !isUserSyncing && (
-            <span className="text-[10px] text-zinc-600 font-medium">{tr.mail.updatingInBackground}</span>
+            <span className="text-[length:var(--font-size-caption)] text-zinc-600 font-medium">{tr.mail.updatingInBackground}</span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -242,11 +242,11 @@ export function EmailList({
                 </span>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {group.count > 1 && (
-                    <span className="text-[10px] text-zinc-600 tabular-nums">
+                    <span className="text-[length:var(--font-size-caption)] text-zinc-600 tabular-nums">
                       {group.count}
                     </span>
                   )}
-                  <span className="text-[10px] text-zinc-600">{formatDate(mail.date)}</span>
+                  <span className="text-[length:var(--font-size-caption)] text-zinc-600">{formatDate(mail.date)}</span>
                 </div>
               </div>
 
@@ -259,7 +259,7 @@ export function EmailList({
               </h3>
 
               {/* Row 3: snippet */}
-              <p className="mt-0.5 min-w-0 truncate text-[11px] text-zinc-600" title={mail.snippet}>
+              <p className="mt-0.5 min-w-0 truncate text-[length:var(--font-size-metadata)] text-zinc-600" title={mail.snippet}>
                 {snippetPrefix}{mail.snippet}
               </p>
 
@@ -272,11 +272,11 @@ export function EmailList({
                     {acc.picture ? (
                       <img src={acc.picture} className="w-3.5 h-3.5 rounded-full shrink-0" alt="" />
                     ) : (
-                      <div className="w-3.5 h-3.5 rounded-full bg-zinc-700 flex items-center justify-center text-[8px] font-bold text-zinc-400 shrink-0">
+                      <div className="w-3.5 h-3.5 rounded-full bg-zinc-700 flex items-center justify-center text-[length:var(--font-size-micro)] font-bold text-zinc-400 shrink-0">
                         {acc.email[0]?.toUpperCase()}
                       </div>
                     )}
-                    <span className="text-[10px] text-zinc-600 truncate">{acc.email}</span>
+                    <span className="text-[length:var(--font-size-caption)] text-zinc-600 truncate">{acc.email}</span>
                   </div>
                 );
               })()}

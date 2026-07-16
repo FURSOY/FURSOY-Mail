@@ -77,7 +77,7 @@ function ThreadCard({
   const senderName = email.sender.split("<")[0].replace(/"/g, "").trim() || email.sender;
   const recipientDisplay = email.recipient
     ? email.recipient.split(",").map(r => r.split("<")[0].replace(/"/g, "").trim() || r.trim()).join(", ")
-    : "me";
+    : tr.mail.me;
 
   const toggle = async () => {
     if (!expanded && !isActive && lazyBody === null && !lazyLoading) {
@@ -123,8 +123,8 @@ function ThreadCard({
           </div>
           {expanded ? (
             <div className="text-[11px] text-zinc-600 mt-0.5 truncate">
-              <span className="text-zinc-700">to:</span> {recipientDisplay}
-              {email.cc && <> · <span className="text-zinc-700">cc:</span> {email.cc}</>}
+              <span className="text-zinc-700">{tr.mail.toShort}</span> {recipientDisplay}
+              {email.cc && <> · <span className="text-zinc-700">{tr.mail.ccShort}</span> {email.cc}</>}
             </div>
           ) : (
             <p className="text-[11px] text-zinc-600 truncate mt-0.5">{email.snippet}</p>
@@ -589,7 +589,7 @@ export function EmailReader({
 
       {/* Reading Tools Panel */}
       <aside
-        className={`absolute bottom-0 right-0 top-12 z-20 hidden w-72 border-l border-white/10 bg-[#0c0c0e]/95 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl transition-transform duration-200 md:block ${
+        className={`absolute bottom-0 right-0 top-12 z-20 hidden w-72 border-l border-[var(--color-border-default)] bg-[color:var(--color-surface-sidebar)]/95 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl transition-transform duration-200 md:block ${
           readingToolsOpen ? "translate-x-0" : "translate-x-full"
         }`}
         aria-hidden={!readingToolsOpen}
@@ -605,7 +605,7 @@ export function EmailReader({
             <div className="mb-1 text-sm text-zinc-300">{tr.reading.zoom}</div>
             <p className="mb-2 text-[11px] leading-relaxed text-zinc-600">{tr.reading.zoomHint}</p>
             <div className="flex items-center gap-2">
-              <div className="inline-flex items-center rounded-lg border border-white/10 bg-[#09090b]">
+              <div className="inline-flex items-center rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)]">
                 <button type="button" onClick={() => stepMailZoom(-1)} className="flex h-8 w-8 items-center justify-center text-zinc-400 hover:text-zinc-100">
                   <Minus className="h-3.5 w-3.5" />
                 </button>
@@ -618,7 +618,7 @@ export function EmailReader({
                 type="button"
                 onClick={() => persistMailZoom("fit")}
                 className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-                  mailZoom === "fit" ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-zinc-100" : "border-white/10 bg-[#09090b] text-zinc-400 hover:text-zinc-200"
+                  mailZoom === "fit" ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-zinc-100" : "border-[var(--color-border-default)] bg-[var(--color-surface-app)] text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Maximize2 className="h-3.5 w-3.5" />
@@ -628,7 +628,7 @@ export function EmailReader({
           </div>
           <div>
             <div className="mb-2 text-xs font-medium text-zinc-300">{tr.reading.renderMode}</div>
-            <div className="inline-flex rounded-lg border border-white/10 bg-[#09090b] p-1">
+            <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-1">
               {(["full", "simple"] as const).map(mode => (
                 <button
                   key={mode}
@@ -702,7 +702,7 @@ export function EmailReader({
                   <ShieldAlert className="w-4 h-4 text-blue-400" />
                 </div>
                 <div>
-                  <div className="text-[11px] text-blue-400/70 font-medium">Doğrulama Kodu</div>
+                  <div className="text-[11px] text-blue-400/70 font-medium">{tr.mail.verificationCode}</div>
                   <div className="text-lg font-bold text-blue-300 tracking-[0.3em] font-mono">{verificationCode}</div>
                 </div>
               </div>
@@ -716,7 +716,7 @@ export function EmailReader({
                 className="min-w-[7.5rem] justify-center px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-xs font-semibold transition-colors flex items-center gap-2"
               >
                 <Copy className="w-3.5 h-3.5" />
-                {verificationCopyState === "copied" ? "Copied" : "Copy"}
+                {verificationCopyState === "copied" ? tr.common.copied : tr.common.copy}
               </button>
             </div>
           )}
@@ -798,7 +798,7 @@ export function EmailReader({
                 }
                 <span className="text-xs text-zinc-400 truncate">
                   {replyMode === "reply-all" ? (
-                    <>Reply all: <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}{activeMail.cc ? `, ${activeMail.cc}` : ""}</span></>
+                    <>{tr.mail.replyAllPrefix} <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}{activeMail.cc ? `, ${activeMail.cc}` : ""}</span></>
                   ) : (
                     <>{tr.mail.replyTo} <span className="text-zinc-300">{activeMail.sender.split("<")[0].replace(/"/g, "").trim()}</span></>
                   )}
@@ -835,7 +835,7 @@ export function EmailReader({
                 <div className="relative px-3 py-1.5 border-t border-white/[0.06] flex items-center gap-0.5">
                   {/* Link popover */}
                   {linkPopover && (
-                    <div className="absolute bottom-full left-0 mb-1 bg-[#18181b] border border-white/10 rounded-xl p-3 shadow-2xl z-50 w-64">
+                    <div className="absolute bottom-full left-0 mb-1 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] p-3 shadow-2xl z-50 w-64">
                       <div className="flex flex-col gap-2">
                         <input
                           autoFocus
@@ -862,7 +862,7 @@ export function EmailReader({
                             onClick={applyLink}
                             disabled={!linkUrl}
                             className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded-md transition-colors"
-                          >Apply</button>
+                          >{tr.common.apply}</button>
                         </div>
                       </div>
                     </div>
@@ -882,7 +882,7 @@ export function EmailReader({
                     { cmd: "bold",          label: "B",  cls: "font-bold",      title: tr.compose.bold },
                     { cmd: "italic",        label: "I",  cls: "italic",         title: tr.compose.italic },
                     { cmd: "underline",     label: "U",  cls: "underline",      title: tr.compose.underline },
-                    { cmd: "strikeThrough", label: "S",  cls: "line-through",   title: "Strikethrough" },
+                    { cmd: "strikeThrough", label: "S",  cls: "line-through",   title: tr.compose.strikethrough },
                   ] as { cmd: string; label: string; cls: string; title: string }[]).map(({ cmd, label, cls, title }) => (
                     <button
                       key={cmd}
@@ -973,7 +973,7 @@ export function EmailReader({
                   {/* Formatting toggle */}
                   <button
                     type="button"
-                    title="Formatting"
+                    title={tr.compose.formatting}
                     onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                     className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${
                       showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"

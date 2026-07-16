@@ -24,6 +24,14 @@ Implement contained bug fixes and explicitly requested UI/code changes. Ask befo
 
 For user-visible copy, keep English and Turkish locale coverage aligned in `src/i18n.ts`. Preserve the existing Gmail-only product scope unless the user explicitly requests otherwise.
 
+## Design system
+
+- Build new UI and update existing app chrome with the semantic CSS tokens in `src/index.css` and the shared recipes in `src/theme.ts`.
+- Do not add raw application colors, arbitrary font sizes, spacing, radii, shadows, or status colors when an appropriate token or shared recipe exists. If a reusable value is missing, add a semantic token first, then consume it.
+- Prefer names based on purpose (`surface`, `text`, `border`, `action`, `status`) rather than a literal color or one-off component name. Keep theme-aware actions on `--app-accent`, `--app-accent-hover`, `--app-accent-soft`, and `--app-accent-shadow`.
+- Treat email HTML, third-party brand artwork, and the standalone notification document as boundaries: preserve external content styles and keep `notification.html` tokens locally mapped to the app design system.
+- Token-only refactors should preserve the current rendered values. For UI changes, report whether the appearance intentionally changed and list the manual visual checks performed or still required.
+
 ## Verify proportionally
 
 - Frontend change: `npm run build`
