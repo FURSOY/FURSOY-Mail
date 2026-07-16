@@ -328,7 +328,10 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
             active_full_sync_generation INTEGER,
             pending_full_history_id TEXT,
             gmail_inbox_messages_unread INTEGER,
-            gmail_inbox_threads_unread INTEGER
+            gmail_inbox_threads_unread INTEGER,
+            mailbox_sync_status TEXT NOT NULL DEFAULT 'completed',
+            mailbox_sync_error TEXT,
+            mailbox_sync_retry_after INTEGER
         )",
         [],
     )?;
@@ -352,6 +355,18 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
         (
             "gmail_inbox_threads_unread",
             "ALTER TABLE sync_state ADD COLUMN gmail_inbox_threads_unread INTEGER",
+        ),
+        (
+            "mailbox_sync_status",
+            "ALTER TABLE sync_state ADD COLUMN mailbox_sync_status TEXT NOT NULL DEFAULT 'completed'",
+        ),
+        (
+            "mailbox_sync_error",
+            "ALTER TABLE sync_state ADD COLUMN mailbox_sync_error TEXT",
+        ),
+        (
+            "mailbox_sync_retry_after",
+            "ALTER TABLE sync_state ADD COLUMN mailbox_sync_retry_after INTEGER",
         ),
     ] {
         let exists: bool = conn
@@ -1517,6 +1532,88 @@ pub fn has_pending_mailbox_pages(
     }
     .map_err(|e| e.to_string())?;
     Ok(count > 0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailboxSyncState {
+    pub status: String,
+    pub error: Option<String>,
+    pub retry_after: Option<i64>,
+}
+
+pub fn get_mailbox_sync_state(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<Option<MailboxSyncState>, String> {
+    let db_path = get_db_path(app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
+         FROM sync_state WHERE account_id = ?1",
+        params![account_id],
+        |row| {
+            Ok(MailboxSyncState {
+                status: row.get(0)?,
+                error: row.get(1)?,
+                retry_after: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_all_mailbox_sync_states(app: &AppHandle) -> Result<Vec<MailboxSyncState>, String> {
+    let db_path = get_db_path(app);
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
+             FROM sync_state",
+        )
+        .map_err(|e| e.to_string())?;
+    let states = statement
+        .query_map([], |row| {
+            Ok(MailboxSyncState {
+                status: row.get(0)?,
+                error: row.get(1)?,
+                retry_after: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(states)
+}
+
+/// Saves a mailbox worker state only while the owning account generation is
+/// current. This prevents a removed or reset account from gaining new state.
+pub fn set_mailbox_sync_state(
+    app: &AppHandle,
+    account_id: &str,
+    account_generation: i64,
+    status: &str,
+    error: Option<&str>,
+    retry_after: Option<i64>,
+) -> Result<(), String> {
+    let db_path = get_db_path(app);
+    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    ensure_account_generation(&tx, account_id, account_generation).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO sync_state (
+             account_id, mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(account_id) DO UPDATE SET
+             mailbox_sync_status = excluded.mailbox_sync_status,
+             mailbox_sync_error = excluded.mailbox_sync_error,
+             mailbox_sync_retry_after = excluded.mailbox_sync_retry_after",
+        params![account_id, status, error, retry_after],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub fn set_mailbox_cursor(

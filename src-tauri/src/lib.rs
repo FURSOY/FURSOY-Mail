@@ -9,6 +9,7 @@ mod window_state;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Emitter;
+use tokio::sync::oneshot;
 
 /// Per-account sync lock — prevents concurrent syncs for the same account
 #[derive(Default)]
@@ -89,6 +90,43 @@ pub struct SyncState {
     pub workers: Mutex<SyncWorkers>,
 }
 
+type TokenRefreshResult = Result<db::AuthInfo, String>;
+
+/// Shares one in-flight OAuth refresh result with every caller for an account.
+/// Different accounts remain independent and can refresh in parallel.
+#[derive(Default)]
+pub struct TokenRefreshFlights {
+    waiters: Mutex<HashMap<String, Vec<oneshot::Sender<TokenRefreshResult>>>>,
+}
+
+impl TokenRefreshFlights {
+    /// Returns a receiver when another caller already owns this account's
+    /// refresh. `None` means the caller must perform the refresh itself.
+    pub fn join_or_start(&self, account_id: &str) -> Option<oneshot::Receiver<TokenRefreshResult>> {
+        let mut waiters = self.waiters.lock().ok()?;
+        if let Some(account_waiters) = waiters.get_mut(account_id) {
+            let (sender, receiver) = oneshot::channel();
+            account_waiters.push(sender);
+            Some(receiver)
+        } else {
+            waiters.insert(account_id.to_string(), Vec::new());
+            None
+        }
+    }
+
+    pub fn finish(&self, account_id: &str, result: TokenRefreshResult) {
+        let waiters = self
+            .waiters
+            .lock()
+            .ok()
+            .and_then(|mut all| all.remove(account_id))
+            .unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(result.clone());
+        }
+    }
+}
+
 fn is_background_launch() -> bool {
     std::env::args().any(|arg| arg == "--background" || arg == "--hidden" || arg == "--minimized")
 }
@@ -124,6 +162,7 @@ pub fn run() {
         .manage(SyncState {
             workers: Mutex::new(SyncWorkers::default()),
         })
+        .manage(TokenRefreshFlights::default())
         .manage(notify::PendingNotification(Mutex::new(None)))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
@@ -274,7 +313,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::SyncWorkers;
+    use super::{SyncWorkers, TokenRefreshFlights};
 
     #[test]
     fn worker_keeps_ownership_until_the_queued_resync_is_consumed() {
@@ -294,5 +333,36 @@ mod tests {
         assert!(workers.claim_or_request_resync("account-a", 2));
         workers.release("account-a", 1);
         assert!(!workers.claim_or_request_resync("account-a", 2));
+    }
+
+    #[tokio::test]
+    async fn token_refresh_singleflight_shares_the_leader_result_per_account() {
+        let flights = TokenRefreshFlights::default();
+
+        assert!(flights.join_or_start("account-a").is_none());
+        let waiting_a = flights.join_or_start("account-a").expect("join account-a refresh");
+        assert!(flights.join_or_start("account-b").is_none());
+
+        flights.finish("account-a", Err("refresh failed".to_string()));
+        assert_eq!(
+            waiting_a
+                .await
+                .expect("receive account-a result")
+                .expect_err("account-a refresh should fail"),
+            "refresh failed"
+        );
+
+        // Completing account-a does not affect account-b's independent flight.
+        let waiting_b = flights.join_or_start("account-b").expect("join account-b refresh");
+        flights.finish("account-b", Err("other account failed".to_string()));
+        assert_eq!(
+            waiting_b
+                .await
+                .expect("receive account-b result")
+                .expect_err("account-b refresh should fail"),
+            "other account failed"
+        );
+
+        assert!(flights.join_or_start("account-a").is_none());
     }
 }
