@@ -12,9 +12,13 @@ Dependency-free static website for FURSOY Mail.
 
 Serve the `website` directory with any static file server.
 
-## Cloudflare Pages
+## Cloudflare Workers Builds
 
 - Production branch: `main`
+- Worker name: `fursoy-mail`
 - Root directory: `website`
 - Build command: `exit 0`
-- Build output directory: `.`
+- Deploy command: `npx wrangler deploy`
+
+The Worker configuration is stored in `wrangler.jsonc`. No project environment
+variables or package installation are required.
