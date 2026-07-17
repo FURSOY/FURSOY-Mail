@@ -28,6 +28,26 @@
 html {
   min-height: 100%;
   background: var(--background);
+  scrollbar-color: rgba(146, 156, 167, 0.18) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(146, 156, 167, 0.18);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(146, 156, 167, 0.34);
 }
 
 body {
