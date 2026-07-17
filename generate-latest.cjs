@@ -1,8 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const REPO = process.env.GITHUB_REPOSITORY || "FURSOY/mail";
+const REPO = process.env.GITHUB_REPOSITORY || "FURSOY/FURSOY-Mail";
 const PLATFORM = "windows-x86_64";
+const RELEASE_ASSET = "FURSOY.Mail.Windows.x64-setup.exe";
 
 const rootDir = __dirname;
 const packageJsonPath = path.join(rootDir, "package.json");
@@ -82,8 +83,7 @@ const latestJson = {
   platforms: {
     [PLATFORM]: {
       signature,
-      // encodeURIComponent yerine .replace(/ /g, ".") kullanarak boşlukları noktaya çeviriyoruz
-      url: `https://github.com/${REPO}/releases/download/v${version}/${exeFile.replace(/ /g, ".")}`,
+      url: `https://github.com/${REPO}/releases/latest/download/${RELEASE_ASSET}`,
     },
   },
 };
