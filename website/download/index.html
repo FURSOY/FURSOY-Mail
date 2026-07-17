@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#0a0c0e" />
+    <title>Downloading FURSOY Mail</title>
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="simple-page">
+    <main class="simple-shell download-status-page">
+      <a class="brand" href="/" aria-label="FURSOY Mail home">
+        <img src="/favicon.png" width="32" height="32" alt="" />
+        <span>FURSOY Mail</span>
+      </a>
+      <h1>Your download is starting.</h1>
+      <p id="status">Finding the latest Windows installer…</p>
+    </main>
+
+    <script>
+      const releasesUrl =
+        "https://api.github.com/repos/FURSOY/FURSOY-Mail/releases/latest";
+      const fallbackUrl =
+        "https://github.com/FURSOY/FURSOY-Mail/releases/latest";
+
+      async function startDownload() {
+        const status = document.querySelector("#status");
+
+        try {
+          const response = await fetch(releasesUrl, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!response.ok) throw new Error("Release could not be loaded.");
+
+          const release = await response.json();
+          const installer =
+            release.assets.find(
+              (asset) => asset.name === "FURSOY.Mail.Windows.x64-setup.exe",
+            ) ??
+            release.assets.find((asset) =>
+              /FURSOY\.Mail.*x64-setup\.exe$/i.test(asset.name),
+            );
+
+          if (!installer) throw new Error("Installer could not be found.");
+          window.location.replace(installer.browser_download_url);
+        } catch {
+          status.innerHTML =
+            'The automatic download could not start. <a href="' +
+            fallbackUrl +
+            '">Open the latest release</a>.';
+        }
+      }
+
+      startDownload();
+    </script>
+  </body>
+</html>

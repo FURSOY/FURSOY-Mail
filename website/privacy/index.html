@@ -1,32 +1,38 @@
-import type { Metadata } from "next";
-import Link from "next/link";
-
-export const metadata: Metadata = {
-  title: "Privacy Policy",
-  description:
-    "How FURSOY Mail accesses, processes, stores, and protects Google user data.",
-  alternates: { canonical: "/privacy" },
-};
-
-export default function PrivacyPage() {
-  return (
-    <article className="policy">
-      <Link className="brand" href="/">
-        <span className="brand-mark" aria-hidden="true">M</span>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy — FURSOY Mail</title>
+    <meta
+      name="description"
+      content="How FURSOY Mail accesses, processes, stores, and protects Google user data."
+    />
+    <meta name="theme-color" content="#0a0c0e" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://fursoy.com/privacy/" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="simple-page">
+    <article class="simple-shell policy">
+      <a class="brand" href="/" aria-label="FURSOY Mail home">
+        <img src="/favicon.png" width="32" height="32" alt="" />
         <span>FURSOY Mail</span>
-      </Link>
+      </a>
 
       <h1>Privacy Policy</h1>
-      <p className="updated">Last updated: July 17, 2026</p>
+      <p class="updated">Last updated: July 17, 2026</p>
 
       <p>
         FURSOY Mail is a desktop Gmail client focused on fast notifications and
         one-click copying of verification codes. This policy explains what data
-        the app accesses, why it accesses that data, and where it is stored.
+        the app accesses, why it accesses that data, where the data is stored,
+        and the choices available to users.
       </p>
 
       <h2>Data the app accesses</h2>
-      <p>When you connect a Google account, FURSOY Mail can access:</p>
+      <p>When you connect a Google account, FURSOY Mail uses Google OAuth to access:</p>
       <ul>
         <li>your email address, display name, and profile picture;</li>
         <li>Gmail message content and metadata needed by app features;</li>
@@ -45,11 +51,10 @@ export default function PrivacyPage() {
         crash reports, diagnostics, usage statistics, or telemetry.
       </p>
       <p>
-        Use of information received from Google APIs adheres to the{" "}
+        Use of information received from Google APIs adheres to the
         <a href="https://developers.google.com/terms/api-services-user-data-policy">
-          Google API Services User Data Policy
-        </a>
-        , including its Limited Use requirements.
+          Google API Services User Data Policy</a
+        >, including its Limited Use requirements.
       </p>
 
       <h2>Storage and transfers</h2>
@@ -69,6 +74,10 @@ export default function PrivacyPage() {
         cache and stored credentials. It does not delete messages from Gmail
         unless you separately request a Gmail deletion action.
       </p>
+      <p>
+        You can revoke FURSOY Mail's access at any time from your Google
+        Account's third-party connections page.
+      </p>
 
       <h2>Security</h2>
       <p>
@@ -80,12 +89,11 @@ export default function PrivacyPage() {
       <h2>Changes and contact</h2>
       <p>
         Material changes are reflected by updating the date above. Privacy
-        questions can be submitted through the{" "}
+        questions can be submitted through the
         <a href="https://github.com/FURSOY/FURSOY-Mail/issues">
-          FURSOY Mail issue tracker
-        </a>
-        .
+          FURSOY Mail issue tracker</a
+        >.
       </p>
     </article>
-  );
-}
+  </body>
+</html>
