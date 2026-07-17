@@ -1,20 +1,20 @@
 # FURSOY Mail website
 
-Minimal public website for FURSOY Mail.
+Dependency-free static website for FURSOY Mail.
 
 ## Routes
 
 - `/` — product overview and Windows download
-- `/download` — resolves and downloads the latest GitHub release installer
-- `/privacy` — public Google user-data privacy policy
+- `/download/` — resolves and downloads the latest GitHub release installer
+- `/privacy/` — public Google user-data privacy policy
 
-## Development
+## Local preview
 
-Requires Node.js 22.13 or newer.
+Serve the `website` directory with any static file server.
 
-```bash
-npm ci
-npm run dev
-```
+## Cloudflare Pages
 
-Run `npm test` for a production build and rendered-page checks.
+- Production branch: `main`
+- Root directory: `website`
+- Build command: `exit 0`
+- Build output directory: `.`
