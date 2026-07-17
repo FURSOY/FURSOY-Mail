@@ -86,7 +86,7 @@ jobs:
           if (!(Test-Path $sig)) { throw "Signature not found: $sig" }
 
           New-Item -ItemType Directory -Force release-assets | Out-Null
-          $asset = "release-assets/FURSOY.Mail_${version}_x64-setup.exe"
+          $asset = "release-assets/FURSOY.Mail.Windows.x64-setup.exe"
           Copy-Item $src $asset -Force
           Copy-Item $sig "$asset.sig" -Force
           Copy-Item latest.json "release-assets/latest.json" -Force
