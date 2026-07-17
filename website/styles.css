@@ -118,7 +118,7 @@ a {
   padding: clamp(64px, 10vh, 116px) 0 96px;
 }
 
-.eyebrow {
+.hero-app-name {
   margin: 0 0 28px;
   display: flex;
   align-items: center;
@@ -126,11 +126,14 @@ a {
   color: var(--accent-bright);
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.4;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.eyebrow span {
+.hero-app-name::before {
+  content: "";
+  flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 50%;
