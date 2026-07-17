@@ -5,7 +5,7 @@ import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
 import type { Account, AppControls, DensityMode, NotificationMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
 
-const PRIVACY_POLICY_URL = "https://github.com/FURSOY/FURSOY-Mail/blob/main/PRIVACY.md";
+const PRIVACY_POLICY_URL = "https://fursoy.com/privacy/";
 
 interface SettingsPanelProps {
   isVisible: boolean;
