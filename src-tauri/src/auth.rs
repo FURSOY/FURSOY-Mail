@@ -8,6 +8,9 @@ use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8123/callback";
+const OAUTH_SCOPES: &str = "https://www.googleapis.com/auth/gmail.modify \
+                           https://www.googleapis.com/auth/userinfo.profile \
+                           https://www.googleapis.com/auth/userinfo.email";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,13 +62,7 @@ fn build_auth_url(client_id: &str, state: &str, code_challenge: &str) -> Result<
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
-        .append_pair(
-            "scope",
-            "https://www.googleapis.com/auth/gmail.modify \
-             https://www.googleapis.com/auth/gmail.send \
-             https://www.googleapis.com/auth/userinfo.profile \
-             https://www.googleapis.com/auth/userinfo.email",
-        );
+        .append_pair("scope", OAUTH_SCOPES);
     Ok(url.to_string())
 }
 
@@ -114,13 +111,13 @@ struct UserInfo {
 const SUCCESS_HTML: &str = "\
 <html><body style='display:flex;justify-content:center;align-items:center;\
 height:100vh;background:#09090b;color:#fff;font-family:sans-serif;'>\
-<h2>Giriş başarılı! Bu sekmeyi kapatabilirsiniz.</h2>\
+<h2>Sign-in successful! You can close this tab.</h2>\
 <script>window.close();</script></body></html>";
 
 const CSRF_HTML: &str = "\
 <html><body style='display:flex;justify-content:center;align-items:center;\
 height:100vh;background:#09090b;color:#f87171;font-family:sans-serif;'>\
-<h2>Güvenlik hatası tespit edildi. Bu sekmeyi kapatın.</h2></body></html>";
+<h2>A security error was detected. Please close this tab and try again.</h2></body></html>";
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
@@ -356,4 +353,30 @@ pub async fn refresh_access_token(
     let result = refresh_access_token_once(app.clone(), &account_id).await;
     flights.finish(&account_id, result.clone());
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_url_requests_only_the_required_scopes() {
+        let url = build_auth_url("client-id", "state", "challenge").expect("auth URL");
+        let parsed = reqwest::Url::parse(&url).expect("valid auth URL");
+        let scope = parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == "scope").then(|| value.into_owned()))
+            .expect("scope query parameter");
+        let scopes: Vec<_> = scope.split_whitespace().collect();
+
+        assert_eq!(
+            scopes,
+            vec![
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+            ]
+        );
+        assert!(!scope.contains("gmail.send"));
+    }
 }

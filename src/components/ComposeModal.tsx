@@ -236,6 +236,9 @@ export function ComposeModal({
     if (composeBody === "" && bodyEditableRef.current) {
       bodyEditableRef.current.innerHTML = "";
       setBodyEmpty(true);
+    } else if (composeBody && bodyEditableRef.current && !bodyEditableRef.current.textContent) {
+      bodyEditableRef.current.textContent = composeBody;
+      setBodyEmpty(false);
     }
   }, [composeBody]);
 
@@ -418,7 +421,7 @@ export function ComposeModal({
                   syncUndoRedo();
                 }}
                 className="outline-none text-sm text-zinc-200 [&_a]:text-blue-400 [&_a]:underline [&_b]:font-bold [&_strong]:font-bold [&_i]:italic [&_em]:italic [&_u]:underline [&_s]:line-through [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5"
-                style={{ wordBreak: "break-word", minHeight: "100%" }}
+                style={{ wordBreak: "break-word", minHeight: "100%", whiteSpace: "pre-wrap" }}
               />
             </div>
 

@@ -362,6 +362,27 @@ export function resolveEmailUrl(url: string | null | undefined): string | null {
   }
 }
 
+export interface MailtoDraft {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export function parseMailtoUrl(url: string): MailtoDraft | null {
+  if (!/^mailto:/i.test(url)) return null;
+  try {
+    const parsed = new URL(url);
+    const to = decodeURIComponent(parsed.pathname).trim();
+    return {
+      to,
+      subject: parsed.searchParams.get("subject") ?? "",
+      body: parsed.searchParams.get("body") ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function findEmailUrl(eventTarget: EventTarget | null): string | null {
   if (!eventTarget || typeof (eventTarget as unknown as Record<string, unknown>).closest !== "function") return null;
   const node = eventTarget as Element;
