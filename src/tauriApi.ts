@@ -48,6 +48,7 @@ export const tauriApi = {
   getAccountAuth: (accountId: string) =>
     invoke<AuthInfo | null>("get_account_auth", { accountId }),
   startGoogleOAuth: () => invoke<AuthInfo>("start_google_oauth"),
+  cancelGoogleOAuth: () => invoke<void>("cancel_google_oauth"),
   refreshAccessToken: (accountId: string) =>
     invoke<AuthInfo>("refresh_access_token", { accountId }),
   removeAccount: (accountId: string) =>

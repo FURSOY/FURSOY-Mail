@@ -1,62 +1,68 @@
 import { Mail, ShieldCheck, Cpu, Zap } from "lucide-react";
 import { useLocale } from "../i18n";
+import { WindowTitlebar } from "./WindowTitlebar";
 
 interface OnboardingProps {
   onConnect: () => void;
+  onCancelConnect: () => void;
   isConnecting: boolean;
+  isWindowMaximized: boolean;
+  onWindowMaximizedChange: (maximized: boolean) => void;
 }
 
-export function Onboarding({ onConnect, isConnecting }: OnboardingProps) {
+export function Onboarding({
+  onConnect,
+  onCancelConnect,
+  isConnecting,
+  isWindowMaximized,
+  onWindowMaximizedChange,
+}: OnboardingProps) {
   const tr = useLocale();
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[var(--color-surface-content)] px-8 select-none">
-      <div className="w-full max-w-sm flex flex-col items-center gap-8">
+    <div className="flex h-screen flex-col overflow-hidden bg-[var(--color-surface-content)] select-none">
+      <WindowTitlebar
+        isMaximized={isWindowMaximized}
+        onMaximizedChange={onWindowMaximizedChange}
+      />
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-8 py-8">
+        <div className="w-full max-w-sm flex flex-col items-center gap-8">
 
-        {/* Logo */}
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-900/40">
-            <Mail className="w-7 h-7 text-white" />
+          {/* Logo */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-900/40">
+              <Mail className="w-7 h-7 text-white" />
+            </div>
+            <div className="text-center">
+              <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">FURSOY Mail</h1>
+              <p className="text-sm text-zinc-500 mt-0.5">{tr.onboarding.tagline}</p>
+            </div>
           </div>
-          <div className="text-center">
-            <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">FURSOY Mail</h1>
-            <p className="text-sm text-zinc-500 mt-0.5">{tr.onboarding.tagline}</p>
+
+          {/* Features */}
+          <div className="w-full flex flex-col gap-3">
+            <Feature icon={<Zap className="w-4 h-4 text-blue-400" />} text={tr.onboarding.otpFeature} />
+            <Feature icon={<ShieldCheck className="w-4 h-4 text-blue-400" />} text={tr.onboarding.privacyFeature} />
+            <Feature icon={<Cpu className="w-4 h-4 text-blue-400" />} text={tr.onboarding.performanceFeature} />
+          </div>
+
+          {/* CTA */}
+          <div className="w-full flex flex-col items-center gap-3">
+            <button
+              onClick={isConnecting ? onCancelConnect : onConnect}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
+            >
+              {isConnecting ? tr.auth.cancelSignIn : (
+                <>
+                  <GoogleIcon />
+                  {tr.onboarding.connect}
+                </>
+              )}
+            </button>
+            <p className="text-xs text-zinc-600 text-center">
+              {tr.onboarding.privacy}
+            </p>
           </div>
         </div>
-
-        {/* Features */}
-        <div className="w-full flex flex-col gap-3">
-          <Feature icon={<Zap className="w-4 h-4 text-blue-400" />} text={tr.onboarding.otpFeature} />
-          <Feature icon={<ShieldCheck className="w-4 h-4 text-blue-400" />} text={tr.onboarding.privacyFeature} />
-          <Feature icon={<Cpu className="w-4 h-4 text-blue-400" />} text={tr.onboarding.performanceFeature} />
-        </div>
-
-        {/* CTA */}
-        <div className="w-full flex flex-col items-center gap-3">
-          <button
-            onClick={onConnect}
-            disabled={isConnecting}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
-          >
-            {isConnecting ? (
-              <>
-                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                </svg>
-                {tr.auth.waitingForBrowser}
-              </>
-            ) : (
-              <>
-                <GoogleIcon />
-                {tr.onboarding.connect}
-              </>
-            )}
-          </button>
-          <p className="text-xs text-zinc-600 text-center">
-            {tr.onboarding.privacy}
-          </p>
-        </div>
-
       </div>
     </div>
   );

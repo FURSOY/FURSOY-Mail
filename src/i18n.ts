@@ -44,6 +44,7 @@ const en = {
   auth: {
     loginWithGoogle: "Sign in with Google",
     waitingForBrowser: "Waiting for browser...",
+    cancelSignIn: "Cancel sign-in",
     loggedInSyncing: "Signed in, syncing...",
     syncComplete: "Sync complete.",
     syncFailedAfterLogin: "Signed in but sync failed. Will retry automatically.",
@@ -327,6 +328,7 @@ const tr = {
   auth: {
     loginWithGoogle: "Google ile giriş yap",
     waitingForBrowser: "Tarayıcı bekleniyor...",
+    cancelSignIn: "Girişi iptal et",
     loggedInSyncing: "Giriş yapıldı, senkronize ediliyor...",
     syncComplete: "Senkronizasyon tamamlandı.",
     syncFailedAfterLogin: "Giriş yapıldı ancak senkronizasyon başarısız. Otomatik yeniden denenecek.",
