@@ -20,10 +20,10 @@ const en = {
   onboarding: {
     tagline: "Instant Gmail notifications on Windows",
     otpFeature: "OTP codes detected and copied in one click",
-    privacyFeature: "No servers — your emails stay on your device",
+    privacyFeature: "No FURSOY servers — mail data is processed locally",
     performanceFeature: "5 MB app · ~45 MB RAM · launches with Windows",
     connect: "Connect Gmail Account",
-    privacy: "Read-only OAuth access · no data leaves your computer",
+    privacy: "Direct Google connection · local mail cache and secure token storage",
   },
   accounts: {
     title: "Accounts",
@@ -241,6 +241,8 @@ const en = {
     otpStrict: "Strict",
     pauseInFullscreen: "Pause background network activity while a fullscreen app is open",
     openMenu: "Open settings menu",
+    privacyDataTitle: "Privacy & data",
+    privacyPolicy: "Read privacy policy",
   },
   messages: {
     accountSessionExpired: "{email} session expired. Please sign in again.",
@@ -301,10 +303,10 @@ const tr = {
   onboarding: {
     tagline: "Windows'ta anlık Gmail bildirimleri",
     otpFeature: "OTP kodlarını algılar ve tek tıkla kopyalar",
-    privacyFeature: "Sunucu yok — e-postalarınız cihazınızda kalır",
+    privacyFeature: "FURSOY sunucusu yok — mail verileri cihazınızda işlenir",
     performanceFeature: "5 MB uygulama · ~45 MB RAM · Windows ile başlar",
     connect: "Gmail Hesabı Bağla",
-    privacy: "Salt okunur OAuth erişimi · verileriniz bilgisayarınızdan çıkmaz",
+    privacy: "Google'a doğrudan bağlantı · yerel mail önbelleği ve güvenli oturum saklama",
   },
   accounts: {
     title: "Hesaplar",
@@ -522,6 +524,8 @@ const tr = {
     otpStrict: "Katı",
     pauseInFullscreen: "Tam ekran bir uygulama açıkken arka plan ağ etkinliğini duraklat",
     openMenu: "Ayarlar menüsünü aç",
+    privacyDataTitle: "Gizlilik ve veriler",
+    privacyPolicy: "Gizlilik politikasını oku",
   },
   messages: {
     accountSessionExpired: "{email} oturumunun süresi doldu. Lütfen yeniden giriş yapın.",

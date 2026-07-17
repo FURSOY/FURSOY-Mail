@@ -19,7 +19,7 @@ import {
   MAIL_TABS, STARTUP_NETWORK_DELAY_MS,
   MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
   isAuthFailure, extractVerificationCode,
-  readMailZoom, readThemePreset, getAutoMailViewMode,
+  readMailZoom, readThemePreset, getAutoMailViewMode, parseMailtoUrl,
 } from "./utils";
 
 import { Sidebar } from "./components/Sidebar";
@@ -290,25 +290,6 @@ function App() {
     accountsRef.current.forEach(a => markAccountExpired(a.id, false));
     if (showMessage) showToast(tr.messages.reloginRequired, "error");
   }, [markAccountExpired, showToast, tr]);
-
-  const openExternalMailUrl = useCallback((url: string) => {
-    if (!url || url.startsWith("#")) return;
-    let normalized: string;
-    try {
-      normalized = new URL(url, "https://mail.google.com/").href;
-    } catch {
-      showToast(tr.actions.openLinkFailed, "error");
-      return;
-    }
-    if (!/^(https?:|mailto:|tel:)/i.test(normalized)) {
-      showToast(tr.actions.openLinkFailed, "error");
-      return;
-    }
-    openUrl(normalized).catch((err) => {
-      console.error("Failed to open mail link:", err);
-      showToast(tr.actions.openLinkFailed, "error");
-    });
-  }, [showToast, tr]);
 
   const shouldDeferNetworkForGameMode = useCallback(async (userInitiated = false) => {
     if (userInitiated || !pauseOnFullscreenRef.current) return false;
@@ -608,6 +589,8 @@ function App() {
     showToast,
   });
 
+  const openExternalMailUrlRef = useRef<(url: string) => void>(() => {});
+
   useEffect(() => {
     let cancelled = false;
     let startupSyncTimer: number | null = null;
@@ -681,7 +664,7 @@ function App() {
 
     const handleIframeMessage = (e: MessageEvent) => {
       if (e.data && e.data.type === "open_url" && typeof e.data.url === "string") {
-        openExternalMailUrl(e.data.url);
+        openExternalMailUrlRef.current(e.data.url);
       }
     };
     window.addEventListener("message", handleIframeMessage);
@@ -694,7 +677,7 @@ function App() {
       clearPeriodicSync();
       unlistenFocus.then(f => f());
     };
-  }, [openExternalMailUrl, shouldDeferNetworkForGameMode, markSessionExpired]);
+  }, [shouldDeferNetworkForGameMode, markSessionExpired]);
 
   useEffect(() => {
     if (!MAIL_TABS.has(activeTab)) {
@@ -1007,6 +990,43 @@ function App() {
     markAccountExpired,
     showToast,
   });
+
+  const openExternalMailUrl = useCallback((url: string) => {
+    if (!url || url.startsWith("#")) return;
+    let normalized: string;
+    try {
+      normalized = new URL(url, "https://mail.google.com/").href;
+    } catch {
+      showToast(tr.actions.openLinkFailed, "error");
+      return;
+    }
+    if (!/^(https?:|mailto:|tel:)/i.test(normalized)) {
+      showToast(tr.actions.openLinkFailed, "error");
+      return;
+    }
+
+    const mailto = parseMailtoUrl(normalized);
+    if (mailto) {
+      setComposeTo(mailto.to);
+      setComposeSubject(mailto.subject);
+      setComposeBody(mailto.body);
+      setComposeHtmlAppend("");
+      setComposeSendError(null);
+      setComposeAccountId(activeAccountId ?? accounts[0]?.id ?? null);
+      setShowCompose(true);
+      return;
+    }
+
+    openUrl(normalized).catch((err) => {
+      console.error("Failed to open mail link:", err);
+      showToast(tr.actions.openLinkFailed, "error");
+    });
+  }, [
+    accounts, activeAccountId, setComposeAccountId, setComposeBody,
+    setComposeHtmlAppend, setComposeSendError, setComposeSubject,
+    setComposeTo, setShowCompose, showToast, tr,
+  ]);
+  openExternalMailUrlRef.current = openExternalMailUrl;
 
   useEffect(() => {
     if (mailViewPreference !== "auto") {

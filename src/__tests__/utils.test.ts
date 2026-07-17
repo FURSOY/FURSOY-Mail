@@ -5,6 +5,7 @@ import {
   isAuthFailure,
   isNoUpdateError,
   minutesFromTime,
+  parseMailtoUrl,
   resolveEmailUrl,
   sanitizeEmailHtml,
 } from "../utils";
@@ -86,6 +87,15 @@ describe("small input helpers", () => {
     expect(resolveEmailUrl("/mail/u/0/#inbox")).toBe("https://mail.google.com/mail/u/0/#inbox");
     expect(resolveEmailUrl("mailto:user@example.test")).toBe("mailto:user@example.test");
     expect(resolveEmailUrl("javascript:alert(1)")).toBeNull();
+  });
+
+  it("parses mailto links into a compose draft", () => {
+    expect(parseMailtoUrl("mailto:user@example.test?subject=Hello%20there&body=First%20line%0ASecond%20line")).toEqual({
+      to: "user@example.test",
+      subject: "Hello there",
+      body: "First line\nSecond line",
+    });
+    expect(parseMailtoUrl("https://example.test")).toBeNull();
   });
 
   it("parses and clamps quiet-hour times", () => {

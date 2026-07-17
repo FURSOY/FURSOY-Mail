@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical, ExternalLink, ShieldCheck } from "lucide-react";
 import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
 import type { Account, AppControls, DensityMode, NotificationMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
+
+const PRIVACY_POLICY_URL = "https://github.com/FURSOY/FURSOY-Mail/blob/main/PRIVACY.md";
 
 interface SettingsPanelProps {
   isVisible: boolean;
@@ -418,6 +421,24 @@ export function SettingsPanel({
                   {isResettingLocalMailbox ? tr.localMailbox.resetting : tr.localMailbox.reset}
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Privacy and data */}
+          <div className={`${ui.card} p-5`}>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-[var(--radius-md)] bg-[var(--app-accent-soft)] p-2 text-[var(--app-accent)]">
+                <ShieldCheck className="h-4 w-4" />
+              </div>
+              <h3 className={`${typography.sectionTitle} min-w-0 flex-1`}>{tr.settings.privacyDataTitle}</h3>
+              <button
+                type="button"
+                onClick={() => void openUrl(PRIVACY_POLICY_URL).catch(() => undefined)}
+                className={`${ui.buttonSecondary} inline-flex items-center gap-2`}
+              >
+                {tr.settings.privacyPolicy}
+                <ExternalLink className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
 
