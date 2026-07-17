@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  Minus, Square, Copy, X, Edit3, Menu, Inbox, AlertTriangle, CheckCircle, XCircle,
+  Edit3, Inbox, AlertTriangle, CheckCircle, XCircle,
 } from "lucide-react";
 import { LocaleContext, locales, type AppLanguage } from "./i18n";
 import { surfaces, themePresets, type ThemePresetName } from "./theme";
@@ -30,6 +30,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { ComposeModal } from "./components/ComposeModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { ToolbarTip } from "./components/ToolbarTip";
+import { WindowTitlebar } from "./components/WindowTitlebar";
 import { useUpdater } from "./hooks/useUpdater";
 import { useAccounts } from "./hooks/useAccounts";
 import { useMailSync } from "./hooks/useMailSync";
@@ -789,12 +790,22 @@ function App() {
       }
       startPeriodicSync();
     } catch (e) {
+      if (String(e).includes("oauth_cancelled")) {
+        setAuthStatus("");
+        return;
+      }
       setAuthStatus(`${tr.auth.loginFailed}: ${e}`);
       setIsUserSyncing(false);
       showToast(`${tr.auth.loginFailed}: ${e}`, "error");
     } finally {
       setIsConnecting(false);
     }
+  }
+
+  async function cancelGoogleLogin() {
+    await tauriApi.cancelGoogleOAuth().catch(() => undefined);
+    setAuthStatus("");
+    setIsConnecting(false);
   }
 
   async function handleLogoutAccount(accountId: string) {
@@ -1126,7 +1137,13 @@ function App() {
   if (accountsLoaded && accounts.length === 0) {
     return (
       <LocaleContext.Provider value={tr}>
-        <Onboarding onConnect={loginWithGoogle} isConnecting={isConnecting} />
+        <Onboarding
+          onConnect={loginWithGoogle}
+          onCancelConnect={cancelGoogleLogin}
+          isConnecting={isConnecting}
+          isWindowMaximized={isWindowMaximized}
+          onWindowMaximizedChange={setIsWindowMaximized}
+        />
       </LocaleContext.Provider>
     );
   }
@@ -1134,61 +1151,15 @@ function App() {
   return (
     <LocaleContext.Provider value={tr}>
     <div className={`flex flex-col h-screen ${surfaces.app} text-[var(--color-text-secondary)] font-sans overflow-hidden select-none`}>
-      {/* CUSTOM TITLEBAR */}
-      <div
-        data-tauri-drag-region
-        className={`relative z-[60] h-9 shrink-0 flex items-center justify-between pl-2 pr-0 border-b border-[var(--color-border-subtle)] ${surfaces.app}`}
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      <WindowTitlebar
+        isMaximized={isWindowMaximized}
+        onMaximizedChange={setIsWindowMaximized}
         onMouseDown={(event) => {
           if (!mobileMenuOpen) return;
           if ((event.target as HTMLElement).closest("button")) return;
           setMobileMenuOpen(false);
         }}
-      >
-        <div data-tauri-drag-region className="flex items-center gap-2 text-xs font-medium text-zinc-500 pl-1">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(open => !open)}
-            className="hidden"
-            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            aria-label={tr.common.openMenu}
-          >
-            <Menu className="h-4 w-4" />
-          </button>
-          <img src="/logo.svg" className="w-4 h-4 object-contain" alt={tr.app.name} />
-          <span className="text-zinc-400">{tr.app.name}</span>
-        </div>
-        <div className="flex items-center" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <button
-            aria-label={tr.common.minimize}
-            title={tr.common.minimize}
-            onClick={() => getCurrentWindow().minimize()}
-            className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 transition-colors"
-          >
-            <Minus className="w-4 h-4" />
-          </button>
-          <button
-            aria-label={isWindowMaximized ? tr.common.restore : tr.common.maximize}
-            title={isWindowMaximized ? tr.common.restore : tr.common.maximize}
-            onClick={async () => {
-              const win = getCurrentWindow();
-              await win.toggleMaximize();
-              setIsWindowMaximized(await win.isMaximized());
-            }}
-            className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 transition-colors"
-          >
-            {isWindowMaximized ? <Copy className="w-3.5 h-3.5" /> : <Square className="w-3 h-3" />}
-          </button>
-          <button
-            aria-label={tr.common.close}
-            title={tr.common.close}
-            onClick={async () => { await getCurrentWindow().hide(); }}
-            className="w-11 h-9 flex items-center justify-center text-zinc-500 hover:bg-red-500/80 hover:text-white transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+      />
 
       <div className="flex flex-1 overflow-hidden">
         <Sidebar

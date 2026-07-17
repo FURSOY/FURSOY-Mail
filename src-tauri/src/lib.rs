@@ -163,6 +163,7 @@ pub fn run() {
             workers: Mutex::new(SyncWorkers::default()),
         })
         .manage(TokenRefreshFlights::default())
+        .manage(auth::OAuthFlowState::default())
         .manage(notify::PendingNotification(Mutex::new(None)))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
@@ -270,6 +271,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             auth::start_google_oauth,
+            auth::cancel_google_oauth,
             auth::refresh_access_token,
             db::get_accounts,
             db::get_account_auth,

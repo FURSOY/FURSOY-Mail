@@ -5,12 +5,18 @@ use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8123/callback";
 const OAUTH_SCOPES: &str = "https://www.googleapis.com/auth/gmail.modify \
                            https://www.googleapis.com/auth/userinfo.profile \
                            https://www.googleapis.com/auth/userinfo.email";
+
+#[derive(Default)]
+pub struct OAuthFlowState {
+    cancel_sender: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -119,6 +125,12 @@ const CSRF_HTML: &str = "\
 height:100vh;background:#09090b;color:#f87171;font-family:sans-serif;'>\
 <h2>A security error was detected. Please close this tab and try again.</h2></body></html>";
 
+const CANCELLED_HTML: &str = "\
+<html><body style='display:flex;justify-content:center;align-items:center;\
+height:100vh;background:#09090b;color:#fff;font-family:sans-serif;'>\
+<h2>Sign-in cancelled. You can close this tab.</h2>\
+<script>window.close();</script></body></html>";
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -133,79 +145,126 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         .await
         .map_err(|_| "Port 8123 kullanimda. Lutfen arkada acik kalan uygulamalari kapatin.")?;
 
-    open_auth_url(&app, auth_url)?;
+    let (cancel_sender, mut cancel_receiver) = oneshot::channel();
+    if let Some(previous) = app
+        .state::<OAuthFlowState>()
+        .cancel_sender
+        .lock()
+        .map_err(|_| "OAuth cancellation state is unavailable.")?
+        .replace(cancel_sender)
+    {
+        let _ = previous.send(());
+    }
 
-    let code_result: Result<Result<String, String>, _> =
-        timeout(Duration::from_secs(120), async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    continue;
-                };
+    if let Err(error) = open_auth_url(&app, auth_url) {
+        let _ = app
+            .state::<OAuthFlowState>()
+            .cancel_sender
+            .lock()
+            .map(|mut sender| sender.take());
+        return Err(error);
+    }
 
-                let mut reader = BufReader::new(&mut stream);
-                let mut request_line = String::new();
+    let callback_result = timeout(Duration::from_secs(120), async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                continue;
+            };
 
-                if reader.read_line(&mut request_line).await.is_err() {
-                    continue;
+            let mut reader = BufReader::new(&mut stream);
+            let mut request_line = String::new();
+
+            if reader.read_line(&mut request_line).await.is_err() {
+                continue;
+            }
+
+            if !request_line.starts_with("GET /callback") {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .await;
+                continue;
+            }
+
+            let after_get = &request_line[4..];
+            let path_end = after_get.find(' ').unwrap_or(after_get.len());
+            let full_url = format!("http://localhost:8123{}", &after_get[..path_end]);
+
+            let url = match reqwest::Url::parse(&full_url) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            let mut code_val = String::new();
+            let mut state_val = String::new();
+            let mut oauth_error = String::new();
+            for (k, v) in url.query_pairs() {
+                match k.as_ref() {
+                    "code" => code_val = v.into_owned(),
+                    "state" => state_val = v.into_owned(),
+                    "error" => oauth_error = v.into_owned(),
+                    _ => {}
                 }
+            }
 
-                if !request_line.starts_with("GET /callback") {
-                    let _ = stream
-                        .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
-                        .await;
-                    continue;
-                }
-
-                let after_get = &request_line[4..];
-                let path_end = after_get.find(' ').unwrap_or(after_get.len());
-                let full_url = format!("http://localhost:8123{}", &after_get[..path_end]);
-
-                let url = match reqwest::Url::parse(&full_url) {
-                    Ok(u) => u,
-                    Err(_) => continue,
-                };
-
-                let mut code_val = String::new();
-                let mut state_val = String::new();
-                for (k, v) in url.query_pairs() {
-                    match k.as_ref() {
-                        "code" => code_val = v.into_owned(),
-                        "state" => state_val = v.into_owned(),
-                        _ => {}
-                    }
-                }
-
-                if code_val.is_empty() {
-                    continue;
-                }
-
-                if state_val != expected_state {
-                    let resp = format!(
-                        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\
-                         Content-Type: text/html; charset=utf-8\r\n\r\n{}",
-                        CSRF_HTML
-                    );
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                    let _ = stream.flush().await;
-                    drop(listener);
-                    return Err(
-                        "Güvenlik hatası: Oturum doğrulaması başarısız. Lütfen tekrar deneyin."
-                            .to_string(),
-                    );
-                }
-
+            if (!code_val.is_empty() || !oauth_error.is_empty()) && state_val != expected_state {
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\
-                     Content-Type: text/html; charset=utf-8\r\n\r\n{}",
-                    SUCCESS_HTML
+                    "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\r\n{}",
+                    CSRF_HTML
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 drop(listener);
-                return Ok(code_val);
+                return Err(
+                    "Güvenlik hatası: Oturum doğrulaması başarısız. Lütfen tekrar deneyin."
+                        .to_string(),
+                );
             }
-        })
-        .await;
+
+            if !oauth_error.is_empty() {
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\r\n{}",
+                    CANCELLED_HTML
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                drop(listener);
+                return Err(if oauth_error == "access_denied" {
+                    "oauth_cancelled".to_string()
+                } else {
+                    format!("Google OAuth error: {oauth_error}")
+                });
+            }
+
+            if code_val.is_empty() {
+                continue;
+            }
+
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\
+                     Content-Type: text/html; charset=utf-8\r\n\r\n{}",
+                SUCCESS_HTML
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.flush().await;
+            drop(listener);
+            return Ok(code_val);
+        }
+    });
+
+    let code_result = tokio::select! {
+        result = callback_result => result,
+        _ = &mut cancel_receiver => {
+            let _ = app.state::<OAuthFlowState>().cancel_sender.lock().map(|mut sender| sender.take());
+            return Err("oauth_cancelled".into());
+        }
+    };
+    let _ = app
+        .state::<OAuthFlowState>()
+        .cancel_sender
+        .lock()
+        .map(|mut sender| sender.take());
 
     let code = match code_result {
         Ok(Ok(c)) => c,
@@ -353,6 +412,19 @@ pub async fn refresh_access_token(
     let result = refresh_access_token_once(app.clone(), &account_id).await;
     flights.finish(&account_id, result.clone());
     result
+}
+
+#[tauri::command]
+pub fn cancel_google_oauth(state: tauri::State<'_, OAuthFlowState>) -> Result<(), String> {
+    if let Some(sender) = state
+        .cancel_sender
+        .lock()
+        .map_err(|_| "OAuth cancellation state is unavailable.")?
+        .take()
+    {
+        let _ = sender.send(());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
