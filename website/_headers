@@ -5,7 +5,7 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 /styles.css
-  Cache-Control: public, max-age=3600
+  Cache-Control: no-cache, must-revalidate
 
 /favicon.png
   Cache-Control: public, max-age=604800
