@@ -150,7 +150,17 @@ h1 {
   letter-spacing: -0.075em;
 }
 
-h1 em {
+.hero-tagline {
+  max-width: 780px;
+  margin: 20px 0 0;
+  color: var(--text);
+  font-size: clamp(36px, 5.4vw, 72px);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.06em;
+}
+
+.hero-tagline em {
   display: block;
   color: var(--text-muted);
   font-style: normal;
@@ -530,6 +540,10 @@ footer a:focus-visible,
 
   h1 {
     font-size: clamp(55px, 17vw, 78px);
+  }
+
+  .hero-tagline {
+    font-size: clamp(34px, 11vw, 54px);
   }
 
   .lead {
