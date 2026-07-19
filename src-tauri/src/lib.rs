@@ -3,13 +3,29 @@ mod db;
 mod gmail;
 mod img_proxy;
 mod notify;
+mod safe_fs;
 mod settings;
 mod window_state;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
+
+fn window_label_allowed(label: &str, allowed: &[&str]) -> bool {
+    allowed.contains(&label)
+}
+
+pub(crate) fn require_command_window(
+    window: &tauri::WebviewWindow,
+    allowed: &[&str],
+) -> Result<(), String> {
+    if window_label_allowed(window.label(), allowed) {
+        Ok(())
+    } else {
+        Err("This window is not authorized to perform this action.".to_string())
+    }
+}
 
 /// Per-account sync lock — prevents concurrent syncs for the same account
 #[derive(Default)]
@@ -133,7 +149,18 @@ fn is_background_launch() -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            if let Err(error) = notify::show_main_window(&window) {
+                eprintln!("[WINDOW] {error}");
+            }
+        }
+    }));
+
+    builder
         .register_asynchronous_uri_scheme_protocol("mailimg", |_app, request, responder| {
             let uri = request.uri().to_string();
             tauri::async_runtime::spawn(async move {
@@ -167,14 +194,20 @@ pub fn run() {
         .manage(notify::PendingNotification(Mutex::new(None)))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
-                window_state::save_window_state(window);
+                if let Err(error) = window_state::save_window_state(window) {
+                    eprintln!("[WINDOW_STATE] {error}");
+                }
                 window_state::save_window_state_after_transition(window.clone());
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "main" {
-                    window_state::save_window_state(window);
-                    let _ = window.hide();
-                    api.prevent_close();
+                    if let Err(error) = window_state::save_window_state(window) {
+                        eprintln!("[WINDOW_STATE] {error}");
+                    }
+                    match window.hide() {
+                        Ok(()) => api.prevent_close(),
+                        Err(error) => eprintln!("[WINDOW] main window could not be hidden: {error}"),
+                    }
                 }
             }
             _ => {}
@@ -185,13 +218,24 @@ pub fn run() {
             let _ = dotenvy::dotenv();
 
             db::init_db(app.handle()).expect("Failed to initialize database");
-            window_state::restore_window_state(app.handle());
+            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            if let Err(error) = settings::ensure_default_mail_registration() {
+                eprintln!("Default mail registration failed: {error}");
+            }
+            if let Err(error) = window_state::restore_window_state(app.handle()) {
+                eprintln!("[WINDOW_STATE] {error}");
+            }
             if let Some(window) = app.get_webview_window("main") {
                 if background_launch {
-                    let _ = window.hide();
+                    if let Err(error) = window.hide() {
+                        eprintln!("[WINDOW] background launch could not hide main window: {error}");
+                    }
                 } else {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    if let Err(error) = window.show() {
+                        eprintln!("[WINDOW] main window could not be shown: {error}");
+                    } else if let Err(error) = window.set_focus() {
+                        eprintln!("[WINDOW] main window could not be focused: {error}");
+                    }
                 }
             }
 
@@ -225,25 +269,65 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "toggle_mute_notifications" => {
-                        let mut controls = settings::read_app_controls(app);
+                        let previous = settings::read_app_controls(app);
+                        let mut controls = previous.clone();
                         controls.notification_mode = if controls.notifications_disabled() {
                             "all".into()
                         } else {
                             "off".into()
                         };
-                        let _ = settings::write_app_controls(app, &controls);
-                        let _ = mute_item.set_checked(controls.notifications_disabled());
-                        let _ = app.emit("app-controls-changed", controls);
+                        if let Err(error) = settings::write_app_controls(app, &controls) {
+                            eprintln!("[TRAY] notification setting could not be saved: {error}");
+                            return;
+                        }
+                        if let Err(error) =
+                            mute_item.set_checked(controls.notifications_disabled())
+                        {
+                            if settings::write_app_controls(app, &previous).is_err() {
+                                eprintln!("[TRAY] notification menu update and rollback failed");
+                            }
+                            eprintln!("[TRAY] notification menu could not be updated: {error}");
+                            return;
+                        }
+                        if let Err(error) = app.emit("app-controls-changed", controls) {
+                            let rollback = settings::write_app_controls(app, &previous);
+                            let menu_rollback =
+                                mute_item.set_checked(previous.notifications_disabled());
+                            if rollback.is_err() || menu_rollback.is_err() {
+                                eprintln!("[TRAY] notification setting event and rollback failed");
+                            } else {
+                                eprintln!("[TRAY] notification setting event failed: {error}");
+                            }
+                        }
                     }
                     "toggle_pause_sync" => {
-                        let mut controls = settings::read_app_controls(app);
+                        let previous = settings::read_app_controls(app);
+                        let mut controls = previous.clone();
                         controls.mail_sync_paused = !controls.mail_sync_paused;
-                        let _ = settings::write_app_controls(app, &controls);
-                        let _ = pause_item.set_checked(controls.mail_sync_paused);
-                        let _ = app.emit("app-controls-changed", controls);
+                        if let Err(error) = settings::write_app_controls(app, &controls) {
+                            eprintln!("[TRAY] sync setting could not be saved: {error}");
+                            return;
+                        }
+                        if let Err(error) = pause_item.set_checked(controls.mail_sync_paused) {
+                            if settings::write_app_controls(app, &previous).is_err() {
+                                eprintln!("[TRAY] sync menu update and rollback failed");
+                            }
+                            eprintln!("[TRAY] sync menu could not be updated: {error}");
+                            return;
+                        }
+                        if let Err(error) = app.emit("app-controls-changed", controls) {
+                            let rollback = settings::write_app_controls(app, &previous);
+                            let menu_rollback =
+                                pause_item.set_checked(previous.mail_sync_paused);
+                            if rollback.is_err() || menu_rollback.is_err() {
+                                eprintln!("[TRAY] sync setting event and rollback failed");
+                            } else {
+                                eprintln!("[TRAY] sync setting event failed: {error}");
+                            }
+                        }
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -256,7 +340,9 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
-                            notify::show_main_window(&window);
+                            if let Err(error) = notify::show_main_window(&window) {
+                                eprintln!("[WINDOW] {error}");
+                            }
                         }
                     }
                 })
@@ -268,6 +354,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             auth::start_google_oauth,
@@ -275,7 +362,7 @@ pub fn run() {
             auth::refresh_access_token,
             db::get_accounts,
             db::get_account_auth,
-            db::remove_account,
+            auth::remove_account,
             db::reorder_accounts,
             db::search_contacts,
             db::get_local_emails,
@@ -297,6 +384,7 @@ pub fn run() {
             gmail::permanently_delete,
             gmail::send_reply,
             gmail::send_email,
+            gmail::verify_sent_message,
             gmail::fetch_attachment_data,
             gmail::save_and_reveal_attachment,
             db::get_email_attachments,
@@ -311,7 +399,8 @@ pub fn run() {
             settings::set_app_controls,
             settings::set_notifications_muted,
             settings::set_mail_sync_paused,
-            settings::set_app_language
+            settings::set_app_language,
+            settings::open_default_mail_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -319,7 +408,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{SyncWorkers, TokenRefreshFlights};
+    use super::{window_label_allowed, SyncWorkers, TokenRefreshFlights};
+
+    #[test]
+    fn command_window_allowlist_is_exact() {
+        assert!(window_label_allowed("main", &["main"]));
+        assert!(window_label_allowed("notification", &["notification"]));
+        assert!(!window_label_allowed("notification", &["main"]));
+        assert!(!window_label_allowed("main-preview", &["main"]));
+    }
 
     #[test]
     fn worker_keeps_ownership_until_the_queued_resync_is_consumed() {

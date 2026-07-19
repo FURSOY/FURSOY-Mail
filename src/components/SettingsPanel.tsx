@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical, ExternalLink, ShieldCheck } from "lucide-react";
+import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical, ExternalLink, ShieldCheck, Mail } from "lucide-react";
 import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
+import { tauriApi } from "../tauriApi";
 import type { Account, AppControls, DensityMode, NotificationMode, OtpMode, RemoteImageMode, RenderMode } from "../types";
 
 const PRIVACY_POLICY_URL = "https://fursoy.com/privacy/";
@@ -47,6 +48,7 @@ interface SettingsPanelProps {
 
   onResetLocalMailbox: () => void;
   isResettingLocalMailbox: boolean;
+  onShowToast: (message: string, type?: "error" | "success" | "info") => void;
 
   currentVersion: string;
   isCheckingUpdate: boolean;
@@ -74,6 +76,7 @@ export function SettingsPanel({
   otpMode, setOtpMode, appLanguage, setAppLanguage, pauseOnFullscreen, setPauseOnFullscreen,
   onResetLocalMailbox,
   isResettingLocalMailbox,
+  onShowToast,
   currentVersion, isCheckingUpdate, updateAvailable, updateProgress, updateError, updateStatus,
   onCheckForUpdates, onInstallUpdate,
   accounts, onAddAccount, onLogoutAccount, onReorderAccounts,
@@ -81,7 +84,20 @@ export function SettingsPanel({
   const tr = useLocale();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [defaultMailLoading, setDefaultMailLoading] = useState(false);
   const dragStateRef = useRef({ from: null as number | null, over: null as number | null });
+
+  const openDefaultMailSettings = useCallback(async () => {
+    setDefaultMailLoading(true);
+    try {
+      await tauriApi.openDefaultMailSettings();
+    } catch (error) {
+      console.error("Failed to open default mail settings:", error);
+      onShowToast(tr.defaultMail.failed, "error");
+    } finally {
+      setDefaultMailLoading(false);
+    }
+  }, [onShowToast, tr.defaultMail.failed]);
 
   const startDrag = useCallback((index: number) => {
     dragStateRef.current = { from: index, over: null };
@@ -275,6 +291,20 @@ export function SettingsPanel({
                   <span className="text-sm text-[var(--color-text-secondary)]">{tr.startup.launchAtStartup}</span>
                 </label>
               </div>
+              <div className="sm:col-span-2 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-app)] p-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="rounded-[var(--radius-sm)] bg-[var(--app-accent-soft)] p-2 text-[var(--app-accent)]">
+                    <Mail className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-[var(--color-text-secondary)]">{tr.defaultMail.title}</div>
+                    <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-text-subtle)]">{tr.defaultMail.description}</p>
+                  </div>
+                  <button type="button" onClick={() => void openDefaultMailSettings()} disabled={defaultMailLoading} className={ui.buttonSecondary}>
+                    {defaultMailLoading ? tr.defaultMail.opening : tr.defaultMail.action}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -414,10 +444,10 @@ export function SettingsPanel({
                   ))}
                 </div>
               </div>
-              <div className="rounded-[var(--radius-md)] border border-[var(--color-status-warning)]/20 bg-[var(--color-status-warning-soft)] p-3">
+              <div className="rounded-[var(--radius-md)] border border-[var(--color-status-warning)] bg-[var(--color-status-warning-soft)] p-3">
                 <div className="text-xs font-medium text-[var(--color-text-secondary)]">{tr.localMailbox.title}</div>
                 <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-text-subtle)]">{tr.localMailbox.description}</p>
-                <button type="button" onClick={onResetLocalMailbox} disabled={isResettingLocalMailbox} className="mt-3 rounded-[var(--radius-sm)] border border-[var(--color-status-warning)]/30 px-3 py-1.5 text-xs text-[var(--color-status-warning)] transition-colors hover:bg-[var(--color-status-warning-soft)] disabled:cursor-wait disabled:opacity-60">
+                <button type="button" onClick={onResetLocalMailbox} disabled={isResettingLocalMailbox} className="mt-3 rounded-[var(--radius-sm)] border border-[var(--color-status-warning)] bg-[var(--color-status-warning-soft)] px-3 py-1.5 text-xs text-[var(--color-status-warning)] transition-colors hover:bg-[var(--color-status-warning-soft)] disabled:cursor-wait disabled:opacity-60">
                   {isResettingLocalMailbox ? tr.localMailbox.resetting : tr.localMailbox.reset}
                 </button>
               </div>

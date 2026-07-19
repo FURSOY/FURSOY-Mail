@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8123/callback";
+const MAX_CALLBACK_REQUEST_LINE: usize = 8 * 1024;
+const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const OAUTH_SCOPES: &str = "https://www.googleapis.com/auth/gmail.modify \
                            https://www.googleapis.com/auth/userinfo.profile \
                            https://www.googleapis.com/auth/userinfo.email";
@@ -48,10 +50,6 @@ fn read_credential(name: &str, embedded: Option<&str>) -> Result<String, String>
 
 fn get_client_id() -> Result<String, String> {
     read_credential("GOOGLE_CLIENT_ID", option_env!("GOOGLE_CLIENT_ID"))
-}
-
-fn get_client_secret() -> Result<String, String> {
-    read_credential("GOOGLE_CLIENT_SECRET", option_env!("GOOGLE_CLIENT_SECRET"))
 }
 
 // ── OAuth URL ─────────────────────────────────────────────────────────────────
@@ -97,19 +95,57 @@ fn open_auth_url(app: &tauri::AppHandle, auth_url: String) -> Result<(), String>
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct AuthResponse {
     pub access_token: String,
     pub refresh_token: Option<String>,
-    pub expires_in: i32,
-    pub token_type: String,
-    pub scope: String,
+    pub expires_in: i64,
+    pub token_type: Option<String>,
+    pub scope: Option<String>,
+    pub refresh_token_expires_in: Option<i64>,
 }
 
 #[derive(Deserialize)]
 struct UserInfo {
     email: String,
     picture: Option<String>,
+}
+
+fn token_expiry(expires_in: i64) -> Result<i64, String> {
+    if expires_in <= 0 {
+        return Err("Google geçersiz bir token süresi döndürdü.".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Sistem saati geçersiz.".to_string())?
+        .as_secs() as i64;
+    now.checked_add(expires_in)
+        .ok_or_else(|| "Token süresi hesaplanamadı.".to_string())
+}
+
+fn validate_token_response(response: &AuthResponse, require_scopes: bool) -> Result<(), String> {
+    if response.access_token.trim().is_empty() {
+        return Err("Google boş bir access token döndürdü.".to_string());
+    }
+    if response
+        .token_type
+        .as_deref()
+        .is_some_and(|token_type| !token_type.eq_ignore_ascii_case("Bearer"))
+    {
+        return Err("Google desteklenmeyen bir token türü döndürdü.".to_string());
+    }
+    if require_scopes {
+        let granted = response
+            .scope
+            .as_deref()
+            .ok_or_else(|| "Google verilen izin kapsamlarını döndürmedi.".to_string())?;
+        for required in OAUTH_SCOPES.split_whitespace() {
+            if !granted.split_whitespace().any(|scope| scope == required) {
+                return Err(format!("Gerekli Google izni verilmedi: {required}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Callback HTML ─────────────────────────────────────────────────────────────
@@ -134,7 +170,11 @@ height:100vh;background:#09090b;color:#fff;font-family:sans-serif;'>\
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::AuthInfo, String> {
+pub async fn start_google_oauth(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<crate::db::AuthInfo, String> {
+    crate::require_command_window(&window, &["main"])?;
     let client_id = get_client_id()?;
 
     let expected_state = generate_random_string(32);
@@ -171,14 +211,27 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
                 continue;
             };
 
-            let mut reader = BufReader::new(&mut stream);
+            let reader = BufReader::new(&mut stream);
             let mut request_line = String::new();
+            let mut limited_reader =
+                reader.take((MAX_CALLBACK_REQUEST_LINE.saturating_add(1)) as u64);
+            let read_result =
+                timeout(CALLBACK_READ_TIMEOUT, limited_reader.read_line(&mut request_line)).await;
+            drop(limited_reader);
 
-            if reader.read_line(&mut request_line).await.is_err() {
+            if !matches!(read_result, Ok(Ok(bytes)) if bytes > 0)
+                || request_line.len() > MAX_CALLBACK_REQUEST_LINE
+                || !request_line.ends_with('\n')
+            {
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 414 URI Too Long\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
                 continue;
             }
 
-            if !request_line.starts_with("GET /callback") {
+            if !request_line.starts_with("GET ") {
                 let _ = stream
                     .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
                     .await;
@@ -193,6 +246,12 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
                 Ok(u) => u,
                 Err(_) => continue,
             };
+            if url.path() != "/callback" {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .await;
+                continue;
+            }
 
             let mut code_val = String::new();
             let mut state_val = String::new();
@@ -287,26 +346,56 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
         .bearer_auth(&auth_resp.access_token)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Google kullanici bilgisi istegi basarisiz oldu.".to_string())?;
 
-    let user_info: UserInfo = user_res.json().await.map_err(|e| e.to_string())?;
+    if !user_res.status().is_success() {
+        return Err(format!("Google kullanıcı bilgisi alınamadı: {}", user_res.status()));
+    }
+    let user_info: UserInfo = user_res
+        .json()
+        .await
+        .map_err(|_| "Google kullanici bilgisi yaniti okunamadi.".to_string())?;
+    if user_info.email.trim().is_empty() {
+        return Err("Google hesabı e-posta adresi döndürmedi.".to_string());
+    }
     let picture = user_info.picture.unwrap_or_default();
 
-    // Reuse existing refresh token if Google didn't send a new one
-    let existing_refresh = crate::db::load_tokens(&user_info.email)
-        .map(|(_, r)| r)
+    // Keep the previous credential so a later database failure can restore it.
+    let previous_tokens = crate::db::load_tokens(&user_info.email);
+    let existing_refresh = previous_tokens
+        .as_ref()
+        .map(|tokens| tokens.refresh_token.clone())
         .unwrap_or_default();
     let refresh_token = auth_resp.refresh_token.unwrap_or(existing_refresh);
+    if refresh_token.is_empty() {
+        return Err("Google refresh token döndürmedi. Lütfen erişimi yeniden onaylayın.".to_string());
+    }
+    let expires_at = token_expiry(auth_resp.expires_in)?;
 
     // Persist tokens to keyring
-    crate::db::save_tokens(&user_info.email, &auth_resp.access_token, &refresh_token)?;
+    let new_tokens = crate::db::StoredTokens {
+        access_token: auth_resp.access_token.clone(),
+        refresh_token,
+        expires_at: Some(expires_at),
+    };
+    crate::db::save_tokens(&user_info.email, &new_tokens)?;
 
     // Create or update account record
-    let account = crate::db::upsert_account(&app, &user_info.email, &picture)?;
+    let account = match crate::db::upsert_account(&app, &user_info.email, &picture) {
+        Ok(account) => account,
+        Err(error) => {
+            if let Some(tokens) = previous_tokens {
+                let _ = crate::db::save_tokens(&user_info.email, &tokens);
+            } else {
+                let _ = crate::db::delete_tokens(&user_info.email);
+            }
+            return Err(error);
+        }
+    };
 
     Ok(crate::db::AuthInfo {
-        access_token: auth_resp.access_token,
-        refresh_token,
+        authenticated: true,
+        expires_at: Some(expires_at),
         email: account.email,
         picture: account.picture,
     })
@@ -314,7 +403,6 @@ pub async fn start_google_oauth(app: tauri::AppHandle) -> Result<crate::db::Auth
 
 async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<AuthResponse, String> {
     let client_id = get_client_id()?;
-    let client_secret = get_client_secret()?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -322,7 +410,6 @@ async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<Auth
         .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
-        ("client_secret", client_secret.as_str()),
         ("code", code),
         ("grant_type", "authorization_code"),
         ("redirect_uri", REDIRECT_URI),
@@ -334,14 +421,17 @@ async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<Auth
         .form(&params)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Google token istegi basarisiz oldu.".to_string())?;
 
     if res.status().is_success() {
-        let auth_resp: AuthResponse = res.json().await.map_err(|e| e.to_string())?;
+        let auth_resp: AuthResponse = res
+            .json()
+            .await
+            .map_err(|_| "Google token yaniti okunamadi.".to_string())?;
+        validate_token_response(&auth_resp, true)?;
         Ok(auth_resp)
     } else {
-        let text = res.text().await.unwrap_or_default();
-        Err(format!("Token alinamadi: {}", text))
+        Err(format!("Token alinamadi (HTTP {}).", res.status()))
     }
 }
 
@@ -349,15 +439,15 @@ async fn refresh_access_token_once(
     app: tauri::AppHandle,
     account_id: &str,
 ) -> Result<crate::db::AuthInfo, String> {
-    let (_, refresh_token) = crate::db::load_tokens(account_id)
+    let stored_tokens = crate::db::load_tokens(account_id)
         .ok_or_else(|| "Oturum bilgisi bulunamadı. Lütfen tekrar giriş yapın.".to_string())?;
+    let refresh_token = stored_tokens.refresh_token;
 
     if refresh_token.is_empty() {
         return Err("No refresh token available. Please login again.".into());
     }
 
     let client_id = get_client_id()?;
-    let client_secret = get_client_secret()?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -365,7 +455,6 @@ async fn refresh_access_token_once(
         .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
-        ("client_secret", client_secret.as_str()),
         ("refresh_token", refresh_token.as_str()),
         ("grant_type", "refresh_token"),
     ];
@@ -375,33 +464,92 @@ async fn refresh_access_token_once(
         .form(&params)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Google token yenileme istegi basarisiz oldu.".to_string())?;
 
     if !res.status().is_success() {
-        let text = res.text().await.unwrap_or_default();
-        return Err(format!("Token refresh failed: {}", text));
+        return Err(format!("Token refresh failed (HTTP {}).", res.status()));
     }
 
-    let token_resp: AuthResponse = res.json().await.map_err(|e| e.to_string())?;
+    let token_resp: AuthResponse = res
+        .json()
+        .await
+        .map_err(|_| "Google token yenileme yaniti okunamadi.".to_string())?;
+    validate_token_response(&token_resp, false)?;
     let new_refresh = token_resp.refresh_token.unwrap_or(refresh_token);
+    let expires_at = token_expiry(token_resp.expires_in)?;
 
-    crate::db::save_tokens(account_id, &token_resp.access_token, &new_refresh)?;
+    crate::db::save_tokens(
+        account_id,
+        &crate::db::StoredTokens {
+            access_token: token_resp.access_token.clone(),
+            refresh_token: new_refresh,
+            expires_at: Some(expires_at),
+        },
+    )?;
 
     let picture = crate::db::get_account_picture(&app, account_id);
 
     Ok(crate::db::AuthInfo {
-        access_token: token_resp.access_token,
-        refresh_token: new_refresh,
+        authenticated: true,
+        expires_at: Some(expires_at),
         email: account_id.to_string(),
         picture,
     })
 }
 
+async fn revoke_google_token(token: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
+    let response = client
+        .post("https://oauth2.googleapis.com/revoke")
+        .form(&[("token", token)])
+        .send()
+        .await
+        .map_err(|_| "Google oturumu iptal edilemedi.".to_string())?;
+    let status = response.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let detail = response.text().await.unwrap_or_default();
+        let already_invalid = serde_json::from_str::<serde_json::Value>(&detail)
+            .ok()
+            .and_then(|value| value["error"].as_str().map(str::to_string))
+            .is_some_and(|error| error == "invalid_token");
+        if already_invalid {
+            Ok(())
+        } else {
+            Err(format!("Google oturumu iptal edilemedi ({status})."))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn remove_account(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    account_id: String,
+) -> Result<(), String> {
+    crate::require_command_window(&window, &["main"])?;
+    if let Some(tokens) = crate::db::load_tokens(&account_id) {
+        let token_to_revoke = if tokens.refresh_token.is_empty() {
+            tokens.access_token.as_str()
+        } else {
+            tokens.refresh_token.as_str()
+        };
+        revoke_google_token(token_to_revoke).await?;
+    }
+    crate::db::remove_account_data(&app, &account_id)
+}
+
 #[tauri::command]
 pub async fn refresh_access_token(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     account_id: String,
 ) -> Result<crate::db::AuthInfo, String> {
+    crate::require_command_window(&window, &["main"])?;
     let flights = app.state::<crate::TokenRefreshFlights>();
     if let Some(waiter) = flights.join_or_start(&account_id) {
         return waiter
@@ -409,13 +557,46 @@ pub async fn refresh_access_token(
             .map_err(|_| "Token refresh was interrupted".to_string())?;
     }
 
+    struct RefreshLeaderGuard<'a> {
+        flights: &'a crate::TokenRefreshFlights,
+        account_id: String,
+        completed: bool,
+    }
+
+    impl RefreshLeaderGuard<'_> {
+        fn complete(&mut self, result: Result<crate::db::AuthInfo, String>) {
+            self.flights.finish(&self.account_id, result);
+            self.completed = true;
+        }
+    }
+
+    impl Drop for RefreshLeaderGuard<'_> {
+        fn drop(&mut self) {
+            if !self.completed {
+                self.flights.finish(
+                    &self.account_id,
+                    Err("Token refresh was interrupted".to_string()),
+                );
+            }
+        }
+    }
+
+    let mut leader = RefreshLeaderGuard {
+        flights: &flights,
+        account_id: account_id.clone(),
+        completed: false,
+    };
     let result = refresh_access_token_once(app.clone(), &account_id).await;
-    flights.finish(&account_id, result.clone());
+    leader.complete(result.clone());
     result
 }
 
 #[tauri::command]
-pub fn cancel_google_oauth(state: tauri::State<'_, OAuthFlowState>) -> Result<(), String> {
+pub fn cancel_google_oauth(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, OAuthFlowState>,
+) -> Result<(), String> {
+    crate::require_command_window(&window, &["main"])?;
     if let Some(sender) = state
         .cancel_sender
         .lock()
@@ -450,5 +631,31 @@ mod tests {
             ]
         );
         assert!(!scope.contains("gmail.send"));
+    }
+
+    #[test]
+    fn token_response_requires_bearer_and_all_requested_scopes() {
+        let valid = AuthResponse {
+            access_token: "access".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            expires_in: 3600,
+            token_type: Some("Bearer".to_string()),
+            scope: Some(OAUTH_SCOPES.to_string()),
+            refresh_token_expires_in: None,
+        };
+        assert!(validate_token_response(&valid, true).is_ok());
+
+        let wrong_type = AuthResponse {
+            token_type: Some("MAC".to_string()),
+            ..valid
+        };
+        assert!(validate_token_response(&wrong_type, true).is_err());
+
+        let missing_scope = AuthResponse {
+            token_type: Some("Bearer".to_string()),
+            scope: Some("https://www.googleapis.com/auth/userinfo.email".to_string()),
+            ..wrong_type
+        };
+        assert!(validate_token_response(&missing_scope, true).is_err());
     }
 }

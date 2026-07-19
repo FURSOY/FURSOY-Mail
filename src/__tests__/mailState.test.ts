@@ -23,7 +23,7 @@ function mail(id: string, accountId = "account-a", overrides: Partial<EmailSumma
 describe("authenticated mail actions", () => {
   function dependencies() {
     return {
-      refreshAccessToken: vi.fn(async () => ({ access_token: "fresh-token" })),
+      refreshAccessToken: vi.fn(async () => ({ authenticated: true })),
       upsertToken: vi.fn(),
       clearExpiredAccount: vi.fn(),
       markAccountExpired: vi.fn(),
@@ -68,9 +68,9 @@ describe("authenticated mail actions", () => {
       action, ...deps,
     });
 
-    expect(action.mock.calls).toEqual([["expired-token"], ["fresh-token"]]);
+    expect(action.mock.calls).toEqual([["expired-token"], ["active"]]);
     expect(deps.refreshAccessToken).toHaveBeenCalledTimes(1);
-    expect(deps.upsertToken).toHaveBeenCalledWith("account-a", "fresh-token");
+    expect(deps.upsertToken).toHaveBeenCalledWith("account-a", "active");
     expect(deps.clearExpiredAccount).toHaveBeenCalledWith("account-a");
     expect(deps.markAccountExpired).not.toHaveBeenCalled();
   });

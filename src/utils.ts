@@ -70,6 +70,66 @@ export function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
+const COMPOSER_ALLOWED_TAGS = new Set([
+  "A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "I", "LI",
+  "OL", "P", "S", "SPAN", "STRONG", "U", "UL",
+]);
+const COMPOSER_DROP_CONTENT_TAGS = new Set([
+  "BASE", "EMBED", "FORM", "IFRAME", "LINK", "META", "OBJECT",
+  "SCRIPT", "STYLE", "SVG", "TEMPLATE",
+]);
+
+export function normalizeComposerLinkUrl(rawUrl: string): string | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    return /^(https?:|mailto:|tel:)$/i.test(parsed.protocol) ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Produces the small, inert HTML subset accepted by the privileged compose
+ * editor. Received email HTML must never be copied into the main WebView DOM
+ * without passing through this boundary.
+ */
+export function sanitizeComposerHtml(html: string): string {
+  if (!html) return "";
+  if (typeof DOMParser === "undefined") {
+    return escapeHtml(stripHtml(html)).replace(/\n/g, "<br/>");
+  }
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const element of Array.from(doc.body.querySelectorAll("*"))) {
+    if (COMPOSER_DROP_CONTENT_TAGS.has(element.tagName)) {
+      element.remove();
+      continue;
+    }
+    if (!COMPOSER_ALLOWED_TAGS.has(element.tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      continue;
+    }
+
+    const href = element.tagName === "A"
+      ? normalizeComposerLinkUrl(element.getAttribute("href") ?? "")
+      : null;
+    for (const attribute of Array.from(element.attributes)) {
+      element.removeAttribute(attribute.name);
+    }
+    if (element.tagName === "A" && href) {
+      element.setAttribute("href", href);
+    } else if (element.tagName === "A") {
+      element.replaceWith(...Array.from(element.childNodes));
+    }
+  }
+  return doc.body.innerHTML;
+}
+
 export function sanitizeEmailHtml(html: string, fallback: string): string {
   const source = (html || "").trim();
   if (!source) {
@@ -401,6 +461,7 @@ export function findEmailUrl(eventTarget: EventTarget | null): string | null {
 
 export function buildEmailSrcDoc(html: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; script-src 'none'; connect-src 'none'; media-src 'none'; img-src data: http://mailimg.localhost; style-src 'unsafe-inline'; font-src data:"/>
     <style>
       html, body { margin: 0; padding: 0; background: #fff; overflow: hidden; }
       * { box-sizing: border-box; }

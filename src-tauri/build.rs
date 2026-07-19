@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf};
 fn emit_env_from_dotenv(key: &str) {
     if let Ok(value) = env::var(key) {
         println!("cargo:rerun-if-env-changed={key}");
-        if !value.trim().is_empty() {
+        if !value.trim().is_empty() && !value.contains(['\r', '\n']) {
             println!("cargo:rustc-env={key}={value}");
         }
         return;
@@ -29,7 +29,9 @@ fn emit_env_from_dotenv(key: &str) {
 
         if name.trim() == key {
             let value = value.trim().trim_matches('"').trim_matches('\'');
-            println!("cargo:rustc-env={key}={value}");
+            if !value.contains(['\r', '\n']) {
+                println!("cargo:rustc-env={key}={value}");
+            }
             return;
         }
     }
@@ -37,6 +39,5 @@ fn emit_env_from_dotenv(key: &str) {
 
 fn main() {
     emit_env_from_dotenv("GOOGLE_CLIENT_ID");
-    emit_env_from_dotenv("GOOGLE_CLIENT_SECRET");
     tauri_build::build()
 }

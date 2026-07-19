@@ -5,8 +5,10 @@ import {
   isAuthFailure,
   isNoUpdateError,
   minutesFromTime,
+  normalizeComposerLinkUrl,
   parseMailtoUrl,
   resolveEmailUrl,
+  sanitizeComposerHtml,
   sanitizeEmailHtml,
 } from "../utils";
 
@@ -58,6 +60,15 @@ describe("verification code extraction", () => {
 });
 
 describe("email HTML safety", () => {
+  it("keeps received HTML inert at the privileged composer boundary", () => {
+    const sanitized = sanitizeComposerHtml(
+      '<img src=x onerror="alert(1)"><script>alert(2)</script><b>Safe</b>',
+    );
+
+    expect(sanitized).toContain("Safe");
+    expect(sanitized).not.toMatch(/onerror|script|<img/i);
+  });
+
   it("removes executable content and event handlers", () => {
     const sanitized = sanitizeEmailHtml(
       '<html><head><style>.mail{color:red}</style></head><body><a href="javascript:alert(1)" onclick="alert(2)">Open</a><script>alert(3)</script><iframe>hidden</iframe></body></html>',
@@ -87,6 +98,13 @@ describe("small input helpers", () => {
     expect(resolveEmailUrl("/mail/u/0/#inbox")).toBe("https://mail.google.com/mail/u/0/#inbox");
     expect(resolveEmailUrl("mailto:user@example.test")).toBe("mailto:user@example.test");
     expect(resolveEmailUrl("javascript:alert(1)")).toBeNull();
+  });
+
+  it("normalizes composer links and rejects executable schemes", () => {
+    expect(normalizeComposerLinkUrl("example.test/path")).toBe("https://example.test/path");
+    expect(normalizeComposerLinkUrl("mailto:user@example.test")).toBe("mailto:user@example.test");
+    expect(normalizeComposerLinkUrl("javascript:alert(1)")).toBeNull();
+    expect(normalizeComposerLinkUrl("https://example.test/\nBcc:test@example.test")).toBeNull();
   });
 
   it("parses mailto links into a compose draft", () => {

@@ -59,13 +59,14 @@ export function useAccounts() {
     if (expiredAccountsRef.current.has(accountId)) {
       return { newlyExpired: false, allExpired: false };
     }
+    removeToken(accountId);
     expiredAccountsRef.current.add(accountId);
     setExpiredAccountIds(new Set(expiredAccountsRef.current));
     return {
       newlyExpired: true,
       allExpired: accountsRef.current.every(account => expiredAccountsRef.current.has(account.id)),
     };
-  }, []);
+  }, [removeToken]);
 
   const setSessionExpired = useCallback((expired: boolean) => {
     tokenExpiredRef.current = expired;
@@ -88,9 +89,11 @@ export function useAccounts() {
     for (const account of loaded) {
       try {
         const auth = await tauriApi.getAccountAuth(account.id);
-        if (auth?.access_token) tokens[account.id] = auth.access_token;
-      } catch (error) {
-        console.error(`Failed to load auth for ${account.id}:`, error);
+        const stillValid = auth?.expires_at == null
+          || auth.expires_at > Math.floor(Date.now() / 1000) + 30;
+        if (auth?.authenticated && stillValid) tokens[account.id] = "active";
+      } catch {
+        console.error("Failed to load account authentication state.");
       }
     }
     replaceTokens(tokens);
@@ -100,7 +103,7 @@ export function useAccounts() {
   const connectAccount = useCallback(async () => {
     const auth = await tauriApi.startGoogleOAuth();
     const updated = await loadAccounts();
-    upsertToken(auth.email, auth.access_token);
+    upsertToken(auth.email, "active");
     clearExpiredAccount(auth.email);
     if (updated.length === 1) selectAccount(auth.email);
     return { auth, accounts: updated };

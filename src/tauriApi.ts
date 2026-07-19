@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, AppControls, AttachmentPayload, AuthInfo, EmailSummary } from "./types";
+import type { Account, AppControls, AttachmentPayload, AuthInfo, EmailSummary, SendOutcome } from "./types";
 
 export interface MailboxDownloadStatus {
   running: boolean;
@@ -29,6 +29,11 @@ export interface EmailAttachmentInfo {
   size: number;
   attachment_id: string | null;
   data: string | null;
+}
+
+export interface SavedAttachment {
+  fileName: string;
+  revealed: boolean;
 }
 
 export interface CustomNotificationInput {
@@ -65,54 +70,56 @@ export const tauriApi = {
     invoke<MailboxDownloadStatus>("get_mailbox_download_status", { accountId }),
   resetLocalMailCache: (accountId: string | null) =>
     invoke<void>("reset_local_mail_cache", { accountId }),
-  syncEmails: (accountId: string, accessToken: string, force: boolean) =>
-    invoke<void>("sync_emails", { accountId, accessToken, force }),
+  syncEmails: (accountId: string, force: boolean) =>
+    invoke<void>("sync_emails", { accountId, force }),
   getInboxUnreadCount: (accountId: string | null) =>
     invoke<number>("get_inbox_unread_count", { accountId }),
   getEmailBody: (id: string, accountId: string) =>
     invoke<string>("get_email_body", { id, accountId }),
   getEmailAttachments: (emailId: string, accountId: string) =>
     invoke<EmailAttachmentInfo[]>("get_email_attachments", { emailId, accountId }),
-  fetchAttachmentData: (emailId: string, accountId: string, attachmentDbId: string, accessToken: string) =>
-    invoke<string>("fetch_attachment_data", { emailId, accountId, attachmentDbId, accessToken }),
-  saveAndRevealAttachment: (emailId: string, accountId: string, attachmentDbId: string, accessToken: string) =>
-    invoke<string>("save_and_reveal_attachment", { emailId, accountId, attachmentDbId, accessToken }),
-  refreshEmailFromGmail: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("refresh_email_from_gmail", { accountId, accessToken, messageId }),
+  fetchAttachmentData: (emailId: string, accountId: string, attachmentDbId: string) =>
+    invoke<string>("fetch_attachment_data", { emailId, accountId, attachmentDbId }),
+  saveAndRevealAttachment: (emailId: string, accountId: string, attachmentDbId: string) =>
+    invoke<SavedAttachment>("save_and_reveal_attachment", { emailId, accountId, attachmentDbId }),
+  refreshEmailFromGmail: (accountId: string, messageId: string) =>
+    invoke<void>("refresh_email_from_gmail", { accountId, messageId }),
   getThreadEmails: (threadId: string, accountId: string) =>
     invoke<EmailSummary[]>("get_thread_emails", { threadId, accountId }),
-  markAsRead: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("mark_as_read", { accountId, accessToken, messageId }),
-  markAsUnread: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("mark_as_unread", { accountId, accessToken, messageId }),
-  archiveEmail: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("archive_email", { accountId, accessToken, messageId }),
-  trashEmail: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("trash_email", { accountId, accessToken, messageId }),
-  moveToInbox: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("move_to_inbox", { accountId, accessToken, messageId }),
-  permanentlyDelete: (accountId: string, accessToken: string, messageId: string) =>
-    invoke<void>("permanently_delete", { accountId, accessToken, messageId }),
+  markAsRead: (accountId: string, messageId: string) =>
+    invoke<void>("mark_as_read", { accountId, messageId }),
+  markAsUnread: (accountId: string, messageId: string) =>
+    invoke<void>("mark_as_unread", { accountId, messageId }),
+  archiveEmail: (accountId: string, messageId: string) =>
+    invoke<void>("archive_email", { accountId, messageId }),
+  trashEmail: (accountId: string, messageId: string) =>
+    invoke<void>("trash_email", { accountId, messageId }),
+  moveToInbox: (accountId: string, messageId: string) =>
+    invoke<void>("move_to_inbox", { accountId, messageId }),
+  permanentlyDelete: (accountId: string, messageId: string) =>
+    invoke<void>("permanently_delete", { accountId, messageId }),
   sendReply: (input: {
     accountId: string;
-    accessToken: string;
     to: string;
     subject: string;
     body: string;
     threadId: string;
     messageId: string;
     attachments: AttachmentPayload[] | null;
-  }) => invoke<void>("send_reply", { ...input }),
+  }) => invoke<SendOutcome>("send_reply", { ...input }),
   sendEmail: (input: {
-    accessToken: string;
+    accountId: string;
     to: string;
     subject: string;
     body: string;
     attachments: AttachmentPayload[] | null;
-  }) => invoke<void>("send_email", { ...input }),
+  }) => invoke<SendOutcome>("send_email", { ...input }),
+  verifySentMessage: (accountId: string, messageId: string) =>
+    invoke<boolean>("verify_sent_message", { accountId, messageId }),
   getLaunchAtStartup: () => invoke<boolean>("get_launch_at_startup"),
   setLaunchAtStartup: (enabled: boolean) =>
     invoke<boolean>("set_launch_at_startup", { enabled }),
+  openDefaultMailSettings: () => invoke<void>("open_default_mail_settings"),
   getAppControls: () => invoke<AppControls>("get_app_controls"),
   setAppControls: (controls: AppControls) =>
     invoke<AppControls>("set_app_controls", { controls }),

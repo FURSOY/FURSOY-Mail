@@ -22,7 +22,7 @@ function AttachmentIcon({ mimeType }: { mimeType: string }) {
   if (mimeType === "application/pdf" || mimeType.startsWith("text/")) return <FileText className="w-3.5 h-3.5" />;
   return <File className="w-3.5 h-3.5" />;
 }
-import { formatDateFull, buildRenderableEmailHtml, hasRemoteEmailImages } from "../utils";
+import { formatDateFull, buildRenderableEmailHtml, hasRemoteEmailImages, normalizeComposerLinkUrl } from "../utils";
 import { EmailHtmlView } from "./EmailHtmlView";
 import { ToolbarTip } from "./ToolbarTip";
 
@@ -280,6 +280,7 @@ export function EmailReader({
   const savedRangeRef = useRef<Range | null>(null);
   const [replyAttachments, setReplyAttachments] = useState<(AttachmentPayload & { size: number })[]>([]);
   const [replyAttachError, setReplyAttachError] = useState<string | null>(null);
+  const [pendingReplyAttachmentReads, setPendingReplyAttachmentReads] = useState(0);
 
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
@@ -311,10 +312,9 @@ export function EmailReader({
         const imageAtts = atts.filter(a => a.mime_type.startsWith("image/") && !a.data);
         if (imageAtts.length === 0) return;
         const emailId = activeMail.id;
-        const token = accessToken;
         Promise.allSettled(
           imageAtts.map(a =>
-            tauriApi.fetchAttachmentData(emailId, activeMail.account_id, a.id, token)
+            tauriApi.fetchAttachmentData(emailId, activeMail.account_id, a.id)
               .then(data => ({ id: a.id, data }))
           )
         ).then(results => {
@@ -325,20 +325,25 @@ export function EmailReader({
           if (Object.keys(map).length > 0) setThumbnails(map);
         });
       })
-      .catch(() => {});
+      .catch(error => {
+        console.error("Attachment thumbnails could not be loaded:", error);
+      });
   }, [activeMail.id, accessToken]);
 
   const handleDownload = async (att: AttachmentInfo) => {
     if (!accessToken) return;
     setDownloadingId(att.id);
     try {
-      const savedName = await tauriApi.saveAndRevealAttachment(
+      const saved = await tauriApi.saveAndRevealAttachment(
         activeMail.id,
         activeMail.account_id,
         att.id,
-        accessToken,
       );
-      showToast(tr.mail.savedToDownloads.replace("{name}", savedName), "success");
+      showToast(
+        (saved.revealed ? tr.mail.savedToDownloads : tr.mail.savedButRevealFailed)
+          .replace("{name}", saved.fileName),
+        saved.revealed ? "success" : "info",
+      );
     } catch (e) {
       showToast(tr.mail.downloadFailed, "error");
       console.error("Download failed:", e);
@@ -395,13 +400,28 @@ export function EmailReader({
   };
 
   const applyLink = () => {
-    if (!linkUrl) return;
+    const safeUrl = normalizeComposerLinkUrl(linkUrl);
+    if (!safeUrl) return;
     restoreSelection();
     replyEditableRef.current?.focus();
     if (linkText && !window.getSelection()?.toString()) {
-      document.execCommand("insertHTML", false, `<a href="${linkUrl}">${linkText}</a>`);
+      const link = document.createElement("a");
+      link.href = safeUrl;
+      link.textContent = linkText;
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (range && replyEditableRef.current?.contains(range.commonAncestorContainer)) {
+        range.deleteContents();
+        range.insertNode(link);
+        range.setStartAfter(link);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      } else {
+        replyEditableRef.current?.append(link);
+      }
     } else {
-      document.execCommand("createLink", false, linkUrl);
+      document.execCommand("createLink", false, safeUrl);
     }
     setReplyEmpty(!(replyEditableRef.current?.innerText.trim()));
     setLinkPopover(false);
@@ -422,13 +442,39 @@ export function EmailReader({
     if (existingBytes + newBytes > MAX_ATT_BYTES) {
       setReplyAttachError(`Total attachment size cannot exceed 20 MB.`); return;
     }
+    setPendingReplyAttachmentReads(prev => prev + files.length);
     files.forEach(file => {
       const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        setReplyAttachments(prev => [...prev, { filename: file.name, mimeType: file.type || "application/octet-stream", data: base64, size: file.size }]);
+      let settled = false;
+      const finishRead = () => {
+        if (settled) return;
+        settled = true;
+        setPendingReplyAttachmentReads(prev => Math.max(0, prev - 1));
       };
-      reader.readAsDataURL(file);
+      reader.onload = () => {
+        try {
+          if (typeof reader.result !== "string" || !reader.result.includes(",")) {
+            throw new Error("Invalid FileReader result");
+          }
+          const base64 = reader.result.split(",", 2)[1];
+          setReplyAttachments(prev => [...prev, { filename: file.name, mimeType: file.type || "application/octet-stream", data: base64, size: file.size }]);
+        } catch {
+          setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        } finally {
+          finishRead();
+        }
+      };
+      reader.onerror = () => {
+        setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        finishRead();
+      };
+      reader.onabort = reader.onerror;
+      try {
+        reader.readAsDataURL(file);
+      } catch {
+        setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        finishRead();
+      }
     });
   };
 
@@ -443,10 +489,18 @@ export function EmailReader({
       .filter(item => item.kind === "file" && item.type.startsWith("image/"))
       .map(item => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (imageFiles.length === 0) return;
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      addReplyAttachmentFiles(imageFiles);
+      return;
+    }
 
+    const plainText = e.clipboardData.getData("text/plain");
+    const htmlText = e.clipboardData.getData("text/html");
+    if (!plainText && !htmlText) return;
     e.preventDefault();
-    addReplyAttachmentFiles(imageFiles);
+    const safeText = plainText || new DOMParser().parseFromString(htmlText, "text/html").body.textContent || "";
+    document.execCommand("insertText", false, safeText);
   };
 
   // All emails to render: full thread if available, otherwise just activeMail
@@ -1000,7 +1054,7 @@ export function EmailReader({
                   <button
                     type="button"
                     onClick={() => onSendReply(replyAttachments, replyEditableRef.current?.innerHTML ?? "")}
-                    disabled={(replyEmpty && replyAttachments.length === 0) || isSending}
+                    disabled={(replyEmpty && replyAttachments.length === 0) || isSending || pendingReplyAttachmentReads > 0}
                     className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-2"
                   >
                     {isSending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}

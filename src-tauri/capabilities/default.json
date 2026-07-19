@@ -24,6 +24,7 @@
     "notification:allow-notify",
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text",
+    "deep-link:default",
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-unminimize",

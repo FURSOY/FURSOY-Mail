@@ -4,6 +4,7 @@ import { useLocale } from "../i18n";
 import { ui } from "../theme";
 import type { Account, AttachmentPayload } from "../types";
 import { tauriApi, type ContactSuggestion } from "../tauriApi";
+import { normalizeComposerLinkUrl, sanitizeComposerHtml } from "../utils";
 
 // Gmail blocks these extensions (and so do we)
 const BLOCKED_EXTENSIONS = new Set([
@@ -75,6 +76,7 @@ export function ComposeModal({
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
   const [showFormatBar, setShowFormatBar] = useState(false);
   const [linkPopover, setLinkPopover] = useState(false);
   const [linkText, setLinkText] = useState("");
@@ -186,18 +188,44 @@ export function ComposeModal({
       return;
     }
 
+    setPendingAttachmentReads(prev => prev + files.length);
     files.forEach(file => {
       const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        setAttachments(prev => [...prev, {
-          filename: file.name,
-          mimeType: file.type || "application/octet-stream",
-          data: base64,
-          size: file.size,
-        }]);
+      let settled = false;
+      const finishRead = () => {
+        if (settled) return;
+        settled = true;
+        setPendingAttachmentReads(prev => Math.max(0, prev - 1));
       };
-      reader.readAsDataURL(file);
+      reader.onload = () => {
+        try {
+          if (typeof reader.result !== "string" || !reader.result.includes(",")) {
+            throw new Error("Invalid FileReader result");
+          }
+          const base64 = reader.result.split(",", 2)[1];
+          setAttachments(prev => [...prev, {
+            filename: file.name,
+            mimeType: file.type || "application/octet-stream",
+            data: base64,
+            size: file.size,
+          }]);
+        } catch {
+          setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        } finally {
+          finishRead();
+        }
+      };
+      reader.onerror = () => {
+        setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        finishRead();
+      };
+      reader.onabort = reader.onerror;
+      try {
+        reader.readAsDataURL(file);
+      } catch {
+        setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        finishRead();
+      }
     });
   };
 
@@ -212,10 +240,18 @@ export function ComposeModal({
       .filter(item => item.kind === "file" && item.type.startsWith("image/"))
       .map(item => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (imageFiles.length === 0) return;
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      addAttachmentFiles(imageFiles);
+      return;
+    }
 
+    const plainText = e.clipboardData.getData("text/plain");
+    const htmlText = e.clipboardData.getData("text/html");
+    if (!plainText && !htmlText) return;
     e.preventDefault();
-    addAttachmentFiles(imageFiles);
+    const safeText = plainText || new DOMParser().parseFromString(htmlText, "text/html").body.textContent || "";
+    document.execCommand("insertText", false, safeText);
   };
 
   const removeAttachment = (idx: number) => {
@@ -226,7 +262,10 @@ export function ComposeModal({
   useEffect(() => {
     if (!composeHtmlAppend || !bodyEditableRef.current) return;
     const sep = '<br/><br/><div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0;"></div>';
-    bodyEditableRef.current.innerHTML = (bodyEditableRef.current.innerHTML || "") + sep + composeHtmlAppend;
+    bodyEditableRef.current.innerHTML =
+      sanitizeComposerHtml(bodyEditableRef.current.innerHTML || "") +
+      sep +
+      sanitizeComposerHtml(composeHtmlAppend);
     setComposeBody(bodyEditableRef.current.innerHTML);
     setBodyEmpty(false);
   }, [composeHtmlAppend]);
@@ -271,13 +310,28 @@ export function ComposeModal({
   };
 
   const applyLink = () => {
-    if (!linkUrl) return;
+    const safeUrl = normalizeComposerLinkUrl(linkUrl);
+    if (!safeUrl) return;
     restoreSelection();
     bodyEditableRef.current?.focus();
     if (linkText && !window.getSelection()?.toString()) {
-      document.execCommand("insertHTML", false, `<a href="${linkUrl}">${linkText}</a>`);
+      const link = document.createElement("a");
+      link.href = safeUrl;
+      link.textContent = linkText;
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (range && bodyEditableRef.current?.contains(range.commonAncestorContainer)) {
+        range.deleteContents();
+        range.insertNode(link);
+        range.setStartAfter(link);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      } else {
+        bodyEditableRef.current?.append(link);
+      }
     } else {
-      document.execCommand("createLink", false, linkUrl);
+      document.execCommand("createLink", false, safeUrl);
     }
     setBodyEmpty(!(bodyEditableRef.current?.innerText.trim()));
     setLinkPopover(false);
@@ -288,6 +342,7 @@ export function ComposeModal({
   const canSend = composeTo.trim().length > 0
     && composeSubject.trim().length > 0
     && !isSending
+    && pendingAttachmentReads === 0
     && (!bodyEmpty || attachments.length > 0);
 
   return (

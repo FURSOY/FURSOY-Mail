@@ -87,7 +87,6 @@ Create `src-tauri/.env` for local Google OAuth builds:
 
 ```env
 GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
 ```
 
 Never commit OAuth credentials or `.env` files.
