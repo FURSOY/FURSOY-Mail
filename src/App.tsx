@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useTransition } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import {
   Edit3, Inbox, AlertTriangle, CheckCircle, XCircle,
 } from "lucide-react";
@@ -461,7 +462,7 @@ function App() {
         void Promise.allSettled(
           targets
             .filter((target): target is { id: string; token: string } => !!target.token)
-            .map(target => tauriApi.syncEmails(target.id, target.token, true))
+            .map(target => tauriApi.syncEmails(target.id, true))
         );
       }
       setIsMailboxBackfilling(status.running);
@@ -496,18 +497,27 @@ function App() {
           setSelectedMailBody("");
           setSelectedMailBodyId(null);
           resetMailPagination();
-          await tauriApi.resetLocalMailCache(null);
+          try {
+            await tauriApi.resetLocalMailCache(null);
+          } catch (error) {
+            console.error("Failed to reset local mailbox:", error);
+            showToast(tr.localMailbox.resetFailed, "error");
+            void loadEmails(activeTabRef.current);
+            return;
+          }
           recentNotificationsRef.current = {};
           recentlyReadRef.current.clear();
           knownEmailIdsRef.current.clear();
           notificationReadyAccountIdsRef.current.clear();
           notificationBaselineEpochRef.current += 1;
-          await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
-          showToast(tr.localMailbox.resetSuccess, "success");
-        } catch (error) {
-          console.error("Failed to reset local mailbox:", error);
-          showToast(tr.localMailbox.resetFailed, "error");
-          void loadEmails(activeTabRef.current);
+          try {
+            await backgroundSyncRef.current({ userInitiated: true, suppressNotifications: true });
+            showToast(tr.localMailbox.resetSuccess, "success");
+          } catch (error) {
+            console.error("Local mailbox was reset but resync failed:", error);
+            showToast(tr.localMailbox.resyncFailed, "error");
+            void loadEmails(activeTabRef.current);
+          }
         } finally {
           setIsResettingLocalMailbox(false);
         }
@@ -615,7 +625,7 @@ function App() {
                 try {
                   const refreshed = await refreshAccessToken(acc.id);
                   if (cancelled) return;
-                  upsertToken(acc.id, refreshed.access_token);
+                  if (refreshed.authenticated) upsertToken(acc.id, "active");
                   clearExpiredAccount(acc.id);
                 } catch (refreshError) {
                   if (isAuthFailure(refreshError)) {
@@ -626,10 +636,10 @@ function App() {
                     if (!accountTokensRef.current[acc.id]) {
                       markAccountExpired(acc.id);
                     } else {
-                      console.warn(`Startup refresh failed for ${acc.id} (cached token in use):`, refreshError);
+                      console.warn("Startup refresh failed; cached credential remains in use.");
                     }
                   } else {
-                    console.log(`Token refresh skipped for ${acc.id}:`, refreshError);
+                    console.log("Token refresh skipped.");
                   }
                 }
               }
@@ -889,7 +899,7 @@ function App() {
       setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m) ?? null);
       adjustUnreadBadge(mail.account_id, -1);
       try {
-        await tauriApi.markAsRead(mail.account_id, getTokenForEmail(mail), mail.id);
+        await tauriApi.markAsRead(mail.account_id, mail.id);
       } catch (e) {
         console.error("Failed to mark as read:", e);
         recentlyReadRef.current.delete(emailKey(mail));
@@ -1038,6 +1048,34 @@ function App() {
     setComposeTo, setShowCompose, showToast, tr,
   ]);
   openExternalMailUrlRef.current = openExternalMailUrl;
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    const openMailtoUrls = (urls: string[]) => {
+      for (const url of urls) {
+        if (/^mailto:/i.test(url)) openExternalMailUrlRef.current(url);
+      }
+    };
+
+    void getCurrent()
+      .then((urls) => {
+        if (!disposed && urls) openMailtoUrls(urls);
+      })
+      .catch((error) => console.error("Failed to read startup mail link:", error));
+
+    void onOpenUrl(openMailtoUrls)
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch((error) => console.error("Failed to listen for mail links:", error));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (mailViewPreference !== "auto") {
@@ -1232,6 +1270,7 @@ function App() {
           pauseOnFullscreen={pauseOnFullscreen} setPauseOnFullscreen={setPauseOnFullscreen}
           onResetLocalMailbox={resetLocalMailbox}
           isResettingLocalMailbox={isResettingLocalMailbox}
+          onShowToast={showToast}
           currentVersion={currentVersion}
           isCheckingUpdate={isCheckingUpdate}
           updateAvailable={updateAvailable}

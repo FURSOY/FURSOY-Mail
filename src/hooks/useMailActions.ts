@@ -3,7 +3,7 @@ import type { AppLocale } from "../i18n";
 import type { Account, AttachmentPayload, EmailSummary } from "../types";
 import { tauriApi } from "../tauriApi";
 import { inboxUnreadDelta, runAuthenticatedMailAction } from "../mailActionState";
-import { formatDateFull, isAuthFailure } from "../utils";
+import { escapeHtml, formatDateFull, isAuthFailure, sanitizeComposerHtml } from "../utils";
 
 export interface ConfirmModalState {
   message: string;
@@ -26,7 +26,7 @@ interface UseMailActionsOptions {
   loadEmails: (tab?: string) => Promise<EmailSummary[]>;
   refreshUnreadCount: () => Promise<number>;
   adjustUnreadBadge: (accountId: string, delta: number) => void;
-  refreshAccessToken: (accountId: string) => Promise<{ access_token: string }>;
+  refreshAccessToken: (accountId: string) => Promise<{ authenticated: boolean }>;
   upsertToken: (accountId: string, accessToken: string) => void;
   clearExpiredAccount: (accountId: string) => void;
   markAccountExpired: (accountId: string, showMessage?: boolean) => void;
@@ -46,6 +46,23 @@ function actionFailureMessage(summary: string, error: unknown) {
     .replace(/^Error:\s*/i, "")
     .trim();
   return detail ? `${summary}: ${detail.slice(0, 180)}` : summary;
+}
+
+const SENT_VERIFICATION_DELAYS_MS = [0, 1_500, 3_000, 6_000, 10_000];
+
+async function verifyUncertainSend(accountId: string, messageId: string) {
+  for (const delay of SENT_VERIFICATION_DELAYS_MS) {
+    if (delay > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, delay));
+    }
+    try {
+      if (await tauriApi.verifySentMessage(accountId, messageId)) return true;
+    } catch {
+      // A verification request may fail transiently. Keep the send locked and
+      // exhaust the bounded checks; never turn this into an automatic resend.
+    }
+  }
+  return false;
 }
 
 export function useMailActions(options: UseMailActionsOptions) {
@@ -97,7 +114,7 @@ export function useMailActions(options: UseMailActionsOptions) {
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, label: "archive" } : email));
     setSelectedMail(null);
     try {
-      await runAuthenticatedAction(mail, token => tauriApi.archiveEmail(mail.account_id, token, mail.id));
+      await runAuthenticatedAction(mail, () => tauriApi.archiveEmail(mail.account_id, mail.id));
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch (error) {
@@ -115,7 +132,7 @@ export function useMailActions(options: UseMailActionsOptions) {
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, label: "trash" } : email));
     setSelectedMail(null);
     try {
-      await runAuthenticatedAction(mail, token => tauriApi.trashEmail(mail.account_id, token, mail.id));
+      await runAuthenticatedAction(mail, () => tauriApi.trashEmail(mail.account_id, mail.id));
       await loadEmails(activeTabRef.current);
       await refreshUnreadCount();
     } catch (error) {
@@ -133,7 +150,7 @@ export function useMailActions(options: UseMailActionsOptions) {
     setEmails(previous => previous.filter(email => !sameEmail(email, mail)));
     setSelectedMail(null);
     try {
-      await runAuthenticatedAction(mail, token => tauriApi.moveToInbox(mail.account_id, token, mail.id));
+      await runAuthenticatedAction(mail, () => tauriApi.moveToInbox(mail.account_id, mail.id));
       showToast(locale.messages.movedToInbox, "success");
       void loadEmails(activeTabRef.current);
       void refreshUnreadCount();
@@ -153,7 +170,7 @@ export function useMailActions(options: UseMailActionsOptions) {
         setEmails(previous => previous.filter(email => !sameEmail(email, mail)));
         setSelectedMail(null);
         try {
-          await runAuthenticatedAction(mail, token => tauriApi.permanentlyDelete(mail.account_id, token, mail.id));
+          await runAuthenticatedAction(mail, () => tauriApi.permanentlyDelete(mail.account_id, mail.id));
           showToast(locale.messages.permanentlyDeleted, "success");
         } catch (error) {
           console.error("Permanently delete email failed:", error);
@@ -186,12 +203,12 @@ export function useMailActions(options: UseMailActionsOptions) {
         to = senderAddress;
       }
       const quoteHeading = locale.compose.wroteOn
-        .replace("{date}", formatDateFull(activeMail.date))
-        .replace("{sender}", `<b>${activeMail.sender}</b>`);
-      const quotedHtml = `<br/><br/><div style="border-left:3px solid #ccc;padding-left:12px;color:#888;margin-top:8px"><div style="margin-bottom:6px;font-size:12px">${quoteHeading}</div>${selectedMailBody || activeMail.snippet}</div>`;
-      await tauriApi.sendReply({
+        .replace("{date}", escapeHtml(formatDateFull(activeMail.date)))
+        .replace("{sender}", `<b>${escapeHtml(activeMail.sender)}</b>`);
+      const quotedBody = sanitizeComposerHtml(selectedMailBody || activeMail.snippet);
+      const quotedHtml = `<br/><br/><blockquote><div>${quoteHeading}</div>${quotedBody}</blockquote>`;
+      const outcome = await tauriApi.sendReply({
         accountId: activeMail.account_id,
-        accessToken,
         to,
         subject: activeMail.subject,
         body: body + quotedHtml,
@@ -199,6 +216,15 @@ export function useMailActions(options: UseMailActionsOptions) {
         messageId: activeMail.id,
         attachments: attachments.length > 0 ? attachments : null,
       });
+      if (outcome.status === "outcome_unknown") {
+        showToast(locale.messages.sendOutcomeUnknown, "info");
+        const verified = await verifyUncertainSend(activeMail.account_id, outcome.messageId);
+        if (!verified) {
+          showToast(locale.messages.sendOutcomeUnresolved, "error");
+          return;
+        }
+        showToast(locale.messages.sendOutcomeVerified, "success");
+      }
       setReplyText("");
       setShowReply(false);
       setThreadRefreshKey(current => current + 1);
@@ -222,7 +248,8 @@ export function useMailActions(options: UseMailActionsOptions) {
     if (!token) {
       try {
         const refreshed = await refreshAccessToken(sendFromId);
-        token = refreshed.access_token;
+        if (!refreshed.authenticated) throw new Error(locale.messages.reloginRequired);
+        token = "active";
         upsertToken(sendFromId, token);
         clearExpiredAccount(sendFromId);
       } catch {
@@ -232,20 +259,35 @@ export function useMailActions(options: UseMailActionsOptions) {
       }
     }
     try {
-      await tauriApi.sendEmail({
-        accessToken: token,
+      const outcome = await tauriApi.sendEmail({
+        accountId: sendFromId,
         to: composeTo,
         subject: composeSubject,
         body: body + composeHtmlAppend,
         attachments: attachments.length > 0 ? attachments : null,
       });
+      if (outcome.status === "outcome_unknown") {
+        setComposeSendError(locale.messages.sendOutcomeUnknown);
+        showToast(locale.messages.sendOutcomeUnknown, "info");
+        const verified = await verifyUncertainSend(sendFromId, outcome.messageId);
+        if (!verified) {
+          setComposeSendError(locale.messages.sendOutcomeUnresolved);
+          showToast(locale.messages.sendOutcomeUnresolved, "error");
+          return;
+        }
+      }
       setShowCompose(false);
       setComposeTo("");
       setComposeSubject("");
       setComposeBody("");
       setComposeHtmlAppend("");
       setComposeSendError(null);
-      showToast(locale.messages.emailSent, "success");
+      showToast(
+        outcome.status === "outcome_unknown"
+          ? locale.messages.sendOutcomeVerified
+          : locale.messages.emailSent,
+        "success",
+      );
     } catch (error) {
       const raw = String(error);
       if (isAuthFailure(raw)) {
@@ -270,7 +312,7 @@ export function useMailActions(options: UseMailActionsOptions) {
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, unread: true } : email));
     adjustUnreadBadge(mail.account_id, 1);
     try {
-      await runAuthenticatedAction(mail, token => tauriApi.markAsUnread(mail.account_id, token, mail.id));
+      await runAuthenticatedAction(mail, () => tauriApi.markAsUnread(mail.account_id, mail.id));
     } catch (error) {
       console.error("Mark email as unread failed:", error);
       adjustUnreadBadge(mail.account_id, -1);
@@ -280,11 +322,12 @@ export function useMailActions(options: UseMailActionsOptions) {
   }, [activeTabRef, adjustUnreadBadge, getTokenForEmail, loadEmails, locale, recentlyReadRef, runAuthenticatedAction, setEmails, showToast]);
 
   const handleForward = useCallback((mail: EmailSummary) => {
-    const header = `<br/><br/><div style="border-top:1px solid #eee;padding-top:12px;color:#555;font-size:13px"><b>---------- ${locale.compose.forwardedMessage} ----------</b><br/>${locale.compose.senderLabel}: ${mail.sender}<br/>${locale.compose.subject}: ${mail.subject}<br/>${locale.compose.dateLabel}: ${formatDateFull(mail.date)}<br/><br/></div>`;
+    const header = `<br/><br/><div><b>---------- ${escapeHtml(locale.compose.forwardedMessage)} ----------</b><br/>${escapeHtml(locale.compose.senderLabel)}: ${escapeHtml(mail.sender)}<br/>${escapeHtml(locale.compose.subject)}: ${escapeHtml(mail.subject)}<br/>${escapeHtml(locale.compose.dateLabel)}: ${escapeHtml(formatDateFull(mail.date))}<br/><br/></div>`;
+    const forwardedBody = sanitizeComposerHtml(selectedMailBody || mail.snippet);
     setComposeTo("");
     setComposeSubject(`Fwd: ${mail.subject.replace(/^(Fwd:\s*)+/i, "")}`);
     setComposeBody("");
-    setComposeHtmlAppend(header + (selectedMailBody || mail.snippet));
+    setComposeHtmlAppend(header + forwardedBody);
     setComposeAccountId(mail.account_id ?? activeAccountId ?? accounts[0]?.id ?? null);
     setShowCompose(true);
   }, [accounts, activeAccountId, locale, selectedMailBody]);

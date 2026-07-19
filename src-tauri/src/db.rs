@@ -8,39 +8,63 @@ use tauri::{AppHandle, Manager};
 
 const KEYRING_SERVICE: &str = "fursoy-mail";
 
+fn database_error(_: rusqlite::Error) -> String {
+    "Local database operation failed.".to_string()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StoredTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
 fn account_key(email: &str) -> String {
     format!("oauth-{}", email)
 }
 
-pub fn save_tokens(email: &str, access_token: &str, refresh_token: &str) -> Result<(), String> {
-    let data = serde_json::json!({
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-    })
-    .to_string();
+pub fn save_tokens(email: &str, tokens: &StoredTokens) -> Result<(), String> {
+    let data = serde_json::to_string(tokens).map_err(|e| format!("Token serileştirilemedi: {e}"))?;
     Entry::new(KEYRING_SERVICE, &account_key(email))
         .and_then(|e| e.set_password(&data))
         .map_err(|e| format!("Token kaydedilemedi: {e}"))
 }
 
-pub fn load_tokens(email: &str) -> Option<(String, String)> {
+pub fn load_tokens(email: &str) -> Option<StoredTokens> {
     let json = Entry::new(KEYRING_SERVICE, &account_key(email))
         .ok()?
         .get_password()
         .ok()?;
-    let val: serde_json::Value = serde_json::from_str(&json).ok()?;
-    let access = val["access_token"].as_str()?.to_string();
-    let refresh = val["refresh_token"].as_str()?.to_string();
-    if access.is_empty() {
+    let tokens: StoredTokens = serde_json::from_str(&json).ok()?;
+    if tokens.access_token.is_empty() {
         return None;
     }
-    Some((access, refresh))
+    Some(tokens)
 }
 
-pub fn delete_tokens(email: &str) {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, &account_key(email)) {
-        let _ = entry.delete_credential();
+pub fn delete_tokens(email: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, &account_key(email))
+        .map_err(|e| format!("Oturum bilgisi açılamadı: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("Oturum bilgisi silinemedi: {error}")),
     }
+}
+
+pub fn load_account_access_token(account_id: &str) -> Result<String, String> {
+    let tokens = load_tokens(account_id)
+        .ok_or_else(|| "Oturum bilgisi bulunamadı. Lütfen tekrar giriş yapın.".to_string())?;
+    if let Some(expires_at) = tokens.expires_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "Sistem saati geçersiz.".to_string())?
+            .as_secs() as i64;
+        if expires_at <= now.saturating_add(30) {
+            return Err("401: Google oturumunun süresi doldu.".to_string());
+        }
+    }
+    Ok(tokens.access_token)
 }
 
 // Legacy single-account keyring (for one-time migration)
@@ -118,8 +142,8 @@ pub struct EmailSummary {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuthInfo {
-    pub access_token: String,
-    pub refresh_token: String,
+    pub authenticated: bool,
+    pub expires_at: Option<i64>,
     pub email: String,
     pub picture: String,
 }
@@ -447,58 +471,73 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
         [],
     )?;
 
-    // One-time migration: auth row → accounts table
-    let accounts_empty: bool = conn
-        .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get::<_, i64>(0))
-        .map(|c| c == 0)
-        .unwrap_or(true);
-
-    if accounts_empty {
-        let legacy: Option<(String, String, String, String)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1",
-                )
-                .ok();
-            stmt.as_mut().and_then(|s| {
-                s.query_row([], |r| {
-                    Ok((
-                        r.get::<_, String>(0).unwrap_or_default(),
-                        r.get::<_, String>(1).unwrap_or_default(),
-                        r.get::<_, String>(2).unwrap_or_default(),
-                        r.get::<_, String>(3).unwrap_or_default(),
-                    ))
-                })
-                .ok()
+    // One-time migration: auth row → accounts table. Keep this retryable even
+    // after the account row exists: the credential-store write may have failed
+    // during an earlier startup.
+    let legacy: Option<(String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT access_token, refresh_token, email, picture FROM auth WHERE id = 1")
+            .ok();
+        stmt.as_mut().and_then(|s| {
+            s.query_row([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap_or_default(),
+                    r.get::<_, String>(1).unwrap_or_default(),
+                    r.get::<_, String>(2).unwrap_or_default(),
+                    r.get::<_, String>(3).unwrap_or_default(),
+                ))
             })
-        };
+            .ok()
+        })
+    };
 
-        if let Some((sql_access, sql_refresh, email, picture)) = legacy {
-            if !email.is_empty() {
-                conn.execute(
-                    "INSERT OR IGNORE INTO accounts (id, email, picture, display_order) VALUES (?1, ?2, ?3, 0)",
-                    params![email, email, picture],
-                )?;
+    let mut credentials_preserved = true;
+    if let Some((sql_access, sql_refresh, email, picture)) = legacy {
+        if !email.is_empty() {
+            conn.execute(
+                "INSERT OR IGNORE INTO accounts (id, email, picture, display_order) VALUES (?1, ?2, ?3, 0)",
+                params![email, email, picture],
+            )?;
 
-                let (access, refresh) = if let Some(tokens) = load_legacy_tokens() {
+            let legacy_keyring_tokens = load_legacy_tokens();
+            let (access, refresh) = legacy_keyring_tokens
+                .clone()
+                .or_else(|| {
+                    (!sql_access.is_empty()).then_some((sql_access.clone(), sql_refresh.clone()))
+                })
+                .unwrap_or_default();
+
+            if !access.is_empty() {
+                credentials_preserved = save_tokens(
+                    &email,
+                    &StoredTokens {
+                        access_token: access,
+                        refresh_token: refresh,
+                        expires_at: None,
+                    },
+                )
+                .is_ok();
+
+                // Remove the old key only after confirming its replacement.
+                if credentials_preserved && legacy_keyring_tokens.is_some() {
                     delete_legacy_tokens();
-                    tokens
-                } else if !sql_access.is_empty() {
-                    (sql_access, sql_refresh)
-                } else {
-                    (String::new(), String::new())
-                };
-
-                if !access.is_empty() {
-                    let _ = save_tokens(&email, &access, &refresh);
                 }
-
-                conn.execute(
-                    "UPDATE emails SET account_id = ?1 WHERE account_id = ''",
-                    params![email],
-                )?;
             }
+
+            conn.execute(
+                "UPDATE emails SET account_id = ?1 WHERE account_id = ''",
+                params![email],
+            )?;
         }
+    }
+
+    // Never destroy the only recoverable copy when the credential store is
+    // temporarily unavailable. A later startup will retry the migration.
+    if credentials_preserved {
+        conn.execute(
+            "UPDATE auth SET access_token = '', refresh_token = ''",
+            [],
+        )?;
     }
 
     // Any remaining rows without an owner cannot safely be assigned to an
@@ -512,15 +551,19 @@ pub fn init_db(app: &AppHandle) -> Result<()> {
 // ── Account CRUD ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_accounts(app: tauri::AppHandle) -> Result<Vec<Account>, String> {
+pub fn get_accounts(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Vec<Account>, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, email, picture, display_order \
              FROM accounts ORDER BY display_order ASC, id ASC",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     let iter = stmt
         .query_map([], |row| {
             Ok(Account {
@@ -530,14 +573,14 @@ pub fn get_accounts(app: tauri::AppHandle) -> Result<Vec<Account>, String> {
                 display_order: row.get(3)?,
             })
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     Ok(iter.filter_map(|r| r.ok()).collect())
 }
 
 pub fn upsert_account(app: &AppHandle, email: &str, picture: &str) -> Result<Account, String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
+    let tx = conn.transaction().map_err(database_error)?;
 
     let max_order: i32 = tx
         .query_row(
@@ -552,14 +595,14 @@ pub fn upsert_account(app: &AppHandle, email: &str, picture: &str) -> Result<Acc
          ON CONFLICT(account_id) DO NOTHING",
         params![email],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
     let cache_generation: i64 = tx
         .query_row(
             "SELECT generation FROM account_generations WHERE account_id = ?1",
             params![email],
             |r| r.get(0),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
 
     tx.execute(
         "INSERT INTO accounts (id, email, picture, display_order, cache_generation)
@@ -569,7 +612,7 @@ pub fn upsert_account(app: &AppHandle, email: &str, picture: &str) -> Result<Acc
              cache_generation = excluded.cache_generation",
         params![email, email, picture, max_order + 1, cache_generation],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
 
     let display_order: i32 = tx
         .query_row(
@@ -577,8 +620,8 @@ pub fn upsert_account(app: &AppHandle, email: &str, picture: &str) -> Result<Acc
             params![email],
             |r| r.get(0),
         )
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
+    tx.commit().map_err(database_error)?;
 
     Ok(Account {
         id: email.to_string(),
@@ -604,7 +647,7 @@ pub fn get_account_picture(app: &AppHandle, email: &str) -> String {
 
 pub fn get_account_cache_generation(app: &AppHandle, account_id: &str) -> Result<i64, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT cache_generation FROM accounts WHERE id = ?1",
         params![account_id],
@@ -632,15 +675,21 @@ fn ensure_account_generation(
     }
 }
 
-#[tauri::command]
-pub fn remove_account(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
-    let db_path = get_db_path(&app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    remove_account_cache_from_conn(&mut conn, &account_id).map_err(|e| e.to_string())?;
+pub fn remove_account_data(app: &tauri::AppHandle, account_id: &str) -> Result<(), String> {
+    let previous_tokens = load_tokens(account_id);
+    delete_tokens(account_id)?;
 
-    delete_tokens(&account_id);
+    let db_path = get_db_path(&app);
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
+    if let Err(error) = remove_account_cache_from_conn(&mut conn, account_id) {
+        if let Some(tokens) = previous_tokens {
+            let _ = save_tokens(account_id, &tokens);
+        }
+        return Err(database_error(error));
+    }
+
     if let Ok(mut workers) = app.state::<crate::SyncState>().workers.lock() {
-        workers.invalidate_account(&account_id);
+        workers.invalidate_account(account_id);
     }
 
     Ok(())
@@ -725,13 +774,15 @@ fn reset_local_mail_cache_from_conn(
 
 #[tauri::command]
 pub fn reset_local_mail_cache(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     account_id: Option<String>,
 ) -> Result<(), String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     let invalidated_accounts = reset_local_mail_cache_from_conn(&mut conn, account_id.as_deref())
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     if let Ok(mut workers) = app.state::<crate::SyncState>().workers.lock() {
         for account_id in invalidated_accounts {
             workers.invalidate_account(&account_id);
@@ -742,17 +793,59 @@ pub fn reset_local_mail_cache(
 }
 
 #[tauri::command]
-pub fn reorder_accounts(app: tauri::AppHandle, ordered_ids: Vec<String>) -> Result<(), String> {
+pub fn reorder_accounts(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> Result<(), String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
+    reorder_accounts_from_conn(&mut conn, &ordered_ids).map_err(database_error)
+}
+
+pub fn email_belongs_to_account(
+    app: &AppHandle,
+    email_id: &str,
+    account_id: &str,
+) -> Result<bool, String> {
+    let db_path = get_db_path(app);
+    let conn = Connection::open(db_path).map_err(database_error)?;
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM emails WHERE id = ?1 AND account_id = ?2
+         )",
+        params![email_id, account_id],
+        |row| row.get(0),
+    )
+    .map_err(database_error)
+}
+
+fn reorder_accounts_from_conn(conn: &mut Connection, ordered_ids: &[String]) -> Result<()> {
+    let mut statement = conn.prepare("SELECT id FROM accounts")?;
+    let existing_ids: std::collections::HashSet<String> = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    drop(statement);
+    let requested_ids: std::collections::HashSet<&str> =
+        ordered_ids.iter().map(String::as_str).collect();
+    if requested_ids.len() != ordered_ids.len()
+        || ordered_ids.len() != existing_ids.len()
+        || !ordered_ids.iter().all(|id| existing_ids.contains(id))
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "ordered_ids must contain every account exactly once".to_string(),
+        ));
+    }
+
+    let tx = conn.transaction()?;
     for (i, id) in ordered_ids.iter().enumerate() {
-        conn.execute(
+        tx.execute(
             "UPDATE accounts SET display_order = ?1 WHERE id = ?2",
             params![i as i32, id],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     }
-    Ok(())
+    tx.commit()
 }
 
 // ── Contact autocomplete ───────────────────────────────────────────────────────
@@ -848,22 +941,26 @@ fn search_contacts_from_conn(
 
 #[tauri::command]
 pub fn search_contacts(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     query: String,
     account_id: String,
 ) -> Result<Vec<ContactSuggestion>, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    search_contacts_from_conn(&conn, &query, &account_id).map_err(|e| e.to_string())
+    let conn = Connection::open(db_path).map_err(database_error)?;
+    search_contacts_from_conn(&conn, &query, &account_id).map_err(database_error)
 }
 
 #[tauri::command]
 pub fn get_account_auth(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     account_id: String,
 ) -> Result<Option<AuthInfo>, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
 
     let row: Option<(String, String)> = conn
         .query_row(
@@ -877,13 +974,13 @@ pub fn get_account_auth(
         return Ok(None);
     };
 
-    let Some((access_token, refresh_token)) = load_tokens(&email) else {
+    let Some(tokens) = load_tokens(&email) else {
         return Ok(None);
     };
 
     Ok(Some(AuthInfo {
-        access_token,
-        refresh_token,
+        authenticated: true,
+        expires_at: tokens.expires_at,
         email,
         picture,
     }))
@@ -891,12 +988,13 @@ pub fn get_account_auth(
 
 // ── Email CRUD ────────────────────────────────────────────────────────────────
 
-fn upsert_emails_in_generation(
+pub fn upsert_sync_mail_batch(
     app: &AppHandle,
     account_id: &str,
-    emails: Vec<Email>,
+    account_generation: i64,
     sync_generation: Option<i64>,
-    expected_account_generation: Option<i64>,
+    emails: Vec<Email>,
+    attachments: Vec<Attachment>,
 ) -> Result<()> {
     let db_path = get_db_path(app);
     let mut conn = Connection::open(db_path)?;
@@ -913,32 +1011,29 @@ fn upsert_emails_in_generation(
         .unwrap_or(0)
     });
     let tx = conn.transaction()?;
-    if let Some(expected_account_generation) = expected_account_generation {
-        ensure_account_generation(&tx, account_id, expected_account_generation)?;
-    }
+    ensure_account_generation(&tx, account_id, account_generation)?;
 
     {
-        let mut stmt = tx.prepare(
+        let mut statement = tx.prepare(
             "INSERT INTO emails (id, thread_id, sender, recipient, cc, subject, snippet, \
                                  body_html, date, unread, label, account_id, sync_generation)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(account_id, id) DO UPDATE SET
                 thread_id = excluded.thread_id,
-                sender    = excluded.sender,
+                sender = excluded.sender,
                 recipient = excluded.recipient,
-                cc        = excluded.cc,
-                subject   = excluded.subject,
-                snippet   = excluded.snippet,
+                cc = excluded.cc,
+                subject = excluded.subject,
+                snippet = excluded.snippet,
                 body_html = excluded.body_html,
-                date      = excluded.date,
-                unread    = excluded.unread,
-                label     = excluded.label,
-                account_id= excluded.account_id,
+                date = excluded.date,
+                unread = excluded.unread,
+                label = excluded.label,
+                account_id = excluded.account_id,
                 sync_generation = excluded.sync_generation",
         )?;
-
         for email in emails {
-            stmt.execute(params![
+            statement.execute(params![
                 email.id,
                 email.thread_id,
                 email.sender,
@@ -956,28 +1051,32 @@ fn upsert_emails_in_generation(
         }
     }
 
-    tx.commit()?;
-    Ok(())
-}
+    {
+        let mut statement = tx.prepare(
+            "INSERT INTO attachments (id, email_id, account_id, filename, mime_type, size, attachment_id, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(account_id, id) DO UPDATE SET
+                filename = excluded.filename,
+                mime_type = excluded.mime_type,
+                size = excluded.size,
+                attachment_id = excluded.attachment_id,
+                data = excluded.data",
+        )?;
+        for attachment in attachments {
+            statement.execute(params![
+                attachment.id,
+                attachment.email_id,
+                account_id,
+                attachment.filename,
+                attachment.mime_type,
+                attachment.size,
+                attachment.attachment_id,
+                attachment.data,
+            ])?;
+        }
+    }
 
-pub fn upsert_emails(app: &AppHandle, account_id: &str, emails: Vec<Email>) -> Result<()> {
-    upsert_emails_in_generation(app, account_id, emails, None, None)
-}
-
-pub fn upsert_sync_emails(
-    app: &AppHandle,
-    account_id: &str,
-    account_generation: i64,
-    sync_generation: Option<i64>,
-    emails: Vec<Email>,
-) -> Result<()> {
-    upsert_emails_in_generation(
-        app,
-        account_id,
-        emails,
-        sync_generation,
-        Some(account_generation),
-    )
+    tx.commit()
 }
 
 fn map_summary_row(row: &rusqlite::Row) -> rusqlite::Result<EmailSummary> {
@@ -1031,14 +1130,19 @@ fn purge_orphaned_cache_from_conn(conn: &mut Connection) -> Result<()> {
 /// Safe local-cache diagnosis for legacy rows with no account owner.
 /// No mail content is returned and no data is changed.
 #[tauri::command]
-pub fn get_orphaned_cache_counts(app: tauri::AppHandle) -> Result<OrphanedCacheCounts, String> {
+pub fn get_orphaned_cache_counts(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<OrphanedCacheCounts, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    orphaned_cache_counts_from_conn(&conn).map_err(|e| e.to_string())
+    let conn = Connection::open(db_path).map_err(database_error)?;
+    orphaned_cache_counts_from_conn(&conn).map_err(database_error)
 }
 
 #[tauri::command]
 pub fn get_emails_by_label(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     label: String,
     account_id: Option<String>,
@@ -1047,8 +1151,9 @@ pub fn get_emails_by_label(
     before_account_id: Option<String>,
     before_id: Option<String>,
 ) -> Result<Vec<EmailSummary>, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let limit = i64::from(limit.unwrap_or(100).clamp(1, 5_000));
 
     match account_id {
@@ -1071,15 +1176,15 @@ pub fn get_emails_by_label(
                     None,
                 ),
             };
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(&sql).map_err(database_error)?;
             let rows: Vec<EmailSummary> = if let Some((date, cursor_id)) = cursor_id {
                 stmt.query_map(params![label, id, date, cursor_id, limit], map_summary_row)
-                    .map_err(|e| e.to_string())?
+                    .map_err(database_error)?
                     .filter_map(|r| r.ok())
                     .collect()
             } else {
                 stmt.query_map(params![label, id, limit], map_summary_row)
-                    .map_err(|e| e.to_string())?
+                    .map_err(database_error)?
                     .filter_map(|r| r.ok())
                     .collect()
             };
@@ -1103,15 +1208,15 @@ pub fn get_emails_by_label(
                      ORDER BY date DESC, account_id ASC, id ASC LIMIT ?2"
                 )
             };
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(&sql).map_err(database_error)?;
             let rows: Vec<EmailSummary> = if let Some((date, account_id, id)) = cursor {
                 stmt.query_map(params![label, date, account_id, id, limit], map_summary_row)
-                    .map_err(|e| e.to_string())?
+                    .map_err(database_error)?
                     .filter_map(|r| r.ok())
                     .collect()
             } else {
                 stmt.query_map(params![label, limit], map_summary_row)
-                    .map_err(|e| e.to_string())?
+                    .map_err(database_error)?
                     .filter_map(|r| r.ok())
                     .collect()
             };
@@ -1122,21 +1227,23 @@ pub fn get_emails_by_label(
 
 #[tauri::command]
 pub fn get_local_emails(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     account_id: Option<String>,
 ) -> Result<Vec<EmailSummary>, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
 
     match account_id {
         Some(id) => {
             let sql = format!(
                 "SELECT {SUMMARY_COLS} FROM emails WHERE account_id = ?1 ORDER BY date DESC"
             );
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(&sql).map_err(database_error)?;
             let rows: Vec<EmailSummary> = stmt
                 .query_map(params![id], map_summary_row)
-                .map_err(|e| e.to_string())?
+                .map_err(database_error)?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1145,10 +1252,10 @@ pub fn get_local_emails(
             let sql = format!(
                 "SELECT {SUMMARY_COLS} FROM emails WHERE account_id != '' ORDER BY date DESC"
             );
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(&sql).map_err(database_error)?;
             let rows: Vec<EmailSummary> = stmt
                 .query_map([], map_summary_row)
-                .map_err(|e| e.to_string())?
+                .map_err(database_error)?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1208,76 +1315,86 @@ fn search_local_emails_from_conn(
 /// This deliberately searches metadata only; message bodies stay on-demand.
 #[tauri::command]
 pub fn search_local_emails(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     query: String,
     account_id: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<EmailSummary>, String> {
+    crate::require_command_window(&window, &["main"])?;
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let limit = i64::from(limit.unwrap_or(500).clamp(1, 1_000));
     search_local_emails_from_conn(&conn, &query, account_id.as_deref(), limit)
-        .map_err(|e| e.to_string())
+        .map_err(database_error)
 }
 
 #[tauri::command]
-pub fn get_email_body(app: tauri::AppHandle, id: String, account_id: String) -> Result<String, String> {
+pub fn get_email_body(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    id: String,
+    account_id: String,
+) -> Result<String, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT body_html FROM emails WHERE id = ?1 AND account_id = ?2",
         params![id, account_id],
         |row| row.get(0),
     )
-    .map_err(|e| e.to_string())
+    .map_err(database_error)
 }
 
 pub fn mark_email_as_read_local(app: &AppHandle, id: &str, account_id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.execute("UPDATE emails SET unread = 0 WHERE id = ?1 AND account_id = ?2", params![id, account_id])
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     Ok(())
 }
 
 pub fn mark_email_as_unread_local(app: &AppHandle, id: &str, account_id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.execute("UPDATE emails SET unread = 1 WHERE id = ?1 AND account_id = ?2", params![id, account_id])
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     Ok(())
 }
 
 pub fn update_email_label(app: &AppHandle, id: &str, account_id: &str, label: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.execute(
         "UPDATE emails SET label = ?1 WHERE id = ?2 AND account_id = ?3",
         params![label, id, account_id],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
     Ok(())
 }
 
 pub fn delete_email_from_db(app: &AppHandle, id: &str, account_id: &str) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     delete_emails_by_ids_from_conn(&mut conn, account_id, &[id.to_string()])
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_inbox_unread_count(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     account_id: Option<String>,
 ) -> Result<i64, String> {
+    crate::require_command_window(&window, &["main"])?;
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    inbox_unread_count_from_conn(&conn, account_id.as_deref()).map_err(|e| e.to_string())
+    let conn = Connection::open(db_path).map_err(database_error)?;
+    inbox_unread_count_from_conn(&conn, account_id.as_deref()).map_err(database_error)
 }
 
 fn inbox_unread_count_from_conn(conn: &Connection, account_id: Option<&str>) -> Result<i64> {
@@ -1313,10 +1430,10 @@ pub fn set_gmail_inbox_unread_stats(
     threads_unread: i64,
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     ensure_account_generation(&tx, account_id, account_generation).map_err(|_| "Account is no longer available")?;
     tx.execute(
         "INSERT INTO sync_state (
@@ -1327,8 +1444,8 @@ pub fn set_gmail_inbox_unread_stats(
              gmail_inbox_threads_unread = excluded.gmail_inbox_threads_unread",
         params![account_id, messages_unread, threads_unread],
     )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    .map_err(database_error)?;
+    tx.commit().map_err(database_error)
 }
 
 // ── Sync state (per-account history ID) ────────────────────────────────────────
@@ -1352,18 +1469,18 @@ pub fn set_history_id(
     history_id: &str,
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    ensure_account_generation(&tx, account_id, account_generation).map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
+    ensure_account_generation(&tx, account_id, account_generation).map_err(database_error)?;
     tx.execute(
         "INSERT INTO sync_state (account_id, history_id) VALUES (?1, ?2)
          ON CONFLICT(account_id) DO UPDATE SET history_id = excluded.history_id",
         params![account_id, history_id],
     )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
+    tx.commit().map_err(database_error)?;
     Ok(())
 }
 
@@ -1375,7 +1492,7 @@ pub struct ActiveFullSync {
 
 pub fn get_active_full_sync(app: &AppHandle, account_id: &str) -> Result<Option<ActiveFullSync>, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT active_full_sync_generation, pending_full_history_id
          FROM sync_state WHERE account_id = ?1 AND active_full_sync_generation IS NOT NULL",
@@ -1388,12 +1505,12 @@ pub fn get_active_full_sync(app: &AppHandle, account_id: &str) -> Result<Option<
         },
     )
     .optional()
-    .map_err(|e| e.to_string())
+    .map_err(database_error)
 }
 
 pub fn next_full_sync_generation(app: &AppHandle, account_id: &str) -> Result<i64, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT COALESCE(last_full_sync_generation, 0) + 1 FROM sync_state WHERE account_id = ?1",
         params![account_id],
@@ -1401,7 +1518,7 @@ pub fn next_full_sync_generation(app: &AppHandle, account_id: &str) -> Result<i6
     )
     .optional()
     .map(|generation| generation.unwrap_or(1))
-    .map_err(|e| e.to_string())
+    .map_err(database_error)
 }
 
 fn complete_full_sync_from_conn(
@@ -1450,7 +1567,7 @@ pub fn complete_full_sync(
     sync_generation: i64,
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     complete_full_sync_from_conn(
         &mut conn,
         account_id,
@@ -1459,7 +1576,7 @@ pub fn complete_full_sync(
         history_id,
         sync_generation,
     )
-        .map_err(|e| e.to_string())
+        .map_err(database_error)
 }
 
 fn finalize_full_sync_from_conn(
@@ -1512,9 +1629,9 @@ pub fn finalize_full_sync(
     sync_generation: i64,
 ) -> Result<usize, String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     finalize_full_sync_from_conn(&mut conn, account_id, account_generation, sync_generation)
-        .map_err(|e| e.to_string())
+        .map_err(database_error)
 }
 
 pub fn get_mailbox_cursor_state(
@@ -1523,14 +1640,14 @@ pub fn get_mailbox_cursor_state(
     label: &str,
 ) -> Result<Option<Option<String>>, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT next_page_token FROM mailbox_cursors WHERE account_id = ?1 AND label = ?2",
         params![account_id, label],
         |row| row.get::<_, Option<String>>(0),
     )
     .optional()
-    .map_err(|e| e.to_string())
+    .map_err(database_error)
 }
 
 pub fn has_pending_mailbox_pages(
@@ -1538,7 +1655,7 @@ pub fn has_pending_mailbox_pages(
     account_id: Option<&str>,
 ) -> Result<bool, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let count: i64 = match account_id {
         Some(account_id) => conn.query_row(
             "SELECT COUNT(*) FROM mailbox_cursors
@@ -1552,7 +1669,7 @@ pub fn has_pending_mailbox_pages(
             |row| row.get(0),
         ),
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
     Ok(count > 0)
 }
 
@@ -1568,7 +1685,7 @@ pub fn get_mailbox_sync_state(
     account_id: &str,
 ) -> Result<Option<MailboxSyncState>, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     conn.query_row(
         "SELECT mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
          FROM sync_state WHERE account_id = ?1",
@@ -1582,18 +1699,18 @@ pub fn get_mailbox_sync_state(
         },
     )
     .optional()
-    .map_err(|e| e.to_string())
+    .map_err(database_error)
 }
 
 pub fn get_all_mailbox_sync_states(app: &AppHandle) -> Result<Vec<MailboxSyncState>, String> {
     let db_path = get_db_path(app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let mut statement = conn
         .prepare(
             "SELECT mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
              FROM sync_state",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     let states = statement
         .query_map([], |row| {
             Ok(MailboxSyncState {
@@ -1602,9 +1719,9 @@ pub fn get_all_mailbox_sync_states(app: &AppHandle) -> Result<Vec<MailboxSyncSta
                 retry_after: row.get(2)?,
             })
         })
-        .map_err(|e| e.to_string())?
+        .map_err(database_error)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     Ok(states)
 }
 
@@ -1619,11 +1736,11 @@ pub fn set_mailbox_sync_state(
     retry_after: Option<i64>,
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    ensure_account_generation(&tx, account_id, account_generation).map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
+    ensure_account_generation(&tx, account_id, account_generation).map_err(database_error)?;
     tx.execute(
         "INSERT INTO sync_state (
              account_id, mailbox_sync_status, mailbox_sync_error, mailbox_sync_retry_after
@@ -1634,8 +1751,8 @@ pub fn set_mailbox_sync_state(
              mailbox_sync_retry_after = excluded.mailbox_sync_retry_after",
         params![account_id, status, error, retry_after],
     )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    .map_err(database_error)?;
+    tx.commit().map_err(database_error)
 }
 
 pub fn set_mailbox_cursor(
@@ -1646,104 +1763,67 @@ pub fn set_mailbox_cursor(
     next_page_token: Option<&str>,
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    ensure_account_generation(&tx, account_id, account_generation).map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
+    ensure_account_generation(&tx, account_id, account_generation).map_err(database_error)?;
     tx.execute(
         "INSERT INTO mailbox_cursors (account_id, label, next_page_token) VALUES (?1, ?2, ?3)
          ON CONFLICT(account_id, label) DO UPDATE SET next_page_token = excluded.next_page_token",
         params![account_id, label, next_page_token],
     )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
+    .map_err(database_error)?;
+    tx.commit().map_err(database_error)?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_thread_emails(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     thread_id: String,
     account_id: String,
 ) -> Result<Vec<EmailSummary>, String> {
+    crate::require_command_window(&window, &["main"])?;
     if thread_id.is_empty() {
         return Ok(vec![]);
     }
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let sql = format!(
         "SELECT {SUMMARY_COLS} FROM emails WHERE thread_id = ?1 AND account_id = ?2 ORDER BY date ASC"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql).map_err(database_error)?;
     let rows: Vec<EmailSummary> = stmt
         .query_map(params![thread_id, account_id], map_summary_row)
-        .map_err(|e| e.to_string())?
+        .map_err(database_error)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
 }
 
-fn upsert_attachments_with_generation(
-    app: &AppHandle,
-    account_id: Option<(&str, i64)>,
-    attachments: Vec<Attachment>,
-) -> Result<()> {
-    if attachments.is_empty() {
-        return Ok(());
-    }
-    let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path)?;
-    let tx = conn.transaction()?;
-    if let Some((account_id, account_generation)) = account_id {
-        ensure_account_generation(&tx, account_id, account_generation)?;
-    }
-    {
-        let mut stmt = tx.prepare(
-            "INSERT INTO attachments (id, email_id, account_id, filename, mime_type, size, attachment_id, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(account_id, id) DO UPDATE SET
-                filename      = excluded.filename,
-                mime_type     = excluded.mime_type,
-                size          = excluded.size,
-                attachment_id = excluded.attachment_id,
-                data          = excluded.data",
-        )?;
-        for att in &attachments {
-            stmt.execute(params![
-                att.id, att.email_id, att.account_id,
-                att.filename, att.mime_type, att.size,
-                att.attachment_id, att.data,
-            ])?;
-        }
-    }
-    tx.commit()?;
-    Ok(())
+#[cfg(test)]
+fn attachment_account_id<'a>(
+    authorized_account_id: Option<&'a str>,
+    attachment: &'a Attachment,
+) -> &'a str {
+    authorized_account_id.unwrap_or(attachment.account_id.as_str())
 }
 
-pub fn upsert_sync_attachments(
-    app: &AppHandle,
-    account_id: &str,
-    account_generation: i64,
-    attachments: Vec<Attachment>,
-) -> Result<()> {
-    upsert_attachments_with_generation(app, Some((account_id, account_generation)), attachments)
-}
-
-#[tauri::command]
-pub fn get_email_attachments(
+pub fn get_email_attachments_for_account(
     app: tauri::AppHandle,
     email_id: String,
     account_id: String,
 ) -> Result<Vec<Attachment>, String> {
     let db_path = get_db_path(&app);
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(db_path).map_err(database_error)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, email_id, account_id, filename, mime_type, size, attachment_id, data
              FROM attachments WHERE email_id = ?1 AND account_id = ?2 ORDER BY rowid ASC",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(database_error)?;
     let rows = stmt
         .query_map(params![email_id, account_id], |row| {
             Ok(Attachment {
@@ -1757,10 +1837,21 @@ pub fn get_email_attachments(
                 data: row.get(7)?,
             })
         })
-        .map_err(|e| e.to_string())?
+        .map_err(database_error)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_email_attachments(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    email_id: String,
+    account_id: String,
+) -> Result<Vec<Attachment>, String> {
+    crate::require_command_window(&window, &["main"])?;
+    get_email_attachments_for_account(app, email_id, account_id)
 }
 
 fn delete_emails_by_ids_from_conn(
@@ -1795,15 +1886,98 @@ pub fn delete_emails_by_ids(
     ids: &[String],
 ) -> Result<(), String> {
     let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(database_error)?;
     ensure_account_generation(&conn, account_id, account_generation).map_err(|_| "Account is no longer available")?;
-    delete_emails_by_ids_from_conn(&mut conn, account_id, ids).map_err(|e| e.to_string())?;
+    delete_emails_by_ids_from_conn(&mut conn, account_id, ids).map_err(database_error)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_tokens_accept_legacy_keyring_json_without_expiry() {
+        let tokens: StoredTokens = serde_json::from_str(
+            r#"{"access_token":"access","refresh_token":"refresh"}"#,
+        )
+        .expect("legacy keyring JSON");
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token, "refresh");
+        assert_eq!(tokens.expires_at, None);
+    }
+
+    #[test]
+    fn auth_info_never_serializes_bearer_credentials() {
+        let value = serde_json::to_value(AuthInfo {
+            authenticated: true,
+            expires_at: Some(123),
+            email: "alice@example.test".to_string(),
+            picture: String::new(),
+        })
+        .expect("serialize auth info");
+        assert_eq!(value["authenticated"], true);
+        assert!(value.get("access_token").is_none());
+        assert!(value.get("refresh_token").is_none());
+    }
+
+    #[test]
+    fn account_reordering_requires_the_complete_unique_account_set() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE accounts (
+                id TEXT PRIMARY KEY,
+                display_order INTEGER NOT NULL
+             );
+             INSERT INTO accounts (id, display_order) VALUES
+                ('account-a', 0),
+                ('account-b', 1);",
+        )
+        .expect("seed accounts");
+
+        reorder_accounts_from_conn(
+            &mut conn,
+            &["account-b".to_string(), "account-a".to_string()],
+        )
+        .expect("reorder complete account set");
+        assert!(reorder_accounts_from_conn(
+            &mut conn,
+            &["account-a".to_string(), "account-a".to_string()],
+        )
+        .is_err());
+        assert!(reorder_accounts_from_conn(&mut conn, &["account-a".to_string()]).is_err());
+
+        let order: Vec<String> = {
+            let mut statement = conn
+                .prepare("SELECT id FROM accounts ORDER BY display_order")
+                .expect("prepare order query");
+            statement
+                .query_map([], |row| row.get(0))
+                .expect("query order")
+                .collect::<Result<_, _>>()
+                .expect("collect order")
+        };
+        assert_eq!(order, ["account-b", "account-a"]);
+    }
+
+    #[test]
+    fn synchronized_attachment_uses_the_authorized_account() {
+        let attachment = Attachment {
+            id: "attachment-a".to_string(),
+            email_id: "message-a".to_string(),
+            account_id: "untrusted-account".to_string(),
+            filename: "report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size: 1,
+            attachment_id: None,
+            data: None,
+        };
+        assert_eq!(
+            attachment_account_id(Some("authorized-account"), &attachment),
+            "authorized-account"
+        );
+        assert_eq!(attachment_account_id(None, &attachment), "untrusted-account");
+    }
 
     #[test]
     fn delete_emails_by_ids_scopes_every_id_to_the_requested_account() {

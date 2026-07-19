@@ -36,7 +36,7 @@ interface UseMailSyncOptions {
   locale: AppLocale;
   loadEmails: () => Promise<EmailSummary[]>;
   shouldDeferNetwork: (userInitiated?: boolean) => Promise<boolean>;
-  refreshAccessToken: (accountId: string) => Promise<{ access_token: string }>;
+  refreshAccessToken: (accountId: string) => Promise<{ authenticated: boolean }>;
   upsertToken: (accountId: string, accessToken: string) => void;
   clearExpiredAccount: (accountId: string) => void;
   setSessionExpired: (expired: boolean) => void;
@@ -75,19 +75,20 @@ export function useMailSync(options: UseMailSyncOptions) {
     force = false,
   ): Promise<string> => {
     try {
-      await tauriApi.syncEmails(accountId, token, force);
+      await tauriApi.syncEmails(accountId, force);
       return token;
     } catch (error) {
       if (!isAuthFailure(error)) throw error;
       try {
         const refreshed = await refreshAccessToken(accountId);
-        upsertToken(accountId, refreshed.access_token);
+        if (!refreshed.authenticated) throw new Error(locale.messages.reloginRequired);
+        upsertToken(accountId, "active");
         clearExpiredAccount(accountId);
         setSessionExpired(false);
-        await tauriApi.syncEmails(accountId, refreshed.access_token, force);
-        return refreshed.access_token;
-      } catch (refreshError) {
-        console.error(`Token refresh failed for ${accountId}:`, refreshError);
+        await tauriApi.syncEmails(accountId, force);
+        return "active";
+      } catch {
+        console.error("Token refresh failed.");
         markAccountExpired(accountId);
         throw new Error(locale.messages.reloginRequired);
       }
@@ -215,7 +216,7 @@ export function useMailSync(options: UseMailSyncOptions) {
           anySuccess = true;
           successfullySyncedAccountIds.add(account.id);
         } catch (error) {
-          if (!isAuthFailure(error)) console.error(`Sync failed for ${account.id}:`, error);
+          if (!isAuthFailure(error)) console.error("Account sync failed.");
         }
       }
 

@@ -31,58 +31,69 @@ fn read_window_state(app: &AppHandle) -> Option<PersistedWindowState> {
     serde_json::from_str::<PersistedWindowState>(&text).ok()
 }
 
-pub fn restore_window_state(app: &AppHandle) {
+pub fn restore_window_state(app: &AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
-        return;
+        return Ok(());
     };
 
     let Some(state) = read_window_state(app) else {
-        return;
+        return Ok(());
     };
 
     if state.width < 600 || state.height < 600 {
-        return;
+        return Ok(());
     }
 
-    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
+    window
+        .set_size(PhysicalSize::new(state.width, state.height))
+        .map_err(|e| format!("Pencere boyutu geri yüklenemedi: {e}"))?;
     if saved_position_is_visible(app, &state) {
-        let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+        window
+            .set_position(PhysicalPosition::new(state.x, state.y))
+            .map_err(|e| format!("Pencere konumu geri yüklenemedi: {e}"))?;
     } else {
-        let _ = window.center();
+        window
+            .center()
+            .map_err(|e| format!("Pencere ortalanamadı: {e}"))?;
     }
 
     if state.fullscreen {
-        let _ = window.set_fullscreen(true);
+        window
+            .set_fullscreen(true)
+            .map_err(|e| format!("Tam ekran durumu geri yüklenemedi: {e}"))?;
     } else if state.maximized {
-        let _ = window.maximize();
+        window
+            .maximize()
+            .map_err(|e| format!("Ekranı kaplama durumu geri yüklenemedi: {e}"))?;
     }
+    Ok(())
 }
 
-pub fn save_window_state(window: &Window) {
+pub fn save_window_state(window: &Window) -> Result<(), String> {
     if window.label() != "main" {
-        return;
+        return Ok(());
     }
 
-    let Ok(is_minimized) = window.is_minimized() else {
-        return;
-    };
+    let is_minimized = window
+        .is_minimized()
+        .map_err(|e| format!("Pencere durumu okunamadı: {e}"))?;
     if is_minimized {
-        return;
+        return Ok(());
     }
 
     let maximized = window.is_maximized().unwrap_or(false);
     let fullscreen = window.is_fullscreen().unwrap_or(false);
     let previous_state = read_window_state(&window.app_handle());
 
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
+    let size = window
+        .outer_size()
+        .map_err(|e| format!("Pencere boyutu okunamadı: {e}"))?;
+    let position = window
+        .outer_position()
+        .map_err(|e| format!("Pencere konumu okunamadı: {e}"))?;
 
     if size.width < 600 || size.height < 600 {
-        return;
+        return Ok(());
     }
 
     let (width, height, x, y) = if maximized || fullscreen {
@@ -103,14 +114,12 @@ pub fn save_window_state(window: &Window) {
     };
 
     let app = window.app_handle();
-    let Ok(path) = state_path(&app) else {
-        return;
-    };
-    let Ok(json) = serde_json::to_string_pretty(&state) else {
-        return;
-    };
+    let path = state_path(&app)?;
+    let json = serde_json::to_string_pretty(&state)
+        .map_err(|e| format!("Pencere durumu hazırlanamadı: {e}"))?;
 
-    let _ = fs::write(path, json);
+    crate::safe_fs::atomic_write(&path, json.as_bytes())
+        .map_err(|e| format!("Pencere durumu kaydedilemedi: {e}"))
 }
 
 /// Captures the normal window bounds after Windows finishes a
@@ -123,7 +132,9 @@ pub fn save_window_state_after_transition(window: Window) {
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        save_window_state(&window);
+        if let Err(error) = save_window_state(&window) {
+            eprintln!("[WINDOW_STATE] {error}");
+        }
     });
 }
 

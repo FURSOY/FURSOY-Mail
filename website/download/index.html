@@ -25,6 +25,19 @@
       const fallbackUrl =
         "https://github.com/FURSOY/FURSOY-Mail/releases/latest";
 
+      function validatedInstallerUrl(value) {
+        const url = new URL(value);
+        const expectedPrefix = "/FURSOY/FURSOY-Mail/releases/download/";
+        if (
+          url.protocol !== "https:" ||
+          url.hostname !== "github.com" ||
+          !url.pathname.startsWith(expectedPrefix)
+        ) {
+          throw new Error("Installer URL is not trusted.");
+        }
+        return url.href;
+      }
+
       async function startDownload() {
         const status = document.querySelector("#status");
 
@@ -44,7 +57,9 @@
             );
 
           if (!installer) throw new Error("Installer could not be found.");
-          window.location.replace(installer.browser_download_url);
+          window.location.replace(
+            validatedInstallerUrl(installer.browser_download_url),
+          );
         } catch {
           status.innerHTML =
             'The automatic download could not start. <a href="' +

@@ -9,3 +9,9 @@
 
 /favicon.png
   Cache-Control: public, max-age=604800
+
+/privacy/*
+  X-Robots-Tag: noindex, nofollow, noarchive
+
+/terms/*
+  X-Robots-Tag: noindex, nofollow, noarchive

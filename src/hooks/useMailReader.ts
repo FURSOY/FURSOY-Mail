@@ -67,7 +67,7 @@ export function useMailReader(options: UseMailReaderOptions) {
     const token = getTokenForEmail(activeMail);
     if (!token) return;
     let cancelled = false;
-    void tauriApi.refreshEmailFromGmail(activeMail.account_id, token, activeMail.id)
+    void tauriApi.refreshEmailFromGmail(activeMail.account_id, activeMail.id)
       .then(() => tauriApi.getEmailBody(activeMail.id, activeMail.account_id))
       .then(body => {
         if (cancelled || selectedMail !== activeMailKey) return;
@@ -99,7 +99,7 @@ export function useMailReader(options: UseMailReaderOptions) {
           adjustUnreadBadge(email.account_id, -1);
           const token = getTokenForEmail(email);
           if (!token) continue;
-          tauriApi.markAsRead(email.account_id, token, email.id).catch(error => {
+          tauriApi.markAsRead(email.account_id, email.id).catch(error => {
             console.error("Failed to mark thread email as read:", error);
             recentlyReadRef.current.delete(emailKey(email));
             setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));

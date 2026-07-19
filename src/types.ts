@@ -36,7 +36,8 @@ export interface ThreadGroup {
 }
 
 export interface AuthInfo {
-  access_token: string;
+  authenticated: boolean;
+  expires_at: number | null;
   email: string;
   picture: string;
 }
@@ -54,6 +55,11 @@ export interface AttachmentPayload {
   filename: string;
   mimeType: string;
   data: string; // base64
+}
+
+export interface SendOutcome {
+  status: "sent" | "outcome_unknown";
+  messageId: string;
 }
 
 export const DEFAULT_APP_CONTROLS: AppControls = {
