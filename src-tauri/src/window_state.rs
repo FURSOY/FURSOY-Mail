@@ -1,8 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Window};
 
 const WINDOW_STATE_FILE: &str = "window-state.json";
+static DELAYED_SAVE_TASK: OnceLock<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedWindowState {
@@ -130,12 +137,20 @@ pub fn save_window_state_after_transition(window: Window) {
         return;
     }
 
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if let Err(error) = save_window_state(&window) {
             eprintln!("[WINDOW_STATE] {error}");
         }
     });
+    match DELAYED_SAVE_TASK.get_or_init(|| Mutex::new(None)).lock() {
+        Ok(mut pending) => {
+            if let Some(previous) = pending.replace(task) {
+                previous.abort();
+            }
+        }
+        Err(_) => task.abort(),
+    }
 }
 
 fn saved_position_is_visible(app: &AppHandle, state: &PersistedWindowState) -> bool {

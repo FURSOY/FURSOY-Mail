@@ -65,6 +65,7 @@ export function useMailSync(options: UseMailSyncOptions) {
   const syncIntervalSecondsRef = useRef(syncIntervalSeconds);
   const notificationDurationRef = useRef(notificationDuration);
   const notificationInfiniteRef = useRef(notificationInfinite);
+  const backgroundSyncFlightRef = useRef<Promise<boolean> | null>(null);
   syncIntervalSecondsRef.current = syncIntervalSeconds;
   notificationDurationRef.current = notificationDuration;
   notificationInfiniteRef.current = notificationInfinite;
@@ -142,6 +143,11 @@ export function useMailSync(options: UseMailSyncOptions) {
           (previous.accountId !== email.account_id || previous.messageId !== email.id)
           ? null
           : { accountId: email.account_id, messageId: email.id };
+        const notificationKeys = Object.keys(recentNotificationsRef.current);
+        while (notificationKeys.length > 100) {
+          const oldest = notificationKeys.shift();
+          if (oldest !== undefined) delete recentNotificationsRef.current[oldest];
+        }
         await tauriApi.showCustomNotification({
           title,
           body: notificationBody,
@@ -187,7 +193,7 @@ export function useMailSync(options: UseMailSyncOptions) {
     if (Object.keys(accountTokensRef.current).length > 0) startPeriodicSync();
   }, [syncIntervalSeconds]);
 
-  const backgroundSync = useCallback(async (syncOptions?: SyncOptions): Promise<boolean> => {
+  const runBackgroundSync = useCallback(async (syncOptions?: SyncOptions): Promise<boolean> => {
     const currentAccounts = accountsRef.current;
     const tokens = accountTokensRef.current;
     if (currentAccounts.length === 0) return false;
@@ -240,7 +246,7 @@ export function useMailSync(options: UseMailSyncOptions) {
           successfullySyncedAccountIds,
           suppressNotifications,
         });
-        void notifyNewEmails(newUnreadEmails);
+        await notifyNewEmails(newUnreadEmails);
         if (MAIL_TABS.has(activeTabRef.current) && emailsLength <= MAIL_PAGE_SIZE) await loadEmails();
         await refreshUnreadCount();
       }
@@ -263,6 +269,21 @@ export function useMailSync(options: UseMailSyncOptions) {
     notificationBaselineEpochRef, notificationReadyAccountIdsRef, notifyNewEmails,
     refreshUnreadCount, shouldDeferNetwork, showToast, syncAccountWithAutoRefresh,
   ]);
+
+  const backgroundSync = useCallback((syncOptions?: SyncOptions): Promise<boolean> => {
+    const existing = backgroundSyncFlightRef.current;
+    if (existing) return existing;
+
+    const flight = runBackgroundSync(syncOptions);
+    backgroundSyncFlightRef.current = flight;
+    const clearFlight = () => {
+      if (backgroundSyncFlightRef.current === flight) {
+        backgroundSyncFlightRef.current = null;
+      }
+    };
+    void flight.then(clearFlight, clearFlight);
+    return flight;
+  }, [runBackgroundSync]);
 
   backgroundSyncRef.current = backgroundSync;
 

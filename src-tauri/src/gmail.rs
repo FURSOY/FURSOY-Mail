@@ -946,9 +946,34 @@ fn start_background_backfill(
     access_token: String,
 ) {
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        run_background_backfill_worker(app, account_id, account_generation, access_token).await;
+    let task_app = app.clone();
+    let task_account_id = account_id.clone();
+    let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::oneshot::channel();
+    let task = tauri::async_runtime::spawn(async move {
+        if start_receiver.await.is_err() {
+            return;
+        }
+        tokio::select! {
+            _ = &mut cancel_receiver => return,
+            _ = run_background_backfill_worker(
+                task_app.clone(),
+                task_account_id.clone(),
+                account_generation,
+                access_token,
+            ) => {}
+        }
+        if let Ok(mut workers) = task_app.state::<crate::SyncState>().workers.lock() {
+            workers.finish_backfill_task(&task_account_id, account_generation);
+        }
     });
+    match app.state::<crate::SyncState>().workers.lock() {
+        Ok(mut workers) => {
+            workers.register_backfill_task(&account_id, account_generation, cancel_sender);
+            let _ = start_sender.send(());
+        }
+        Err(_) => task.abort(),
+    };
 }
 
 #[derive(Serialize)]

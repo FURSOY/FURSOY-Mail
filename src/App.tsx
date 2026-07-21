@@ -38,6 +38,7 @@ import { useMailSync } from "./hooks/useMailSync";
 import { useMailActions } from "./hooks/useMailActions";
 import { useMailReader } from "./hooks/useMailReader";
 import { tauriApi, type MailboxDownloadStatus } from "./tauriApi";
+import { enqueueMailMutation, type MailMutationQueue } from "./mailActionState";
 
 function readTrustedImageSenders(): Record<string, string[]> {
   try {
@@ -155,6 +156,7 @@ function App() {
   const syncChainIdRef = useRef(0);
   const recentNotificationsRef = useRef<Record<string, { accountId: string; messageId: string } | null>>({});
   const lastToastRef = useRef<{ msg: string; type: "error" | "success" | "info"; at: number } | null>(null);
+  const toastTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const previousAutoMailViewModeRef = useRef<MailViewMode | null>(null);
   const backgroundSyncRef = useRef<
     (opts?: { userInitiated?: boolean; suppressNotifications?: boolean }) => Promise<boolean>
@@ -163,6 +165,7 @@ function App() {
   const notificationReadyAccountIdsRef = useRef<Set<string>>(new Set());
   const notificationBaselineEpochRef = useRef(0);
   const recentlyReadRef = useRef<Set<string>>(new Set());
+  const mailMutationQueueRef = useRef<MailMutationQueue>(new Map());
   const pendingUnreadBadgeDeltasRef = useRef<Map<string, { delta: number; expiresAt: number }>>(new Map());
   const mailPageCursorRef = useRef<EmailSummary | null>(null);
   const mailListRequestIdRef = useRef(0);
@@ -177,6 +180,7 @@ function App() {
   pauseOnFullscreenRef.current = pauseOnFullscreen;
   const appControlsRef = useRef(appControls);
   appControlsRef.current = appControls;
+  const appControlsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   // Derive a "current context" access token (for UI checks and email-less operations)
   const accessToken = (() => {
@@ -236,6 +240,7 @@ function App() {
       .then((controls) => {
         const savedLanguage: AppLanguage = controls.appLanguage === "tr" ? "tr" : "en";
         const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...controls, appLanguage: savedLanguage };
+        appControlsRef.current = normalized;
         setAppControls(normalized);
         setAppLanguage(savedLanguage);
       })
@@ -246,6 +251,7 @@ function App() {
     const unlistenPromise = listen<AppControls>("app-controls-changed", (event) => {
       const savedLanguage: AppLanguage = event.payload.appLanguage === "tr" ? "tr" : "en";
       const normalized: AppControls = { ...DEFAULT_APP_CONTROLS, ...event.payload, appLanguage: savedLanguage };
+      appControlsRef.current = normalized;
       setAppControls(normalized);
       setAppLanguage(savedLanguage);
     });
@@ -261,7 +267,16 @@ function App() {
       const deduped = prev.filter(toast => toast.msg !== msg || toast.type !== type);
       return [...deduped.slice(-2), { id, msg, type }];
     });
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+    const timer = setTimeout(() => {
+      toastTimersRef.current.delete(id);
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4000);
+    toastTimersRef.current.set(id, timer);
+  }, []);
+
+  useEffect(() => () => {
+    for (const timer of toastTimersRef.current.values()) clearTimeout(timer);
+    toastTimersRef.current.clear();
   }, []);
 
   const markAccountExpired = useCallback((accountId: string, showMessage = true) => {
@@ -319,6 +334,7 @@ function App() {
   });
 
   useEffect(() => {
+    const updateScrollTimers = new Set<number>();
     const openNotificationMail = async (messageId: string, accountId?: string) => {
       if (!messageId || !accountId) return;
       if (accountId && accountId !== activeAccountIdRef.current) {
@@ -359,12 +375,15 @@ function App() {
       await getCurrentWindow().show();
       await getCurrentWindow().unminimize();
       await getCurrentWindow().setFocus();
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
+        updateScrollTimers.delete(timer);
         document.getElementById("settings-updates")?.scrollIntoView({ block: "center", behavior: "smooth" });
       }, 100);
+      updateScrollTimers.add(timer);
     });
 
     return () => {
+      for (const timer of updateScrollTimers) window.clearTimeout(timer);
       unlistenCustomPromise.then(unlisten => unlisten());
       unlistenPluginPromise.then(unlisten => unlisten());
       unlistenUpdatePromise.then(unlisten => unlisten());
@@ -408,9 +427,9 @@ function App() {
         mailPageCursorRef.current = adjusted[adjusted.length - 1];
       }
       const cacheKey = mailCacheKey(label, accountId);
-      tabEmailCacheRef.current[cacheKey] = options?.append
+      tabEmailCacheRef.current[cacheKey] = (options?.append
         ? [...(tabEmailCacheRef.current[cacheKey] ?? []), ...adjusted]
-        : adjusted;
+        : adjusted).slice(0, 2_000);
       const cacheKeys = Object.keys(tabEmailCacheRef.current);
       while (cacheKeys.length > MAX_LABEL_CACHE) {
         const oldest = cacheKeys.shift();
@@ -542,18 +561,32 @@ function App() {
     }
   };
 
-  const updateAppControls = async (next: AppControls) => {
+  const updateAppControls = (patch: Partial<AppControls>) => {
     const previous = appControlsRef.current;
-    const merged = { ...DEFAULT_APP_CONTROLS, ...next };
+    const merged = { ...DEFAULT_APP_CONTROLS, ...previous, ...patch };
+    appControlsRef.current = merged;
     setAppControls(merged);
-    try {
-      const saved = await tauriApi.setAppControls(merged);
-      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved });
-    } catch (e) {
-      console.error("Failed to update app controls:", e);
-      setAppControls(previous);
-      showToast(`${tr.messages.settingSaveFailed}: ${e}`, "error");
-    }
+    if (patch.appLanguage) setAppLanguage(patch.appLanguage);
+
+    appControlsSaveQueueRef.current = appControlsSaveQueueRef.current.then(async () => {
+      try {
+        const saved = await tauriApi.setAppControls(patch);
+        if (appControlsRef.current === merged) {
+          const normalized = { ...DEFAULT_APP_CONTROLS, ...saved };
+          appControlsRef.current = normalized;
+          setAppControls(normalized);
+          setAppLanguage(normalized.appLanguage);
+        }
+      } catch (e) {
+        console.error("Failed to update app controls:", e);
+        if (appControlsRef.current === merged) {
+          appControlsRef.current = previous;
+          setAppControls(previous);
+          setAppLanguage(previous.appLanguage);
+        }
+        showToast(`${tr.messages.settingSaveFailed}: ${e}`, "error");
+      }
+    });
   };
 
   const {
@@ -899,9 +932,14 @@ function App() {
       setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m) ?? null);
       adjustUnreadBadge(mail.account_id, -1);
       try {
-        await tauriApi.markAsRead(mail.account_id, mail.id);
+        await enqueueMailMutation(
+          mailMutationQueueRef.current,
+          emailKey(mail),
+          () => tauriApi.markAsRead(mail.account_id, mail.id),
+        );
       } catch (e) {
         console.error("Failed to mark as read:", e);
+        if (!recentlyReadRef.current.has(emailKey(mail))) return;
         recentlyReadRef.current.delete(emailKey(mail));
         setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m));
         setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: true } : m) ?? null);
@@ -911,18 +949,8 @@ function App() {
     }
   };
 
-  const handleAppLanguageChange = async (language: AppLanguage) => {
-    const previous = appLanguage;
-    setAppLanguage(language);
-    try {
-      const saved = await tauriApi.setAppLanguage(language);
-      const savedLanguage: AppLanguage = saved.appLanguage === "tr" ? "tr" : "en";
-      setAppControls({ ...DEFAULT_APP_CONTROLS, ...saved, appLanguage: savedLanguage });
-      setAppLanguage(savedLanguage);
-    } catch (error) {
-      console.error("Failed to save app language:", error);
-      setAppLanguage(previous);
-    }
+  const handleAppLanguageChange = (language: AppLanguage) => {
+    updateAppControls({ appLanguage: language });
   };
 
   const canLoadRemoteImages = useCallback((mail: EmailSummary) => {
@@ -974,6 +1002,7 @@ function App() {
     locale: tr,
     mailScrollRef,
     recentlyReadRef,
+    mailMutationQueueRef,
     setEmails,
     setSearchResults,
     setReadingToolsOpen,
@@ -998,6 +1027,7 @@ function App() {
     selectedMailBody,
     activeTabRef,
     recentlyReadRef,
+    mailMutationQueueRef,
     setEmails,
     setSelectedMail,
     setThreadRefreshKey,

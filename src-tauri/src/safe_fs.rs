@@ -63,10 +63,17 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
         replace_file(&temporary, path)
     })();
 
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = result {
+        return match fs::remove_file(&temporary) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                cleanup.kind(),
+                format!("{error}; temporary file cleanup failed: {cleanup}"),
+            )),
+        };
     }
-    result
+    Ok(())
 }
 
 pub fn atomic_write_new(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -83,14 +90,21 @@ pub fn atomic_write_new(path: &Path, contents: &[u8]) -> io::Result<()> {
         // Linking publishes the fully-written file without replacing a file
         // that may have appeared after the caller selected its name.
         fs::hard_link(&temporary, path)?;
-        let _ = fs::remove_file(&temporary);
+        fs::remove_file(&temporary)?;
         Ok(())
     })();
 
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = result {
+        return match fs::remove_file(&temporary) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                cleanup.kind(),
+                format!("{error}; temporary file cleanup failed: {cleanup}"),
+            )),
+        };
     }
-    result
+    Ok(())
 }
 
 #[cfg(test)]
@@ -128,6 +142,7 @@ mod tests {
 
         assert!(atomic_write_new(&path, b"replacement").is_err());
         assert_eq!(fs::read(&path).expect("read result"), b"existing");
+        assert_eq!(fs::read_dir(&directory).expect("list directory").count(), 1);
         let _ = fs::remove_dir_all(directory);
     }
 }

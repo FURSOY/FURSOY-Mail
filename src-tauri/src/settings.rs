@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
 #[cfg(target_os = "windows")]
@@ -49,6 +49,43 @@ pub struct AppControls {
     pub quiet_hours_end: String,
     #[serde(default = "default_app_language")]
     pub app_language: String,
+}
+
+#[derive(Default)]
+pub struct AppControlsState(pub Mutex<()>);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppControlsPatch {
+    notification_mode: Option<String>,
+    mail_sync_paused: Option<bool>,
+    quiet_hours_enabled: Option<bool>,
+    quiet_hours_start: Option<String>,
+    quiet_hours_end: Option<String>,
+    app_language: Option<String>,
+}
+
+impl AppControlsPatch {
+    fn apply(self, controls: &mut AppControls) {
+        if let Some(value) = self.notification_mode {
+            controls.notification_mode = value;
+        }
+        if let Some(value) = self.mail_sync_paused {
+            controls.mail_sync_paused = value;
+        }
+        if let Some(value) = self.quiet_hours_enabled {
+            controls.quiet_hours_enabled = value;
+        }
+        if let Some(value) = self.quiet_hours_start {
+            controls.quiet_hours_start = value;
+        }
+        if let Some(value) = self.quiet_hours_end {
+            controls.quiet_hours_end = value;
+        }
+        if let Some(value) = self.app_language {
+            controls.app_language = value;
+        }
+    }
 }
 
 impl Default for AppControls {
@@ -173,21 +210,33 @@ pub fn get_app_controls(
 pub fn set_app_controls(
     window: tauri::WebviewWindow,
     app: AppHandle,
-    controls: AppControls,
+    state: tauri::State<'_, AppControlsState>,
+    controls: AppControlsPatch,
 ) -> Result<AppControls, String> {
     crate::require_command_window(&window, &["main"])?;
-    validate_app_controls(&controls)?;
-    write_app_controls(&app, &controls)?;
-    Ok(controls)
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "App controls lock is unavailable.")?;
+    let mut controls_current = read_app_controls(&app);
+    controls.apply(&mut controls_current);
+    validate_app_controls(&controls_current)?;
+    write_app_controls(&app, &controls_current)?;
+    Ok(controls_current)
 }
 
 #[tauri::command]
 pub fn set_notifications_muted(
     window: tauri::WebviewWindow,
     app: AppHandle,
+    state: tauri::State<'_, AppControlsState>,
     muted: bool,
 ) -> Result<AppControls, String> {
     crate::require_command_window(&window, &["main"])?;
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "App controls lock is unavailable.")?;
     let mut controls = read_app_controls(&app);
     controls.notification_mode = if muted { "off" } else { "all" }.into();
     write_app_controls(&app, &controls)?;
@@ -198,9 +247,14 @@ pub fn set_notifications_muted(
 pub fn set_mail_sync_paused(
     window: tauri::WebviewWindow,
     app: AppHandle,
+    state: tauri::State<'_, AppControlsState>,
     paused: bool,
 ) -> Result<AppControls, String> {
     crate::require_command_window(&window, &["main"])?;
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "App controls lock is unavailable.")?;
     let mut controls = read_app_controls(&app);
     controls.mail_sync_paused = paused;
     write_app_controls(&app, &controls)?;
@@ -211,9 +265,14 @@ pub fn set_mail_sync_paused(
 pub fn set_app_language(
     window: tauri::WebviewWindow,
     app: AppHandle,
+    state: tauri::State<'_, AppControlsState>,
     language: String,
 ) -> Result<AppControls, String> {
     crate::require_command_window(&window, &["main"])?;
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "App controls lock is unavailable.")?;
     if language != "en" && language != "tr" {
         return Err("Unsupported app language".into());
     }
@@ -503,7 +562,25 @@ pub fn set_launch_at_startup(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_clock_time, validate_app_controls, AppControls};
+    use super::{is_valid_clock_time, validate_app_controls, AppControls, AppControlsPatch};
+
+    #[test]
+    fn app_controls_patch_preserves_unmentioned_fields() {
+        let mut controls = AppControls::default();
+        controls.mail_sync_paused = true;
+        AppControlsPatch {
+            notification_mode: Some("off".into()),
+            mail_sync_paused: None,
+            quiet_hours_enabled: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            app_language: None,
+        }
+        .apply(&mut controls);
+
+        assert_eq!(controls.notification_mode, "off");
+        assert!(controls.mail_sync_paused);
+    }
 
     #[test]
     fn notification_modes_filter_expected_payloads() {

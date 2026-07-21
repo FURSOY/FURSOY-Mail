@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager, Emitter};
+use std::{
+    collections::VecDeque,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetWindowRect,
@@ -23,7 +27,38 @@ pub struct NotificationPayload {
     pub multi_account: Option<bool>,
 }
 
-pub struct PendingNotification(pub Mutex<Option<NotificationPayload>>);
+pub struct PendingNotification {
+    lifecycle: tokio::sync::Mutex<()>,
+    queue: Mutex<NotificationQueue>,
+}
+
+#[derive(Default)]
+struct NotificationQueue {
+    pending: VecDeque<NotificationPayload>,
+    ready: bool,
+    created_at: Option<Instant>,
+}
+
+const MAX_PENDING_NOTIFICATIONS: usize = 50;
+const NOTIFICATION_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl NotificationQueue {
+    fn push(&mut self, payload: NotificationPayload) {
+        if self.pending.len() >= MAX_PENDING_NOTIFICATIONS {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(payload);
+    }
+}
+
+impl Default for PendingNotification {
+    fn default() -> Self {
+        Self {
+            lifecycle: tokio::sync::Mutex::new(()),
+            queue: Mutex::new(NotificationQueue::default()),
+        }
+    }
+}
 
 #[tauri::command]
 pub fn is_system_fullscreen(window: tauri::WebviewWindow) -> Result<bool, String> {
@@ -115,22 +150,66 @@ pub async fn show_custom_notification(
         return Ok(());
     }
 
-    let payload = NotificationPayload { title, body, kind, code, email_id, duration, account_id, account_picture, multi_account };
+    let payload = NotificationPayload {
+        title,
+        body,
+        kind,
+        code,
+        email_id,
+        duration,
+        account_id,
+        account_picture,
+        multi_account,
+    };
+    let state = app.state::<PendingNotification>();
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    let mut payload_queued = false;
 
     // If window already exists (hidden or visible), just send new notification
     if let Some(window) = app.get_webview_window("notification") {
-        window
-            .emit("new-notification", payload)
-            .map_err(|e| format!("Bildirim iletilemedi: {e}"))?;
-        window
-            .show()
-            .map_err(|e| format!("Bildirim penceresi gösterilemedi: {e}"))?;
-        return Ok(());
+        let (ready, recreate) = {
+            let mut queue = state
+                .queue
+                .lock()
+                .map_err(|_| "Notification queue is unavailable.".to_string())?;
+            if !queue.ready {
+                queue.push(payload.clone());
+                payload_queued = true;
+            }
+            let recreate = !queue.ready
+                && queue
+                    .created_at
+                    .is_some_and(|created_at| created_at.elapsed() >= NOTIFICATION_READY_TIMEOUT);
+            if recreate {
+                queue.created_at = Some(Instant::now());
+            }
+            (queue.ready, recreate)
+        };
+        if !ready {
+            if !recreate {
+                return Ok(());
+            }
+            window.destroy().map_err(|error| error.to_string())?;
+        } else {
+            window
+                .emit("new-notification", payload)
+                .map_err(|error| error.to_string())?;
+            window.show().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
     }
 
     // Store payload for first load
-    if let Some(state) = app.try_state::<PendingNotification>() {
-        *state.0.lock().unwrap() = Some(payload.clone());
+    {
+        let mut queue = state
+            .queue
+            .lock()
+            .map_err(|_| "Notification queue is unavailable.".to_string())?;
+        queue.ready = false;
+        queue.created_at = Some(Instant::now());
+        if !payload_queued {
+            queue.push(payload);
+        }
     }
 
     let monitor_result = app.primary_monitor();
@@ -169,8 +248,10 @@ pub async fn show_custom_notification(
 
         if result.is_err() {
             if let Some(state) = app_clone.try_state::<PendingNotification>() {
-                if let Ok(mut pending) = state.0.lock() {
-                    pending.take();
+                if let Ok(mut queue) = state.queue.lock() {
+                    queue.ready = false;
+                    queue.created_at = None;
+                    queue.pending.clear();
                 }
             }
         }
@@ -188,12 +269,45 @@ pub async fn show_custom_notification(
 pub fn get_pending_notification(
     window: tauri::WebviewWindow,
     app: AppHandle,
-) -> Result<Option<NotificationPayload>, String> {
+) -> Result<Vec<NotificationPayload>, String> {
     crate::require_command_window(&window, &["notification"])?;
-    if let Some(state) = app.try_state::<PendingNotification>() {
-        Ok(state.0.lock().unwrap().take())
-    } else {
-        Ok(None)
+    let state = app.state::<PendingNotification>();
+    let mut queue = state
+        .queue
+        .lock()
+        .map_err(|_| "Notification queue is unavailable.".to_string())?;
+    let pending = queue.pending.drain(..).collect();
+    queue.ready = true;
+    queue.created_at = None;
+    Ok(pending)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NotificationPayload, NotificationQueue, MAX_PENDING_NOTIFICATIONS};
+
+    fn payload(index: usize) -> NotificationPayload {
+        NotificationPayload {
+            title: index.to_string(),
+            body: String::new(),
+            kind: None,
+            code: None,
+            email_id: None,
+            duration: None,
+            account_id: None,
+            account_picture: None,
+            multi_account: None,
+        }
+    }
+
+    #[test]
+    fn pending_queue_keeps_only_the_newest_notifications() {
+        let mut queue = NotificationQueue::default();
+        for index in 0..MAX_PENDING_NOTIFICATIONS + 3 {
+            queue.push(payload(index));
+        }
+        assert_eq!(queue.pending.len(), MAX_PENDING_NOTIFICATIONS);
+        assert_eq!(queue.pending.front().unwrap().title, "3");
     }
 }
 

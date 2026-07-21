@@ -1,8 +1,8 @@
-import { useCallback, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { AppLocale } from "../i18n";
 import type { Account, AttachmentPayload, EmailSummary } from "../types";
 import { tauriApi } from "../tauriApi";
-import { inboxUnreadDelta, runAuthenticatedMailAction } from "../mailActionState";
+import { enqueueMailMutation, inboxUnreadDelta, runAuthenticatedMailAction, type MailMutationQueue } from "../mailActionState";
 import { escapeHtml, formatDateFull, isAuthFailure, sanitizeComposerHtml } from "../utils";
 
 export interface ConfirmModalState {
@@ -19,6 +19,7 @@ interface UseMailActionsOptions {
   selectedMailBody: string;
   activeTabRef: MutableRefObject<string>;
   recentlyReadRef: MutableRefObject<Set<string>>;
+  mailMutationQueueRef: MutableRefObject<MailMutationQueue>;
   setEmails: Dispatch<SetStateAction<EmailSummary[]>>;
   setSelectedMail: Dispatch<SetStateAction<string | null>>;
   setThreadRefreshKey: Dispatch<SetStateAction<number>>;
@@ -50,11 +51,25 @@ function actionFailureMessage(summary: string, error: unknown) {
 
 const SENT_VERIFICATION_DELAYS_MS = [0, 1_500, 3_000, 6_000, 10_000];
 
-async function verifyUncertainSend(accountId: string, messageId: string) {
+function waitForVerificationDelay(delay: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", cancel);
+      resolve(true);
+    }, delay);
+    const cancel = () => {
+      window.clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+}
+
+async function verifyUncertainSend(accountId: string, messageId: string, signal: AbortSignal) {
   for (const delay of SENT_VERIFICATION_DELAYS_MS) {
-    if (delay > 0) {
-      await new Promise(resolve => window.setTimeout(resolve, delay));
-    }
+    if (delay > 0 && !await waitForVerificationDelay(delay, signal)) return false;
+    if (signal.aborted) return false;
     try {
       if (await tauriApi.verifySentMessage(accountId, messageId)) return true;
     } catch {
@@ -68,7 +83,7 @@ async function verifyUncertainSend(accountId: string, messageId: string) {
 export function useMailActions(options: UseMailActionsOptions) {
   const {
     locale, accounts, accountTokens, activeAccountId, activeMail, selectedMailBody,
-    activeTabRef, recentlyReadRef, setEmails, setSelectedMail,
+    activeTabRef, recentlyReadRef, mailMutationQueueRef, setEmails, setSelectedMail,
     setThreadRefreshKey, getTokenForEmail, loadEmails, refreshUnreadCount,
     adjustUnreadBadge, refreshAccessToken, upsertToken, clearExpiredAccount,
     markAccountExpired, showToast,
@@ -86,6 +101,13 @@ export function useMailActions(options: UseMailActionsOptions) {
   const [composeHtmlAppend, setComposeHtmlAppend] = useState("");
   const [composeAccountId, setComposeAccountId] = useState<string | null>(null);
   const [composeSendError, setComposeSendError] = useState<string | null>(null);
+  const verificationAbortRef = useRef(new AbortController());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    verificationAbortRef.current = controller;
+    return () => controller.abort();
+  }, []);
 
   const runAuthenticatedAction = useCallback(async (
     mail: EmailSummary,
@@ -199,7 +221,7 @@ export function useMailActions(options: UseMailActionsOptions) {
       });
       if (outcome.status === "outcome_unknown") {
         showToast(locale.messages.sendOutcomeUnknown, "info");
-        const verified = await verifyUncertainSend(activeMail.account_id, outcome.messageId);
+        const verified = await verifyUncertainSend(activeMail.account_id, outcome.messageId, verificationAbortRef.current.signal);
         if (!verified) {
           showToast(locale.messages.sendOutcomeUnresolved, "error");
           return;
@@ -261,7 +283,7 @@ export function useMailActions(options: UseMailActionsOptions) {
       if (outcome.status === "outcome_unknown") {
         setComposeSendError(locale.messages.sendOutcomeUnknown);
         showToast(locale.messages.sendOutcomeUnknown, "info");
-        const verified = await verifyUncertainSend(sendFromId, outcome.messageId);
+        const verified = await verifyUncertainSend(sendFromId, outcome.messageId, verificationAbortRef.current.signal);
         if (!verified) {
           setComposeSendError(locale.messages.sendOutcomeUnresolved);
           showToast(locale.messages.sendOutcomeUnresolved, "error");
@@ -306,7 +328,11 @@ export function useMailActions(options: UseMailActionsOptions) {
     setEmails(previous => previous.map(email => sameEmail(email, mail) ? { ...email, unread: true } : email));
     adjustUnreadBadge(mail.account_id, 1);
     try {
-      await runAuthenticatedAction(mail, () => tauriApi.markAsUnread(mail.account_id, mail.id));
+      await enqueueMailMutation(
+        mailMutationQueueRef.current,
+        emailKey(mail),
+        () => runAuthenticatedAction(mail, () => tauriApi.markAsUnread(mail.account_id, mail.id)),
+      );
     } catch (error) {
       console.error("Mark email as unread failed:", error);
       adjustUnreadBadge(mail.account_id, -1);

@@ -139,7 +139,7 @@ export const tauriApi = {
     invoke<boolean>("set_launch_at_startup", { enabled }),
   openDefaultMailSettings: () => invoke<void>("open_default_mail_settings"),
   getAppControls: () => invoke<AppControls>("get_app_controls"),
-  setAppControls: (controls: AppControls) =>
+  setAppControls: (controls: Partial<AppControls>) =>
     invoke<AppControls>("set_app_controls", { controls }),
   setAppLanguage: (language: AppControls["appLanguage"]) =>
     invoke<AppControls>("set_app_language", { language }),

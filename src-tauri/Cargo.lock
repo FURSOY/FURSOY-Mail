@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "fursoy-mail"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "base64 0.22.1",
  "dotenvy",

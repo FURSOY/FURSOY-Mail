@@ -33,6 +33,7 @@ pub struct SyncWorkers {
     active: HashMap<String, i64>,
     resync_requested: HashMap<String, i64>,
     backfilling: HashMap<String, i64>,
+    backfill_tasks: HashMap<String, (i64, tokio::sync::oneshot::Sender<()>)>,
 }
 
 impl SyncWorkers {
@@ -95,9 +96,36 @@ impl SyncWorkers {
     }
 
     pub fn invalidate_account(&mut self, account_id: &str) {
+        if let Some((_, task)) = self.backfill_tasks.remove(account_id) {
+            let _ = task.send(());
+        }
         self.active.remove(account_id);
         self.resync_requested.remove(account_id);
         self.backfilling.remove(account_id);
+    }
+
+    pub fn register_backfill_task(
+        &mut self,
+        account_id: &str,
+        account_generation: i64,
+        cancellation: tokio::sync::oneshot::Sender<()>,
+    ) {
+        if let Some((_, previous)) = self
+            .backfill_tasks
+            .insert(account_id.to_string(), (account_generation, cancellation))
+        {
+            let _ = previous.send(());
+        }
+    }
+
+    pub fn finish_backfill_task(&mut self, account_id: &str, account_generation: i64) {
+        if self
+            .backfill_tasks
+            .get(account_id)
+            .is_some_and(|(generation, _)| *generation == account_generation)
+        {
+            self.backfill_tasks.remove(account_id);
+        }
     }
 }
 
@@ -161,9 +189,25 @@ pub fn run() {
     }));
 
     builder
-        .register_asynchronous_uri_scheme_protocol("mailimg", |_app, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("mailimg", |app, request, responder| {
             let uri = request.uri().to_string();
+            let proxy = app
+                .app_handle()
+                .state::<img_proxy::ImageProxyState>()
+                .inner()
+                .clone();
+            let Some(request_slot) = proxy.try_reserve_request() else {
+                let response = tauri::http::Response::builder()
+                    .status(429)
+                    .header("Retry-After", "1")
+                    .body(Vec::new())
+                    .unwrap();
+                responder.respond(response);
+                return;
+            };
             tauri::async_runtime::spawn(async move {
+                let _request_slot = request_slot;
+                let _fetch_permit = proxy.acquire_fetch().await;
                 let response = match img_proxy::fetch_remote_image(uri).await {
                     Ok((bytes, content_type)) => tauri::http::Response::builder()
                         .status(200)
@@ -190,8 +234,10 @@ pub fn run() {
             workers: Mutex::new(SyncWorkers::default()),
         })
         .manage(TokenRefreshFlights::default())
+        .manage(img_proxy::ImageProxyState::default())
         .manage(auth::OAuthFlowState::default())
-        .manage(notify::PendingNotification(Mutex::new(None)))
+        .manage(notify::PendingNotification::default())
+        .manage(settings::AppControlsState::default())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                 if let Err(error) = window_state::save_window_state(window) {
@@ -272,6 +318,14 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "toggle_mute_notifications" => {
+                        let state = app.state::<settings::AppControlsState>();
+                        let _guard = match state.0.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => {
+                                eprintln!("[TRAY] app controls lock is unavailable");
+                                return;
+                            }
+                        };
                         let previous = settings::read_app_controls(app);
                         let mut controls = previous.clone();
                         controls.notification_mode = if controls.notifications_disabled() {
@@ -304,6 +358,14 @@ pub fn run() {
                         }
                     }
                     "toggle_pause_sync" => {
+                        let state = app.state::<settings::AppControlsState>();
+                        let _guard = match state.0.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => {
+                                eprintln!("[TRAY] app controls lock is unavailable");
+                                return;
+                            }
+                        };
                         let previous = settings::read_app_controls(app);
                         let mut controls = previous.clone();
                         controls.mail_sync_paused = !controls.mail_sync_paused;

@@ -26,7 +26,7 @@ interface SettingsPanelProps {
   onLaunchAtStartupChange: (checked: boolean) => void;
 
   appControls: AppControls;
-  onUpdateAppControls: (next: AppControls) => void;
+  onUpdateAppControls: (patch: Partial<AppControls>) => void;
 
   notifDuration: number;
   setNotifDuration: (v: number) => void;
@@ -360,7 +360,7 @@ export function SettingsPanel({
                             name="notification-mode"
                             checked={active}
                             onChange={() => {
-                              onUpdateAppControls({ ...appControls, notificationMode: mode });
+                              onUpdateAppControls({ notificationMode: mode });
                               if (mode === "otpOnly" && otpMode === "off") {
                                 setOtpMode("balanced");
                                 localStorage.setItem("fursoy_otp_mode", "balanced");
@@ -407,7 +407,7 @@ export function SettingsPanel({
 
               <div className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-app)] p-3">
                 <label className="flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls({ ...appControls, quietHoursEnabled: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                  <input type="checkbox" checked={appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls({ quietHoursEnabled: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
                   <span className="text-sm text-[var(--color-text-secondary)]">{tr.notifications.quietHours}</span>
                 </label>
                 <p className="mt-1 text-[10px] text-[var(--color-text-subtle)]">{tr.notifications.quietHoursHint}</p>
@@ -415,7 +415,7 @@ export function SettingsPanel({
                   {(["start", "end"] as const).map((edge) => (
                     <label key={edge} className="space-y-1">
                       <span className="text-[10px] text-[var(--color-text-subtle)]">{tr.notifications[edge]}</span>
-                      <input type="time" value={edge === "start" ? appControls.quietHoursStart : appControls.quietHoursEnd} disabled={!appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls(edge === "start" ? { ...appControls, quietHoursStart: e.target.value } : { ...appControls, quietHoursEnd: e.target.value })} className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-control)] px-2 py-1.5 text-xs text-[var(--color-text-secondary)] outline-none focus:border-[var(--app-accent)]/50" />
+                      <input type="time" value={edge === "start" ? appControls.quietHoursStart : appControls.quietHoursEnd} disabled={!appControls.quietHoursEnabled} onChange={(e) => onUpdateAppControls(edge === "start" ? { quietHoursStart: e.target.value } : { quietHoursEnd: e.target.value })} className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-control)] px-2 py-1.5 text-xs text-[var(--color-text-secondary)] outline-none focus:border-[var(--app-accent)]/50" />
                     </label>
                   ))}
                 </div>
@@ -436,7 +436,7 @@ export function SettingsPanel({
                 </div>
               </div>
               <label className="flex cursor-pointer items-center gap-2">
-                <input type="checkbox" checked={appControls.mailSyncPaused} onChange={(e) => onUpdateAppControls({ ...appControls, mailSyncPaused: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
+                <input type="checkbox" checked={appControls.mailSyncPaused} onChange={(e) => onUpdateAppControls({ mailSyncPaused: e.target.checked })} className="h-4 w-4 rounded border-[var(--color-border-strong)] bg-[var(--color-surface-app)] text-[var(--app-accent)] focus:ring-0 focus:ring-offset-0" />
                 <span className="text-sm text-[var(--color-text-secondary)]">{tr.notifications.pauseMailSync}</span>
               </label>
               <label className="flex cursor-pointer items-center gap-2">

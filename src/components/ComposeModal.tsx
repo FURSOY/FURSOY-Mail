@@ -15,6 +15,7 @@ const BLOCKED_EXTENSIONS = new Set([
 // Gmail's total attachment limit is 25 MB (MIME encoded).
 // Base64 adds ~33% overhead, so we cap raw file bytes at 20 MB total.
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_FILES = 100;
 
 interface ComposeModalProps {
   composeTo: string;
@@ -99,6 +100,7 @@ export function ComposeModal({
   const [showCc, setShowCc] = useState(false);
   const [showBcc, setShowBcc] = useState(false);
   const [draftActionPending, setDraftActionPending] = useState(false);
+  const draftActionPendingRef = useRef(false);
   const modalRef = useRef<HTMLDivElement>(null);
   const fromRef = useRef<HTMLDivElement>(null);
   const toRef = useRef<HTMLInputElement>(null);
@@ -107,6 +109,10 @@ export function ComposeModal({
   const bodyEditableRef = useRef<HTMLDivElement>(null);
   const savedRangeRef = useRef<Range | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
+  const attachmentReadersRef = useRef<Set<FileReader>>(new Set());
+  const pendingAttachmentBytesRef = useRef(0);
+  const mountedRef = useRef(true);
   const contactSearchRequestIdRef = useRef(0);
   const draftIdRef = useRef<string | null>(null);
   const draftVerificationMessageIdRef = useRef<string | null>(null);
@@ -118,6 +124,18 @@ export function ComposeModal({
   const draftCreateOutcomeUnknownRef = useRef<string | null>(null);
 
   const activeAccount = accounts.find(a => a.id === composeAccountId) ?? accounts[0];
+
+  const beginDraftAction = () => {
+    if (draftActionPendingRef.current) return false;
+    draftActionPendingRef.current = true;
+    setDraftActionPending(true);
+    return true;
+  };
+
+  const finishDraftAction = () => {
+    draftActionPendingRef.current = false;
+    setDraftActionPending(false);
+  };
 
   const bodyText = useCallback((html: string) => {
     const doc = new DOMParser().parseFromString(html, "text/html");
@@ -220,7 +238,17 @@ export function ComposeModal({
   }, [activeAccount?.id]);
 
   useEffect(() => {
-    window.setTimeout(() => toRef.current?.focus(), 0);
+    mountedRef.current = true;
+    focusTimerRef.current = window.setTimeout(() => toRef.current?.focus(), 0);
+    return () => {
+      mountedRef.current = false;
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+      for (const reader of attachmentReadersRef.current) reader.abort();
+      attachmentReadersRef.current.clear();
+      pendingAttachmentBytesRef.current = 0;
+    };
   }, []);
 
   useEffect(() => {
@@ -307,7 +335,8 @@ export function ComposeModal({
     setComposeTo(parts.join(", ") + ", ");
     setSuggOpen(false);
     setSuggestions([]);
-    setTimeout(() => toRef.current?.focus(), 0);
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => toRef.current?.focus(), 0);
   };
 
   const handleToKeyDown = (e: React.KeyboardEvent) => {
@@ -324,6 +353,11 @@ export function ComposeModal({
 
     setAttachError(null);
 
+    if (attachments.length + attachmentReadersRef.current.size + files.length > MAX_ATTACHMENT_FILES) {
+      setAttachError(tr.compose.attachmentCountLimit);
+      return;
+    }
+
     // Check for blocked extensions
     const blocked = files.filter(f => {
       const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
@@ -337,23 +371,28 @@ export function ComposeModal({
     // Check total size (existing + new)
     const existingBytes = attachments.reduce((s, a) => s + a.size, 0);
     const newBytes = files.reduce((s, f) => s + f.size, 0);
-    if (existingBytes + newBytes > MAX_TOTAL_BYTES) {
-      const remainingMB = ((MAX_TOTAL_BYTES - existingBytes) / (1024 * 1024)).toFixed(1);
+    if (existingBytes + pendingAttachmentBytesRef.current + newBytes > MAX_TOTAL_BYTES) {
+      const remainingMB = ((MAX_TOTAL_BYTES - existingBytes - pendingAttachmentBytesRef.current) / (1024 * 1024)).toFixed(1);
       setAttachError(tr.compose.attachmentRemaining.replace("{remaining}", remainingMB));
       return;
     }
 
+    pendingAttachmentBytesRef.current += newBytes;
     setPendingAttachmentReads(prev => prev + files.length);
     files.forEach(file => {
       const reader = new FileReader();
+      attachmentReadersRef.current.add(reader);
       let settled = false;
       const finishRead = () => {
         if (settled) return;
         settled = true;
-        setPendingAttachmentReads(prev => Math.max(0, prev - 1));
+        attachmentReadersRef.current.delete(reader);
+        pendingAttachmentBytesRef.current = Math.max(0, pendingAttachmentBytesRef.current - file.size);
+        if (mountedRef.current) setPendingAttachmentReads(prev => Math.max(0, prev - 1));
       };
       reader.onload = () => {
         try {
+          if (!mountedRef.current) return;
           if (typeof reader.result !== "string" || !reader.result.includes(",")) {
             throw new Error("Invalid FileReader result");
           }
@@ -365,20 +404,20 @@ export function ComposeModal({
             size: file.size,
           }]);
         } catch {
-          setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+          if (mountedRef.current) setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         } finally {
           finishRead();
         }
       };
       reader.onerror = () => {
-        setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        if (mountedRef.current) setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         finishRead();
       };
-      reader.onabort = reader.onerror;
+      reader.onabort = finishRead;
       try {
         reader.readAsDataURL(file);
       } catch {
-        setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        if (mountedRef.current) setAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         finishRead();
       }
     });
@@ -499,9 +538,8 @@ export function ComposeModal({
   };
 
   const handleClose = async () => {
-    if (draftActionPending || pendingAttachmentReads > 0) return;
+    if (pendingAttachmentReads > 0 || !beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     try {
       if (hasDraftContent() || draftIdRef.current) {
         await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
@@ -512,13 +550,13 @@ export function ComposeModal({
     } catch {
       // Keep the composer open: closing after a failed save would lose work.
     } finally {
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 
   const handleDiscard = async () => {
+    if (!beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     try {
       await draftSaveQueueRef.current.catch(() => null);
       const discardedDraftId = draftIdRef.current;
@@ -549,13 +587,13 @@ export function ComposeModal({
       setDraftError(String(error).replace(/^Error:\s*/i, ""));
     } finally {
       setConfirmDiscard(false);
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 
   const sendNow = async () => {
+    if (!beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     try {
       const body = bodyEditableRef.current?.innerHTML ?? composeBody;
       await persistDraft(body, attachments);
@@ -570,7 +608,7 @@ export function ComposeModal({
     } catch {
       // persistDraft already exposes the save error and keeps the composer open.
     } finally {
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 
@@ -608,9 +646,8 @@ export function ComposeModal({
   };
 
   const openDraft = async (selectedId: string) => {
-    if (!activeAccount?.id || selectedId === draftIdRef.current || draftActionPending) return;
+    if (!activeAccount?.id || selectedId === draftIdRef.current || !beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     setDraftError(null);
     try {
       if (hasDraftContent() || draftIdRef.current) {
@@ -636,14 +673,13 @@ export function ComposeModal({
       setDraftStatus("error");
       setDraftError(String(error).replace(/^Error:\s*/i, ""));
     } finally {
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 
   const startNewDraft = async () => {
-    if (draftActionPending) return;
+    if (!beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     try {
       if (hasDraftContent() || draftIdRef.current) {
         await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
@@ -665,17 +701,17 @@ export function ComposeModal({
     } catch {
       // The save error is already displayed by persistDraft.
     } finally {
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 
   const changeComposeAccount = async (accountId: string) => {
-    if (accountId === activeAccount?.id || draftActionPending) {
+    if (accountId === activeAccount?.id) {
       setFromOpen(false);
       return;
     }
+    if (pendingAttachmentReads > 0 || !beginDraftAction()) return;
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
-    setDraftActionPending(true);
     try {
       if (hasDraftContent() || draftIdRef.current) {
         await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
@@ -685,7 +721,7 @@ export function ComposeModal({
     } catch {
       // Keep the current account selected when its draft could not be saved.
     } finally {
-      setDraftActionPending(false);
+      finishDraftAction();
     }
   };
 

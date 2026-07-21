@@ -1,6 +1,23 @@
 import type { EmailSummary } from "./types";
 import { isAuthFailure } from "./utils";
 
+export type MailMutationQueue = Map<string, Promise<void>>;
+
+export function enqueueMailMutation(
+  queue: MailMutationQueue,
+  key: string,
+  mutation: () => Promise<void>,
+): Promise<void> {
+  const previous = queue.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(mutation);
+  queue.set(key, current);
+  const cleanup = () => {
+    if (queue.get(key) === current) queue.delete(key);
+  };
+  void current.then(cleanup, cleanup);
+  return current;
+}
+
 interface AuthenticatedMailActionOptions {
   accountId: string;
   currentToken: string;

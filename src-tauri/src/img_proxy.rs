@@ -7,11 +7,46 @@
 
 use futures::StreamExt;
 use reqwest::{header, redirect::Policy, Client, Url};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
+use tokio::sync::Semaphore;
 
 /// Maximum image size we are willing to keep in memory.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
+const MAX_CONCURRENT_IMAGE_FETCHES: usize = 8;
+const MAX_PENDING_IMAGE_REQUESTS: usize = 64;
+
+#[derive(Clone)]
+pub struct ImageProxyState {
+    fetch_permits: Arc<Semaphore>,
+    request_slots: Arc<Semaphore>,
+}
+
+impl Default for ImageProxyState {
+    fn default() -> Self {
+        Self {
+            fetch_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_IMAGE_FETCHES)),
+            request_slots: Arc::new(Semaphore::new(MAX_PENDING_IMAGE_REQUESTS)),
+        }
+    }
+}
+
+impl ImageProxyState {
+    pub fn try_reserve_request(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.request_slots.clone().try_acquire_owned().ok()
+    }
+
+    pub async fn acquire_fetch(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.fetch_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("image proxy semaphore is never closed")
+    }
+}
 
 fn is_public_ipv4(address: Ipv4Addr) -> bool {
     let [first, second, _, _] = address.octets();
@@ -184,7 +219,7 @@ pub async fn fetch_remote_image(request_uri: String) -> Result<(Vec<u8>, String)
 
 #[cfg(test)]
 mod tests {
-    use super::is_public_ip;
+    use super::{is_public_ip, ImageProxyState, MAX_PENDING_IMAGE_REQUESTS};
 
     #[test]
     fn rejects_local_and_private_addresses() {
@@ -195,5 +230,16 @@ mod tests {
         assert!(!is_public_ip("::1".parse().unwrap()));
         assert!(!is_public_ip("fd00::1".parse().unwrap()));
         assert!(!is_public_ip("::ffff:127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn bounds_concurrent_fetches_and_releases_permits() {
+        let state = ImageProxyState::default();
+        let mut permits = (0..MAX_PENDING_IMAGE_REQUESTS)
+            .map(|_| state.try_reserve_request().expect("slot within limit"))
+            .collect::<Vec<_>>();
+        assert!(state.try_reserve_request().is_none());
+        permits.pop();
+        assert!(state.try_reserve_request().is_some());
     }
 }

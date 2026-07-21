@@ -276,6 +276,11 @@ export function EmailReader({
   const [linkText, setLinkText] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const savedRangeRef = useRef<Range | null>(null);
+  const replyAttachmentReadersRef = useRef<Set<FileReader>>(new Set());
+  const pendingReplyAttachmentBytesRef = useRef(0);
+  const replyFocusTimerRef = useRef<number | null>(null);
+  const copyResetTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
   const [replyAttachments, setReplyAttachments] = useState<(AttachmentPayload & { size: number })[]>([]);
   const [replyAttachError, setReplyAttachError] = useState<string | null>(null);
   const [pendingReplyAttachmentReads, setPendingReplyAttachmentReads] = useState(0);
@@ -283,6 +288,26 @@ export function EmailReader({
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (replyFocusTimerRef.current) clearTimeout(replyFocusTimerRef.current);
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+      for (const reader of replyAttachmentReadersRef.current) reader.abort();
+      replyAttachmentReadersRef.current.clear();
+      pendingReplyAttachmentBytesRef.current = 0;
+    };
+  }, []);
+
+  useEffect(() => {
+    for (const reader of replyAttachmentReadersRef.current) reader.abort();
+    replyAttachmentReadersRef.current.clear();
+    pendingReplyAttachmentBytesRef.current = 0;
+    setPendingReplyAttachmentReads(0);
+    setReplyAttachments([]);
+  }, [activeMail.id]);
 
   // Scroll to active card when thread loads (active email may not be the last in thread)
   useEffect(() => {
@@ -300,22 +325,26 @@ export function EmailReader({
   }, [threadEmails, activeMail.id, mailScrollRef]);
 
   useEffect(() => {
+    let cancelled = false;
+    const accountId = activeMail.account_id;
+    const emailId = activeMail.id;
     setAttachments([]);
     setThumbnails({});
-    tauriApi.getEmailAttachments(activeMail.id, activeMail.account_id)
+    tauriApi.getEmailAttachments(emailId, accountId)
       .then(atts => {
+        if (cancelled) return;
         setAttachments(atts);
         if (!accessToken) return;
         // Fetch thumbnails for image attachments that don't have inline data
         const imageAtts = atts.filter(a => a.mime_type.startsWith("image/") && !a.data);
         if (imageAtts.length === 0) return;
-        const emailId = activeMail.id;
         Promise.allSettled(
           imageAtts.map(a =>
-            tauriApi.fetchAttachmentData(emailId, activeMail.account_id, a.id)
+            tauriApi.fetchAttachmentData(emailId, accountId, a.id)
               .then(data => ({ id: a.id, data }))
           )
         ).then(results => {
+          if (cancelled) return;
           const map: Record<string, string> = {};
           for (const r of results) {
             if (r.status === "fulfilled") map[r.value.id] = r.value.data;
@@ -324,9 +353,11 @@ export function EmailReader({
         });
       })
       .catch(error => {
+        if (cancelled) return;
         console.error("Attachment thumbnails could not be loaded:", error);
       });
-  }, [activeMail.id, accessToken]);
+    return () => { cancelled = true; };
+  }, [activeMail.id, activeMail.account_id, accessToken]);
 
   const handleDownload = async (att: AttachmentInfo) => {
     if (!accessToken) return;
@@ -353,6 +384,10 @@ export function EmailReader({
   // Clear contenteditable when reply is hidden or replyText is reset by parent
   useEffect(() => {
     if (!showReply) {
+      for (const reader of replyAttachmentReadersRef.current) reader.abort();
+      replyAttachmentReadersRef.current.clear();
+      pendingReplyAttachmentBytesRef.current = 0;
+      setPendingReplyAttachmentReads(0);
       setShowFormatBar(false);
       setLinkPopover(false);
       setReplyEmpty(true);
@@ -429,10 +464,15 @@ export function EmailReader({
 
   const BLOCKED_EXT = new Set(["exe","bat","cmd","com","msi","scr","pif","vbs","vbe","js","jse","jar","wsf","wsh","ps1","reg","inf","lnk"]);
   const MAX_ATT_BYTES = 20 * 1024 * 1024;
+  const MAX_ATT_FILES = 100;
 
   const addReplyAttachmentFiles = (files: File[]) => {
     if (!files.length) return;
     setReplyAttachError(null);
+    if (replyAttachments.length + replyAttachmentReadersRef.current.size + files.length > MAX_ATT_FILES) {
+      setReplyAttachError(tr.compose.attachmentCountLimit);
+      return;
+    }
     const blocked = files.filter(f => BLOCKED_EXT.has(f.name.split(".").pop()?.toLowerCase() ?? ""));
     if (blocked.length) {
       setReplyAttachError(tr.compose.blockedFileType.replace("{files}", blocked.map(f => f.name).join(", ")));
@@ -440,41 +480,46 @@ export function EmailReader({
     }
     const existingBytes = replyAttachments.reduce((s, a) => s + a.size, 0);
     const newBytes = files.reduce((s, f) => s + f.size, 0);
-    if (existingBytes + newBytes > MAX_ATT_BYTES) {
+    if (existingBytes + pendingReplyAttachmentBytesRef.current + newBytes > MAX_ATT_BYTES) {
       setReplyAttachError(tr.compose.attachmentTooLarge);
       return;
     }
+    pendingReplyAttachmentBytesRef.current += newBytes;
     setPendingReplyAttachmentReads(prev => prev + files.length);
     files.forEach(file => {
       const reader = new FileReader();
+      replyAttachmentReadersRef.current.add(reader);
       let settled = false;
       const finishRead = () => {
         if (settled) return;
         settled = true;
-        setPendingReplyAttachmentReads(prev => Math.max(0, prev - 1));
+        replyAttachmentReadersRef.current.delete(reader);
+        pendingReplyAttachmentBytesRef.current = Math.max(0, pendingReplyAttachmentBytesRef.current - file.size);
+        if (mountedRef.current) setPendingReplyAttachmentReads(prev => Math.max(0, prev - 1));
       };
       reader.onload = () => {
         try {
+          if (!mountedRef.current) return;
           if (typeof reader.result !== "string" || !reader.result.includes(",")) {
             throw new Error("Invalid FileReader result");
           }
           const base64 = reader.result.split(",", 2)[1];
           setReplyAttachments(prev => [...prev, { filename: file.name, mimeType: file.type || "application/octet-stream", data: base64, size: file.size }]);
         } catch {
-          setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+          if (mountedRef.current) setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         } finally {
           finishRead();
         }
       };
       reader.onerror = () => {
-        setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        if (mountedRef.current) setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         finishRead();
       };
-      reader.onabort = reader.onerror;
+      reader.onabort = finishRead;
       try {
         reader.readAsDataURL(file);
       } catch {
-        setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
+        if (mountedRef.current) setReplyAttachError(`${tr.compose.attachmentReadFailed}: ${file.name}`);
         finishRead();
       }
     });
@@ -511,7 +556,8 @@ export function EmailReader({
   const openReply = (mode: "reply" | "reply-all") => {
     setReplyMode(mode);
     setShowReply(true);
-    setTimeout(() => replyEditableRef.current?.focus(), 100);
+    if (replyFocusTimerRef.current) clearTimeout(replyFocusTimerRef.current);
+    replyFocusTimerRef.current = window.setTimeout(() => replyEditableRef.current?.focus(), 100);
   };
 
   return (
@@ -765,7 +811,10 @@ export function EmailReader({
                 onClick={() => {
                   void navigator.clipboard.writeText(verificationCode);
                   setVerificationCopyState("copied");
-                  window.setTimeout(() => setVerificationCopyState("idle"), 2000);
+                  if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+                  copyResetTimerRef.current = window.setTimeout(() => {
+                    if (mountedRef.current) setVerificationCopyState("idle");
+                  }, 2000);
                 }}
                 className="min-w-[7.5rem] justify-center px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-xs font-semibold transition-colors flex items-center gap-2"
               >

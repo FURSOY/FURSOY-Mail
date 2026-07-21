@@ -90,6 +90,8 @@ export function EmailHtmlView({
     let innerCleanup: (() => void) | null = null;
 
     const handleLoad = () => {
+      innerCleanup?.();
+      innerCleanup = null;
       const doc = frame.contentDocument;
       if (!doc) return;
 
@@ -104,7 +106,8 @@ export function EmailHtmlView({
         return;
       }
 
-      const remeasure = () => applyScaleRef.current();
+      let active = true;
+      const remeasure = () => { if (active) applyScaleRef.current(); };
       remeasure();
 
       const images = Array.from(doc.images);
@@ -183,6 +186,7 @@ export function EmailHtmlView({
       doc.addEventListener("contextmenu", handleContextMenu, true);
 
       innerCleanup = () => {
+        active = false;
         const outer = scrollRef?.current;
         if (outer) {
           const ext = outer as HTMLElement & ScrollExt;

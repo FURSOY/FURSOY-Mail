@@ -2,6 +2,7 @@ import { useEffect, useState, type Dispatch, type MutableRefObject, type RefObje
 import type { AppLocale } from "../i18n";
 import type { EmailSummary } from "../types";
 import { tauriApi } from "../tauriApi";
+import { enqueueMailMutation, type MailMutationQueue } from "../mailActionState";
 
 interface UseMailReaderOptions {
   selectedMail: string | null;
@@ -10,6 +11,7 @@ interface UseMailReaderOptions {
   locale: AppLocale;
   mailScrollRef: RefObject<HTMLDivElement | null>;
   recentlyReadRef: MutableRefObject<Set<string>>;
+  mailMutationQueueRef: MutableRefObject<MailMutationQueue>;
   setEmails: Dispatch<SetStateAction<EmailSummary[]>>;
   setSearchResults: Dispatch<SetStateAction<EmailSummary[] | null>>;
   setReadingToolsOpen: Dispatch<SetStateAction<boolean>>;
@@ -27,7 +29,7 @@ function emailKey(email: EmailSummary) {
 
 export function useMailReader(options: UseMailReaderOptions) {
   const {
-    selectedMail, activeMail, activeMailKey, locale, mailScrollRef, recentlyReadRef,
+    selectedMail, activeMail, activeMailKey, locale, mailScrollRef, recentlyReadRef, mailMutationQueueRef,
     setEmails, setSearchResults, setReadingToolsOpen, getTokenForEmail, adjustUnreadBadge,
   } = options;
   const [selectedMailBody, setSelectedMailBody] = useState("");
@@ -99,8 +101,13 @@ export function useMailReader(options: UseMailReaderOptions) {
           adjustUnreadBadge(email.account_id, -1);
           const token = getTokenForEmail(email);
           if (!token) continue;
-          tauriApi.markAsRead(email.account_id, email.id).catch(error => {
+          enqueueMailMutation(
+            mailMutationQueueRef.current,
+            emailKey(email),
+            () => tauriApi.markAsRead(email.account_id, email.id),
+          ).catch(error => {
             console.error("Failed to mark thread email as read:", error);
+            if (!recentlyReadRef.current.has(emailKey(email))) return;
             recentlyReadRef.current.delete(emailKey(email));
             setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));
             setSearchResults(previous => previous?.map(item => sameEmail(item, email) ? { ...item, unread: true } : item) ?? null);

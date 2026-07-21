@@ -1,17 +1,16 @@
 ## Improvements
 
-- Added Gmail-backed draft autosave, editing, deletion, and account-aware draft selection to the compose window.
-- Added a scrollable draft list that loads additional drafts in pages for large mailboxes.
-- Kept the composer open and cleared after a draft is deleted so a new message can be started immediately.
+- Improved background synchronization, notifications, attachment handling, and settings updates under concurrent activity.
+- Added bounded processing for remote email images, pending notifications, and long-lived mail caches.
 
 ## Reliability
 
-- Preserved edits when an existing draft is completely cleared before closing or switching drafts.
-- Reconciled uncertain first-time draft saves by their unique message ID to prevent duplicate drafts.
-- Sent saved drafts with Gmail's atomic draft-send operation so a successfully sent message cannot remain as a stale draft.
-- Kept draft operations scoped to the selected Google account and validated draft identifiers and pagination tokens.
+- Prevented duplicate sends and conflicting read/unread, sync, and settings operations.
+- Cancelled obsolete account backfills, attachment reads, timers, and event listeners when their owners close or change.
+- Guaranteed temporary-file cleanup errors are reported and limited resource queues to prevent runaway memory or task growth.
 
 ## Fixes
 
-- Fixed saved drafts not always reopening with their formatted HTML and attachments.
-- Fixed draft cleanup and autosave races around sending, account switching, and queued saves.
+- Fixed stale attachment previews and notification-window startup races.
+- Fixed repeated attachment selections bypassing total-size checks; messages now allow up to 100 attachments.
+- Fixed delayed window-state saves accumulating during rapid resize and state transitions.

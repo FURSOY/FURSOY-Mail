@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { inboxUnreadDelta, runAuthenticatedMailAction } from "../mailActionState";
-import { emailCacheKey, updateNotificationBaseline } from "../mailSyncState";
+import { enqueueMailMutation, inboxUnreadDelta, runAuthenticatedMailAction } from "../mailActionState";
+import { emailCacheKey, MAX_KNOWN_EMAIL_IDS, updateNotificationBaseline } from "../mailSyncState";
 import type { EmailSummary } from "../types";
 
 function mail(id: string, accountId = "account-a", overrides: Partial<EmailSummary> = {}): EmailSummary {
@@ -19,6 +19,34 @@ function mail(id: string, accountId = "account-a", overrides: Partial<EmailSumma
     ...overrides,
   };
 }
+
+describe("mail mutation queue", () => {
+  it("serializes mutations for the same message", async () => {
+    const queue = new Map<string, Promise<void>>();
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+
+    const first = enqueueMailMutation(queue, "account-a\0mail-a", async () => {
+      order.push("first-start");
+      markFirstStarted();
+      await firstBlocked;
+      order.push("first-end");
+    });
+    const second = enqueueMailMutation(queue, "account-a\0mail-a", async () => {
+      order.push("second");
+    });
+
+    await firstStarted;
+    expect(order).toEqual(["first-start"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first-start", "first-end", "second"]);
+    expect(queue.size).toBe(0);
+  });
+});
 
 describe("authenticated mail actions", () => {
   function dependencies() {
@@ -121,6 +149,17 @@ describe("inbox unread deltas", () => {
 });
 
 describe("multi-account notification baseline", () => {
+  it("bounds the remembered email IDs to the newest entries", () => {
+    const known = new Set(Array.from({ length: MAX_KNOWN_EMAIL_IDS }, (_, index) => `old-${index}`));
+    updateNotificationBaseline({
+      freshInbox: [mail("new")], knownEmailIds: known, readyAccountIds: new Set(),
+      successfullySyncedAccountIds: new Set(), suppressNotifications: true,
+    });
+    expect(known.size).toBe(MAX_KNOWN_EMAIL_IDS);
+    expect(known.has("old-0")).toBe(false);
+    expect(known.has(emailCacheKey(mail("new")))).toBe(true);
+  });
+
   it("builds each account baseline without notifying old unread mail", () => {
     const known = new Set<string>();
     const ready = new Set<string>();
