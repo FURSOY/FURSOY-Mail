@@ -52,6 +52,13 @@ fn get_client_id() -> Result<String, String> {
     read_credential("GOOGLE_CLIENT_ID", option_env!("GOOGLE_CLIENT_ID"))
 }
 
+fn get_client_secret() -> Result<String, String> {
+    read_credential(
+        "GOOGLE_CLIENT_SECRET",
+        option_env!("GOOGLE_CLIENT_SECRET"),
+    )
+}
+
 // ── OAuth URL ─────────────────────────────────────────────────────────────────
 
 fn build_auth_url(client_id: &str, state: &str, code_challenge: &str) -> Result<String, String> {
@@ -403,6 +410,7 @@ pub async fn start_google_oauth(
 
 async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<AuthResponse, String> {
     let client_id = get_client_id()?;
+    let client_secret = get_client_secret()?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -410,6 +418,7 @@ async fn exchange_code_for_token(code: &str, code_verifier: &str) -> Result<Auth
         .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
         ("code", code),
         ("grant_type", "authorization_code"),
         ("redirect_uri", REDIRECT_URI),
@@ -448,6 +457,7 @@ async fn refresh_access_token_once(
     }
 
     let client_id = get_client_id()?;
+    let client_secret = get_client_secret()?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -455,6 +465,7 @@ async fn refresh_access_token_once(
         .unwrap_or_default();
     let params = [
         ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
         ("refresh_token", refresh_token.as_str()),
         ("grant_type", "refresh_token"),
     ];
