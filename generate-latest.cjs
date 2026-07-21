@@ -78,7 +78,7 @@ if (!decodedSignature.includes(`file:${exeFile}`)) {
 
 const latestJson = {
   version,
-  notes: "Stability, updater, mail rendering, and performance improvements.",
+  notes: "Gmail-backed draft autosave, scrolling draft management, and more reliable draft sending.",
   pub_date: new Date().toISOString(),
   platforms: {
     [PLATFORM]: {

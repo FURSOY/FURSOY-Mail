@@ -235,12 +235,17 @@ export function useMailActions(options: UseMailActionsOptions) {
     }
   }, [activeMail, getTokenForEmail, locale, replyMode, selectedMailBody, setThreadRefreshKey, showToast]);
 
-  const handleComposeSend = useCallback(async (attachments: AttachmentPayload[], body: string) => {
-    if (!composeTo.trim() || !composeSubject.trim()) return;
+  const handleComposeSend = useCallback(async (
+    attachments: AttachmentPayload[],
+    body: string,
+    draftId: string | null,
+    verificationMessageId: string | null,
+  ): Promise<boolean> => {
+    if (!composeTo.trim() || !composeSubject.trim()) return false;
     const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
     if (!sendFromId) {
       setComposeSendError(locale.messages.noSendAccount);
-      return;
+      return false;
     }
     setComposeSendError(null);
     setIsSending(true);
@@ -255,17 +260,19 @@ export function useMailActions(options: UseMailActionsOptions) {
       } catch {
         setComposeSendError(locale.messages.reloginRequired);
         setIsSending(false);
-        return;
+        return false;
       }
     }
     try {
-      const outcome = await tauriApi.sendEmail({
-        accountId: sendFromId,
-        to: composeTo,
-        subject: composeSubject,
-        body: body + composeHtmlAppend,
-        attachments: attachments.length > 0 ? attachments : null,
-      });
+      const outcome = draftId && verificationMessageId
+        ? await tauriApi.sendDraft(sendFromId, draftId, verificationMessageId)
+        : await tauriApi.sendEmail({
+            accountId: sendFromId,
+            to: composeTo,
+            subject: composeSubject,
+            body: body + composeHtmlAppend,
+            attachments: attachments.length > 0 ? attachments : null,
+          });
       if (outcome.status === "outcome_unknown") {
         setComposeSendError(locale.messages.sendOutcomeUnknown);
         showToast(locale.messages.sendOutcomeUnknown, "info");
@@ -273,7 +280,7 @@ export function useMailActions(options: UseMailActionsOptions) {
         if (!verified) {
           setComposeSendError(locale.messages.sendOutcomeUnresolved);
           showToast(locale.messages.sendOutcomeUnresolved, "error");
-          return;
+          return false;
         }
       }
       setShowCompose(false);
@@ -288,6 +295,7 @@ export function useMailActions(options: UseMailActionsOptions) {
           : locale.messages.emailSent,
         "success",
       );
+      return true;
     } catch (error) {
       const raw = String(error);
       if (isAuthFailure(raw)) {
@@ -297,6 +305,7 @@ export function useMailActions(options: UseMailActionsOptions) {
         const message = raw.replace(/^Error:\s*/i, "").replace(/Gmail send error:\s*/i, "");
         setComposeSendError(message || locale.messages.sendFailed);
       }
+      return false;
     } finally {
       setIsSending(false);
     }

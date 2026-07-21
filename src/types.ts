@@ -57,6 +57,32 @@ export interface AttachmentPayload {
   data: string; // base64
 }
 
+export interface DraftSummary {
+  id: string;
+  messageId: string;
+  to: string;
+  subject: string;
+  snippet: string;
+  updatedAt: number;
+}
+
+export interface DraftPage {
+  drafts: DraftSummary[];
+  nextPageToken: string | null;
+}
+
+export interface DraftContent extends DraftSummary {
+  body: string;
+  attachments: AttachmentPayload[];
+}
+
+export interface SavedDraft {
+  id: string;
+  messageId: string;
+  verificationMessageId: string;
+  updatedAt: number;
+}
+
 export interface SendOutcome {
   status: "sent" | "outcome_unknown";
   messageId: string;
