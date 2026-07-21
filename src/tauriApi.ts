@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, AppControls, AttachmentPayload, AuthInfo, EmailSummary, SendOutcome } from "./types";
+import type { Account, AppControls, AttachmentPayload, AuthInfo, DraftContent, DraftPage, EmailSummary, SavedDraft, SendOutcome } from "./types";
 
 export interface MailboxDownloadStatus {
   running: boolean;
@@ -114,6 +114,22 @@ export const tauriApi = {
     body: string;
     attachments: AttachmentPayload[] | null;
   }) => invoke<SendOutcome>("send_email", { ...input }),
+  listDrafts: (accountId: string, pageToken: string | null = null) =>
+    invoke<DraftPage>("list_drafts", { accountId, pageToken }),
+  getDraft: (accountId: string, draftId: string) =>
+    invoke<DraftContent>("get_draft", { accountId, draftId }),
+  saveDraft: (input: {
+    accountId: string;
+    draftId: string | null;
+    to: string;
+    subject: string;
+    body: string;
+    attachments: AttachmentPayload[] | null;
+  }) => invoke<SavedDraft>("save_draft", { ...input }),
+  sendDraft: (accountId: string, draftId: string, verificationMessageId: string) =>
+    invoke<SendOutcome>("send_draft", { accountId, draftId, verificationMessageId }),
+  deleteDraft: (accountId: string, draftId: string) =>
+    invoke<void>("delete_draft", { accountId, draftId }),
   verifySentMessage: (accountId: string, messageId: string) =>
     invoke<boolean>("verify_sent_message", { accountId, messageId }),
   getLaunchAtStartup: () => invoke<boolean>("get_launch_at_startup"),

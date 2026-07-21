@@ -1,9 +1,9 @@
 use crate::db::{
-    complete_full_sync, delete_emails_by_ids, finalize_full_sync, get_active_full_sync,
-    get_account_cache_generation, get_all_mailbox_sync_states, get_history_id, get_mailbox_cursor_state, get_mailbox_sync_state,
-    has_pending_mailbox_pages, load_tokens,
-    next_full_sync_generation, set_history_id, set_mailbox_cursor, upsert_sync_mail_batch,
-    set_gmail_inbox_unread_stats, set_mailbox_sync_state, Email,
+    complete_full_sync, delete_emails_by_ids, finalize_full_sync, get_account_cache_generation,
+    get_active_full_sync, get_all_mailbox_sync_states, get_history_id, get_mailbox_cursor_state,
+    get_mailbox_sync_state, has_pending_mailbox_pages, load_tokens, next_full_sync_generation,
+    set_gmail_inbox_unread_stats, set_history_id, set_mailbox_cursor, set_mailbox_sync_state,
+    upsert_sync_mail_batch, Email,
 };
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -101,7 +101,10 @@ fn mailbox_failure_status(error: &str) -> (&'static str, Option<i64>) {
         || normalized.contains("rate limit")
         || normalized.contains("userratelimitexceeded")
     {
-        return ("rate_limited", Some(unix_timestamp_secs() + RATE_LIMIT_BACKOFF_SECS));
+        return (
+            "rate_limited",
+            Some(unix_timestamp_secs() + RATE_LIMIT_BACKOFF_SECS),
+        );
     }
     if normalized.contains("401")
         || normalized.contains("invalid credentials")
@@ -254,10 +257,8 @@ async fn fetch_history(
 
     loop {
         validate_gmail_identifier("history ID", start_history_id)?;
-        let mut url = reqwest::Url::parse(
-            "https://gmail.googleapis.com/gmail/v1/users/me/history",
-        )
-        .map_err(|e| e.to_string())?;
+        let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/history")
+            .map_err(|e| e.to_string())?;
         {
             let mut params = url.query_pairs_mut();
             params
@@ -394,7 +395,12 @@ async fn do_incremental_sync(
             // Backfill account_id into attachments (parse_message_detail doesn't know it)
             let atts_flat: Vec<crate::db::Attachment> = all_attachments
                 .iter_mut()
-                .flat_map(|v| v.iter_mut().map(|a| { a.account_id = acct.clone(); a.clone() }))
+                .flat_map(|v| {
+                    v.iter_mut().map(|a| {
+                        a.account_id = acct.clone();
+                        a.clone()
+                    })
+                })
                 .collect();
             let app_clone = app.clone();
             let acct2 = acct.clone();
@@ -407,7 +413,7 @@ async fn do_incremental_sync(
                     emails,
                     atts_flat,
                 )
-                    .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())
             })
             .await
             .map_err(|e| format!("DB upsert task failed: {}", e))??;
@@ -418,9 +424,11 @@ async fn do_incremental_sync(
     if !delete_ids.is_empty() {
         let app_clone = app.clone();
         let account_id = account_id.to_string();
-        tokio::task::spawn_blocking(move || delete_emails_by_ids(&app_clone, &account_id, account_generation, &delete_ids))
-            .await
-            .map_err(|e| format!("DB delete task failed: {}", e))??;
+        tokio::task::spawn_blocking(move || {
+            delete_emails_by_ids(&app_clone, &account_id, account_generation, &delete_ids)
+        })
+        .await
+        .map_err(|e| format!("DB delete task failed: {}", e))??;
     }
 
     // Advancing this checkpoint is the final step: a failed sync must be retried
@@ -497,7 +505,6 @@ async fn do_sync(
 
     Ok(())
 }
-
 
 #[derive(Deserialize, Debug)]
 struct MessageListResponse {
@@ -691,13 +698,8 @@ async fn fetch_message_page(
         }
     }
 
-    let res = gmail_get_with_retry(
-        client,
-        access_token,
-        url.to_string(),
-        "List fetch error",
-    )
-    .await?;
+    let res =
+        gmail_get_with_retry(client, access_token, url.to_string(), "List fetch error").await?;
 
     if !res.status().is_success() {
         let status = res.status();
@@ -763,7 +765,9 @@ async fn backfill_mailbox(
             .await?;
             let next_page_token = page.next_page_token;
             if next_page_token.as_deref() == Some(page_token.as_str()) {
-                return Err(format!("Gmail pagination cursor did not advance for {label}"));
+                return Err(format!(
+                    "Gmail pagination cursor did not advance for {label}"
+                ));
             }
             if get_account_cache_generation(app, account_id)? != account_generation {
                 return Err("Account is no longer available".to_string());
@@ -799,26 +803,15 @@ async fn backfill_mailbox(
         if get_account_cache_generation(app, account_id)? != account_generation {
             return Err("Account is no longer available".to_string());
         }
-        let removed = finalize_full_sync(
-            app,
-            account_id,
-            account_generation,
-            full_sync.generation,
-        )?;
+        let removed =
+            finalize_full_sync(app, account_id, account_generation, full_sync.generation)?;
         eprintln!(
             "[SYNC] full mailbox rebuild complete; removed {} stale local messages",
             removed
         );
     }
 
-    set_mailbox_sync_state(
-        app,
-        account_id,
-        account_generation,
-        "completed",
-        None,
-        None,
-    )?;
+    set_mailbox_sync_state(app, account_id, account_generation, "completed", None, None)?;
 
     Ok(())
 }
@@ -836,7 +829,9 @@ async fn run_sync_cycle(
         }
         let history_id = get_history_id(app, account_id);
         if let Some(history_id) = history_id {
-            match do_incremental_sync(app, account_id, account_generation, &token, &history_id).await {
+            match do_incremental_sync(app, account_id, account_generation, &token, &history_id)
+                .await
+            {
                 Ok(()) => {}
                 Err(error) if error == "HISTORY_EXPIRED" => {
                     eprintln!("[SYNC] history expired, full sync");
@@ -868,7 +863,10 @@ async fn run_sync_cycle(
 
         let run_again = {
             let state = app.state::<crate::SyncState>();
-            let mut workers = state.workers.lock().map_err(|_| "Sync worker lock poisoned")?;
+            let mut workers = state
+                .workers
+                .lock()
+                .map_err(|_| "Sync worker lock poisoned")?;
             workers.take_resync_request(account_id, account_generation)
         };
         if !run_again {
@@ -891,9 +889,7 @@ async fn run_background_backfill_worker(
         let started = {
             let state = app.state::<crate::SyncState>();
             let started = match state.workers.lock() {
-                Ok(mut workers) => {
-                    workers.set_backfilling(&account_id, account_generation)
-                }
+                Ok(mut workers) => workers.set_backfilling(&account_id, account_generation),
                 Err(_) => false,
             };
             started
@@ -902,15 +898,8 @@ async fn run_background_backfill_worker(
             return;
         }
 
-        if set_mailbox_sync_state(
-            &app,
-            &account_id,
-            account_generation,
-            "running",
-            None,
-            None,
-        )
-        .is_err()
+        if set_mailbox_sync_state(&app, &account_id, account_generation, "running", None, None)
+            .is_err()
         {
             eprintln!("[SYNC] could not save mailbox status");
         }
@@ -1008,7 +997,12 @@ pub fn get_mailbox_download_status(
     } else {
         "completed".to_string()
     };
-    Ok(MailboxDownloadStatus { running, pending, state, retry_after })
+    Ok(MailboxDownloadStatus {
+        running,
+        pending,
+        state,
+        retry_after,
+    })
 }
 
 #[tauri::command]
@@ -1023,7 +1017,10 @@ pub async fn sync_emails(
     let account_generation = get_account_cache_generation(&app, &account_id)?;
     if !force.unwrap_or(false) {
         if let Some(state) = get_mailbox_sync_state(&app, &account_id)? {
-            if state.retry_after.is_some_and(|at| at > unix_timestamp_secs()) {
+            if state
+                .retry_after
+                .is_some_and(|at| at > unix_timestamp_secs())
+            {
                 return Ok(());
             }
         }
@@ -1039,14 +1036,9 @@ pub async fn sync_emails(
         return Ok(());
     }
 
-    if let Err(error) = set_mailbox_sync_state(
-        &app,
-        &account_id,
-        account_generation,
-        "running",
-        None,
-        None,
-    ) {
+    if let Err(error) =
+        set_mailbox_sync_state(&app, &account_id, account_generation, "running", None, None)
+    {
         if let Ok(mut workers) = state.workers.lock() {
             workers.release(&account_id, account_generation);
         }
@@ -1130,7 +1122,9 @@ async fn cache_message_details(
         .buffer_unordered(10)
         .try_collect()
         .await
-        .map_err(|e| format!("Message detail fetch failed; mailbox cursor was not advanced: {e}"))?;
+        .map_err(|e| {
+            format!("Message detail fetch failed; mailbox cursor was not advanced: {e}")
+        })?;
 
     if parsed.is_empty() {
         return Ok(());
@@ -1159,7 +1153,7 @@ async fn cache_message_details(
             emails,
             attachments,
         )
-            .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("DB task failed: {}", e))??;
@@ -1178,7 +1172,10 @@ pub async fn archive_email(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Remove INBOX from Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
         message_id
@@ -1232,7 +1229,10 @@ pub async fn trash_email(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Trash on Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/trash",
         message_id
@@ -1270,7 +1270,10 @@ pub async fn move_to_inbox(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Add INBOX and remove SPAM/TRASH on Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
         message_id
@@ -1315,7 +1318,10 @@ pub async fn permanently_delete(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Permanently delete from Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
         message_id
@@ -1358,12 +1364,93 @@ fn validate_header_value(name: &str, value: &str, max_bytes: usize) -> Result<()
     Ok(())
 }
 
+#[derive(Deserialize, Debug)]
+struct DraftListResponse {
+    drafts: Option<Vec<DraftReference>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct DraftReference {
+    id: String,
+    message: Option<DraftReferenceMessage>,
+}
+
+#[derive(Deserialize, Debug)]
+struct DraftReferenceMessage {
+    id: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct GmailDraft {
+    id: String,
+    message: MessageDetail,
+}
+
+#[derive(Deserialize, Debug)]
+struct SavedGmailDraft {
+    id: String,
+    message: SavedDraftMessage,
+}
+
+#[derive(Deserialize, Debug)]
+struct SavedDraftMessage {
+    id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftSummary {
+    id: String,
+    message_id: String,
+    to: String,
+    subject: String,
+    snippet: String,
+    updated_at: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftPage {
+    drafts: Vec<DraftSummary>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftContent {
+    id: String,
+    message_id: String,
+    to: String,
+    subject: String,
+    body: String,
+    updated_at: i64,
+    attachments: Vec<AttachmentPayload>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedDraft {
+    id: String,
+    message_id: String,
+    verification_message_id: String,
+    updated_at: i64,
+}
+
 fn validate_recipient_header(value: &str) -> Result<(), String> {
     validate_header_value("Recipient", value, MAX_RECIPIENT_HEADER_BYTES)?;
     if value.trim().is_empty() || !value.contains('@') {
         return Err("Recipient address is invalid".to_string());
     }
     Ok(())
+}
+
+fn validate_optional_recipient_header(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    validate_recipient_header(value)
 }
 
 fn validate_gmail_identifier(name: &str, value: &str) -> Result<(), String> {
@@ -1469,7 +1556,10 @@ fn build_raw_mime(
         lines.push_str(&mime_body_base64(body));
     } else {
         let boundary = "----=_NextPart_fursoymail_001";
-        lines.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n", boundary));
+        lines.push_str(&format!(
+            "Content-Type: multipart/mixed; boundary=\"{}\"\r\n",
+            boundary
+        ));
         lines.push_str("\r\n");
 
         // HTML body part
@@ -1509,12 +1599,20 @@ fn build_raw_mime(
             let encoded_data = base64::engine::general_purpose::STANDARD.encode(decoded);
             let encoded_name = mime_encode_header(&safe_filename);
             lines.push_str(&format!("--{}\r\n", boundary));
-            lines.push_str(&format!("Content-Type: {}; name=\"{}\"\r\n", att.mime_type, encoded_name));
+            lines.push_str(&format!(
+                "Content-Type: {}; name=\"{}\"\r\n",
+                att.mime_type, encoded_name
+            ));
             lines.push_str("Content-Transfer-Encoding: base64\r\n");
-            lines.push_str(&format!("Content-Disposition: attachment; filename=\"{}\"\r\n", encoded_name));
+            lines.push_str(&format!(
+                "Content-Disposition: attachment; filename=\"{}\"\r\n",
+                encoded_name
+            ));
             lines.push_str("\r\n");
             // Wrap attachment data at 76 chars
-            let wrapped = encoded_data.as_bytes().chunks(76)
+            let wrapped = encoded_data
+                .as_bytes()
+                .chunks(76)
                 .map(|c| std::str::from_utf8(c).unwrap_or(""))
                 .collect::<Vec<_>>()
                 .join("\r\n");
@@ -1563,9 +1661,7 @@ fn validate_outbound_message_id(message_id: &str) -> Result<(), String> {
 async fn execute_send(request: reqwest::RequestBuilder) -> Result<SendAttempt, String> {
     match request.send().await {
         Ok(response) => Ok(SendAttempt::Confirmed(response)),
-        Err(error) if is_retryable_gmail_transport_error(&error) => {
-            Ok(SendAttempt::OutcomeUnknown)
-        }
+        Err(error) if is_retryable_gmail_transport_error(&error) => Ok(SendAttempt::OutcomeUnknown),
         Err(_) => Err("Send request failed before Gmail responded.".to_string()),
     }
 }
@@ -1626,11 +1722,16 @@ pub async fn send_reply(
     validate_gmail_identifier("message ID", &message_id)?;
     let outbound_message_id = generate_outbound_message_id();
 
-    let clean_subject = subject.trim_start_matches("Re: ").trim_start_matches("re: ");
+    let clean_subject = subject
+        .trim_start_matches("Re: ")
+        .trim_start_matches("re: ");
     let raw_email = build_raw_mime(
         &[
             ("To", to),
-            ("Subject", format!("Re: {}", mime_encode_header(clean_subject))),
+            (
+                "Subject",
+                format!("Re: {}", mime_encode_header(clean_subject)),
+            ),
             ("In-Reply-To", message_id.clone()),
             ("References", message_id),
             ("Message-ID", outbound_message_id.clone()),
@@ -1648,22 +1749,16 @@ pub async fn send_reply(
 
     let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 
-    let res = match execute_send(
-        client
-            .post(url)
-            .bearer_auth(&access_token)
-            .json(&send_body),
-    )
-    .await?
-    {
-        SendAttempt::Confirmed(response) => response,
-        SendAttempt::OutcomeUnknown => {
-            return Ok(SendOutcome {
-                status: "outcome_unknown",
-                message_id: outbound_message_id,
-            });
-        }
-    };
+    let res =
+        match execute_send(client.post(url).bearer_auth(&access_token).json(&send_body)).await? {
+            SendAttempt::Confirmed(response) => response,
+            SendAttempt::OutcomeUnknown => {
+                return Ok(SendOutcome {
+                    status: "outcome_unknown",
+                    message_id: outbound_message_id,
+                });
+            }
+        };
 
     if !res.status().is_success() {
         return Err(format!("Gmail send error (HTTP {}).", res.status()));
@@ -1683,14 +1778,7 @@ pub async fn send_reply(
         eprintln!("[SEND_CACHE] confirmed reply could not be cached: {error}");
         // The remote send is already confirmed. Reconcile the local Sent cache
         // without turning this into a retryable send failure.
-        if let Err(sync_error) = sync_emails(
-            window,
-            app,
-            account_id,
-            Some(true),
-        )
-        .await
-        {
+        if let Err(sync_error) = sync_emails(window, app, account_id, Some(true)).await {
             eprintln!("[SEND_CACHE] reply cache reconciliation failed: {sync_error}");
         }
     }
@@ -1740,22 +1828,16 @@ pub async fn send_email(
 
     let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 
-    let res = match execute_send(
-        client
-            .post(url)
-            .bearer_auth(&access_token)
-            .json(&send_body),
-    )
-    .await?
-    {
-        SendAttempt::Confirmed(response) => response,
-        SendAttempt::OutcomeUnknown => {
-            return Ok(SendOutcome {
-                status: "outcome_unknown",
-                message_id: outbound_message_id,
-            });
-        }
-    };
+    let res =
+        match execute_send(client.post(url).bearer_auth(&access_token).json(&send_body)).await? {
+            SendAttempt::Confirmed(response) => response,
+            SendAttempt::OutcomeUnknown => {
+                return Ok(SendOutcome {
+                    status: "outcome_unknown",
+                    message_id: outbound_message_id,
+                });
+            }
+        };
 
     if !res.status().is_success() {
         return Err(format!("Gmail send error (HTTP {}).", res.status()));
@@ -1784,6 +1866,446 @@ pub async fn send_email(
     })
 }
 
+fn draft_header(detail: &MessageDetail, name: &str) -> String {
+    detail
+        .payload
+        .headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.clone())
+        .unwrap_or_default()
+}
+
+fn draft_body(detail: &MessageDetail) -> String {
+    if let Some(parts) = &detail.payload.parts {
+        if let Some(data) = find_part_data(parts, "text/html") {
+            return decode_base64_url(data);
+        }
+        if let Some(data) = find_part_data(parts, "text/plain") {
+            return decode_base64_url(data);
+        }
+    }
+    detail
+        .payload
+        .body
+        .as_ref()
+        .and_then(|body| body.data.as_deref())
+        .map(decode_base64_url)
+        .unwrap_or_default()
+}
+
+fn draft_summary(draft: &GmailDraft) -> DraftSummary {
+    DraftSummary {
+        id: draft.id.clone(),
+        message_id: draft.message.id.clone(),
+        to: draft_header(&draft.message, "to"),
+        subject: draft_header(&draft.message, "subject"),
+        snippet: draft.message.snippet.clone(),
+        updated_at: draft.message.internal_date.parse::<i64>().unwrap_or(0),
+    }
+}
+
+async fn fetch_draft_attachments(
+    client: &Client,
+    access_token: &str,
+    message: &MessageDetail,
+) -> Result<Vec<AttachmentPayload>, String> {
+    let attachments = message
+        .payload
+        .parts
+        .as_deref()
+        .map(|parts| collect_attachments(parts, &message.id, ""))
+        .unwrap_or_default();
+    let mut result = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let url_safe_data = if let Some(data) = attachment.data.filter(|data| !data.is_empty()) {
+            data
+        } else if let Some(attachment_id) = attachment.attachment_id {
+            validate_gmail_identifier("attachment ID", &attachment_id)?;
+            let url = format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/attachments/{}",
+                message.id, attachment_id
+            );
+            let response = gmail_get_with_retry(
+                client,
+                access_token,
+                url,
+                "Draft attachment could not be loaded",
+            )
+            .await?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Draft attachment could not be loaded (HTTP {}).",
+                    response.status()
+                ));
+            }
+            #[derive(Deserialize)]
+            struct AttachmentResponse {
+                data: String,
+            }
+            response
+                .json::<AttachmentResponse>()
+                .await
+                .map_err(|_| "Draft attachment response could not be read.".to_string())?
+                .data
+        } else {
+            continue;
+        };
+        let bytes = base64::engine::general_purpose::URL_SAFE
+            .decode(url_safe_data.replace(['\n', '\r'], "").as_bytes())
+            .map_err(|_| "Draft attachment data is invalid.".to_string())?;
+        result.push(AttachmentPayload {
+            filename: attachment.filename,
+            mime_type: attachment.mime_type,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
+    }
+    Ok(result)
+}
+
+async fn reconcile_created_draft(
+    client: &Client,
+    access_token: &str,
+    verification_message_id: &str,
+) -> Option<(String, String)> {
+    for delay_ms in [200_u64, 600, 1_200] {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        let mut url =
+            reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/drafts").ok()?;
+        url.query_pairs_mut()
+            .append_pair("maxResults", "1")
+            .append_pair("q", &format!("rfc822msgid:{verification_message_id}"));
+        let Ok(response) = gmail_get_with_retry(
+            client,
+            access_token,
+            url.to_string(),
+            "Draft reconciliation failed",
+        )
+        .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(list) = response.json::<DraftListResponse>().await else {
+            continue;
+        };
+        if let Some(draft) = list.drafts.unwrap_or_default().into_iter().next() {
+            return Some((
+                draft.id,
+                draft.message.map(|message| message.id).unwrap_or_default(),
+            ));
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn list_drafts(
+    window: tauri::WebviewWindow,
+    account_id: String,
+    page_token: Option<String>,
+) -> Result<DraftPage, String> {
+    crate::require_command_window(&window, &["main"])?;
+    let access_token = crate::db::load_account_access_token(&account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Gmail draft client could not be created.".to_string())?;
+    let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
+        .map_err(|_| "Draft list URL could not be created.".to_string())?;
+    url.query_pairs_mut().append_pair("maxResults", "20");
+    if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        if token.len() > 4_096 || token.chars().any(char::is_control) {
+            return Err("Invalid draft page token".to_string());
+        }
+        url.query_pairs_mut().append_pair("pageToken", &token);
+    }
+    let response =
+        gmail_get_with_retry(&client, &access_token, url.to_string(), "Draft list failed").await?;
+    if !response.status().is_success() {
+        return Err(format!("Draft list failed (HTTP {}).", response.status()));
+    }
+    let list = response
+        .json::<DraftListResponse>()
+        .await
+        .map_err(|_| "Draft list response could not be read.".to_string())?;
+    let draft_refs = list.drafts.unwrap_or_default();
+    let mut summaries = stream::iter(draft_refs)
+        .map(|draft_ref| {
+            let client = client.clone();
+            let access_token = access_token.clone();
+            async move {
+                validate_gmail_identifier("draft ID", &draft_ref.id)?;
+                let url = format!(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/drafts/{}?format=metadata&metadataHeaders=To&metadataHeaders=Subject",
+                    draft_ref.id
+                );
+                let response = gmail_get_with_retry(&client, &access_token, url, "Draft could not be loaded").await?;
+                if !response.status().is_success() {
+                    return Err(format!("Draft could not be loaded (HTTP {}).", response.status()));
+                }
+                let draft = response
+                    .json::<GmailDraft>()
+                    .await
+                    .map_err(|_| "Draft response could not be read.".to_string())?;
+                Ok::<DraftSummary, String>(draft_summary(&draft))
+            }
+        })
+        .buffer_unordered(4)
+        .try_collect::<Vec<_>>()
+        .await?;
+    summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(DraftPage {
+        drafts: summaries,
+        next_page_token: list.next_page_token,
+    })
+}
+
+#[tauri::command]
+pub async fn get_draft(
+    window: tauri::WebviewWindow,
+    account_id: String,
+    draft_id: String,
+) -> Result<DraftContent, String> {
+    crate::require_command_window(&window, &["main"])?;
+    validate_gmail_identifier("draft ID", &draft_id)?;
+    let access_token = crate::db::load_account_access_token(&account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| "Gmail draft client could not be created.".to_string())?;
+    let url = format!(
+        "https://gmail.googleapis.com/gmail/v1/users/me/drafts/{}?format=full",
+        draft_id
+    );
+    let response =
+        gmail_get_with_retry(&client, &access_token, url, "Draft could not be loaded").await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Draft could not be loaded (HTTP {}).",
+            response.status()
+        ));
+    }
+    let draft = response
+        .json::<GmailDraft>()
+        .await
+        .map_err(|_| "Draft response could not be read.".to_string())?;
+    let attachments = fetch_draft_attachments(&client, &access_token, &draft.message).await?;
+    Ok(DraftContent {
+        id: draft.id,
+        message_id: draft.message.id.clone(),
+        to: draft_header(&draft.message, "to"),
+        subject: draft_header(&draft.message, "subject"),
+        body: draft_body(&draft.message),
+        updated_at: draft.message.internal_date.parse::<i64>().unwrap_or(0),
+        attachments,
+    })
+}
+
+#[tauri::command]
+pub async fn save_draft(
+    window: tauri::WebviewWindow,
+    account_id: String,
+    draft_id: Option<String>,
+    to: String,
+    subject: String,
+    body: String,
+    attachments: Option<Vec<AttachmentPayload>>,
+) -> Result<SavedDraft, String> {
+    crate::require_command_window(&window, &["main"])?;
+    validate_optional_recipient_header(&to)?;
+    validate_header_value("Subject", &subject, MAX_SUBJECT_BYTES)?;
+    if let Some(id) = &draft_id {
+        validate_gmail_identifier("draft ID", id)?;
+    }
+    let access_token = crate::db::load_account_access_token(&account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| "Gmail draft client could not be created.".to_string())?;
+    let verification_message_id = generate_outbound_message_id();
+    let raw_email = build_raw_mime(
+        &[
+            ("To", to),
+            ("Subject", mime_encode_header(&subject)),
+            ("Message-ID", verification_message_id.clone()),
+        ],
+        &body,
+        &attachments.unwrap_or_default(),
+    )?;
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_email.as_bytes());
+    let payload = serde_json::json!({ "message": { "raw": encoded } });
+    let existing_draft_id = draft_id.clone();
+    let request = if let Some(id) = draft_id {
+        client
+            .put(format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/drafts/{id}"
+            ))
+            .bearer_auth(&access_token)
+            .json(&payload)
+    } else {
+        client
+            .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
+            .bearer_auth(&access_token)
+            .json(&payload)
+    };
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(_) if existing_draft_id.is_none() => {
+            if let Some((id, message_id)) =
+                reconcile_created_draft(&client, &access_token, &verification_message_id).await
+            {
+                return Ok(SavedDraft {
+                    id,
+                    message_id,
+                    verification_message_id,
+                    updated_at: unix_timestamp_secs() * 1000,
+                });
+            }
+            return Err(
+                "Draft save outcome is unknown. Refresh drafts before retrying.".to_string(),
+            );
+        }
+        Err(_) => {
+            return Err(
+                "Draft save outcome is unknown. Refresh drafts before retrying.".to_string(),
+            );
+        }
+    };
+    if !response.status().is_success() {
+        return Err(format!(
+            "Draft could not be saved (HTTP {}).",
+            response.status()
+        ));
+    }
+    let saved = match response.json::<SavedGmailDraft>().await {
+        Ok(saved) => saved,
+        Err(_) => {
+            if let Some(id) = existing_draft_id {
+                return Ok(SavedDraft {
+                    id,
+                    message_id: String::new(),
+                    verification_message_id,
+                    updated_at: unix_timestamp_secs() * 1000,
+                });
+            }
+            if let Some((id, message_id)) =
+                reconcile_created_draft(&client, &access_token, &verification_message_id).await
+            {
+                return Ok(SavedDraft {
+                    id,
+                    message_id,
+                    verification_message_id,
+                    updated_at: unix_timestamp_secs() * 1000,
+                });
+            }
+            return Err(
+                "Draft save outcome is unknown. Refresh drafts before retrying.".to_string(),
+            );
+        }
+    };
+    Ok(SavedDraft {
+        id: saved.id,
+        message_id: saved.message.id,
+        verification_message_id,
+        updated_at: unix_timestamp_secs() * 1000,
+    })
+}
+
+#[tauri::command]
+pub async fn send_draft(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    account_id: String,
+    draft_id: String,
+    verification_message_id: String,
+) -> Result<SendOutcome, String> {
+    crate::require_command_window(&window, &["main"])?;
+    validate_gmail_identifier("draft ID", &draft_id)?;
+    validate_outbound_message_id(&verification_message_id)?;
+    let access_token = crate::db::load_account_access_token(&account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Gmail draft send client could not be created.".to_string())?;
+    let response = match execute_send(
+        client
+            .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts/send")
+            .bearer_auth(&access_token)
+            .json(&serde_json::json!({ "id": draft_id })),
+    )
+    .await?
+    {
+        SendAttempt::Confirmed(response) => response,
+        SendAttempt::OutcomeUnknown => {
+            return Ok(SendOutcome {
+                status: "outcome_unknown",
+                message_id: verification_message_id,
+            });
+        }
+    };
+    if !response.status().is_success() {
+        return Err(format!(
+            "Gmail draft send error (HTTP {}).",
+            response.status()
+        ));
+    }
+    let cache_result = match response.json::<serde_json::Value>().await {
+        Ok(sent_message) => match sent_message["id"].as_str() {
+            Some(sent_id) => {
+                cache_confirmed_sent_message(&app, &account_id, &client, &access_token, sent_id)
+                    .await
+            }
+            None => Err("Gmail draft send response did not include a message ID.".to_string()),
+        },
+        Err(_) => Err("Gmail draft send response could not be read.".to_string()),
+    };
+    if let Err(error) = cache_result {
+        eprintln!("[SEND_CACHE] confirmed draft could not be cached: {error}");
+        if let Err(sync_error) = sync_emails(window, app, account_id, Some(true)).await {
+            eprintln!("[SEND_CACHE] draft cache reconciliation failed: {sync_error}");
+        }
+    }
+    Ok(SendOutcome {
+        status: "sent",
+        message_id: verification_message_id,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_draft(
+    window: tauri::WebviewWindow,
+    account_id: String,
+    draft_id: String,
+) -> Result<(), String> {
+    crate::require_command_window(&window, &["main"])?;
+    validate_gmail_identifier("draft ID", &draft_id)?;
+    let access_token = crate::db::load_account_access_token(&account_id)?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Gmail draft client could not be created.".to_string())?;
+    let response = client
+        .delete(format!(
+            "https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}"
+        ))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|_| {
+            "Draft delete outcome is unknown. Refresh drafts before retrying.".to_string()
+        })?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Draft could not be deleted (HTTP {}).",
+            response.status()
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn verify_sent_message(
     window: tauri::WebviewWindow,
@@ -1798,10 +2320,8 @@ pub async fn verify_sent_message(
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|_| "Gmail verification client could not be created.".to_string())?;
-    let mut url = reqwest::Url::parse(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-    )
-    .map_err(|_| "Gmail verification URL could not be created.".to_string())?;
+    let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/messages")
+        .map_err(|_| "Gmail verification URL could not be created.".to_string())?;
     url.query_pairs_mut()
         .append_pair("labelIds", "SENT")
         .append_pair("maxResults", "1")
@@ -1832,14 +2352,9 @@ pub async fn verify_sent_message(
         return Ok(false);
     };
 
-    if let Err(error) = cache_confirmed_sent_message(
-        &app,
-        &account_id,
-        &client,
-        &access_token,
-        &gmail_message_id,
-    )
-    .await
+    if let Err(error) =
+        cache_confirmed_sent_message(&app, &account_id, &client, &access_token, &gmail_message_id)
+            .await
     {
         eprintln!("[SEND_CACHE] verified sent message could not be cached: {error}");
         if let Err(sync_error) = sync_emails(window, app, account_id, Some(true)).await {
@@ -1860,7 +2375,10 @@ pub async fn mark_as_read(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Notify Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
         message_id
@@ -1904,7 +2422,10 @@ pub async fn mark_as_unread(
     let access_token = crate::db::load_account_access_token(&account_id)?;
     validate_gmail_identifier("message ID", &message_id)?;
     // Notify Gmail before changing the local cache.
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
         message_id
@@ -1922,7 +2443,10 @@ pub async fn mark_as_unread(
         .map_err(|e| e.to_string())?;
 
     if !res.status().is_success() {
-        return Err(format!("Gmail mark as unread error (HTTP {}).", res.status()));
+        return Err(format!(
+            "Gmail mark as unread error (HTTP {}).",
+            res.status()
+        ));
     }
 
     if let Err(error) = crate::db::mark_email_as_unread_local(&app, &message_id, &account_id) {
@@ -2053,14 +2577,17 @@ async fn get_attachment_bytes(
         email_id.to_string(),
         account_id.to_string(),
     )
-        .map_err(|e| e.to_string())?;
-    let att = atts.into_iter().find(|a| a.id == attachment_db_id)
+    .map_err(|e| e.to_string())?;
+    let att = atts
+        .into_iter()
+        .find(|a| a.id == attachment_db_id)
         .ok_or_else(|| "Attachment not found".to_string())?;
 
     let b64 = if let Some(data) = att.data.filter(|d| !d.is_empty()) {
         data
     } else {
-        let gmail_att_id = att.attachment_id
+        let gmail_att_id = att
+            .attachment_id
             .ok_or_else(|| "No attachment ID".to_string())?;
         validate_gmail_identifier("attachment ID", &gmail_att_id)?;
         let client = Client::builder()
@@ -2077,7 +2604,9 @@ async fn get_attachment_bytes(
             return Err(format!("Gmail API error (HTTP {status})"));
         }
         #[derive(serde::Deserialize)]
-        struct AttachmentResponse { data: String }
+        struct AttachmentResponse {
+            data: String,
+        }
         let body: AttachmentResponse = res.json().await.map_err(|e| e.to_string())?;
         body.data
     };
@@ -2101,7 +2630,10 @@ fn safe_attachment_filename(filename: &str) -> String {
         .chars()
         .map(|ch| {
             if ch.is_control()
-                || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\u{202e}')
+                || matches!(
+                    ch,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\u{202e}'
+                )
             {
                 '_'
             } else {
@@ -2154,8 +2686,14 @@ pub async fn save_and_reveal_attachment(
 ) -> Result<SavedAttachment, String> {
     crate::require_command_window(&window, &["main"])?;
     let access_token = crate::db::load_account_access_token(&account_id)?;
-    let (bytes, filename, _mime) =
-        get_attachment_bytes(&app, &email_id, &account_id, &attachment_db_id, &access_token).await?;
+    let (bytes, filename, _mime) = get_attachment_bytes(
+        &app,
+        &email_id,
+        &account_id,
+        &attachment_db_id,
+        &access_token,
+    )
+    .await?;
 
     let downloads = app
         .path()
@@ -2173,9 +2711,13 @@ pub async fn save_and_reveal_attachment(
     // Avoid overwriting existing files by appending a counter
     if dest.exists() {
         let stem = std::path::Path::new(&safe_filename)
-            .file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
         let ext = std::path::Path::new(&safe_filename)
-            .extension().and_then(|s| s.to_str()).unwrap_or("");
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         let mut i = 2u32;
         loop {
             let candidate = if ext.is_empty() {
@@ -2184,13 +2726,14 @@ pub async fn save_and_reveal_attachment(
                 format!("{} ({}).{}", stem, i, ext)
             };
             dest = downloads.join(&candidate);
-            if !dest.exists() { break; }
+            if !dest.exists() {
+                break;
+            }
             i += 1;
         }
     }
 
-    crate::safe_fs::atomic_write_new(&dest, &bytes)
-        .map_err(|e| format!("Write error: {}", e))?;
+    crate::safe_fs::atomic_write_new(&dest, &bytes).map_err(|e| format!("Write error: {}", e))?;
 
     // Reveal file selected in Windows Explorer
     let revealed = std::process::Command::new("explorer")
@@ -2212,13 +2755,33 @@ pub async fn save_and_reveal_attachment(
 mod tests {
     use super::{
         build_raw_mime, execute_send, generate_outbound_message_id, gmail_get_with_retry,
-        gmail_retry_delay, gmail_trash_request, is_retryable_gmail_status,
-        mailbox_failure_status, parse_retry_after_delay, safe_attachment_filename,
+        gmail_retry_delay, gmail_trash_request, is_retryable_gmail_status, mailbox_failure_status,
+        parse_retry_after_delay, safe_attachment_filename, validate_optional_recipient_header,
         validate_outbound_message_id, validate_recipient_header, AttachmentPayload,
-        GmailLabelStats, SendAttempt, GMAIL_GET_MAX_RETRY_AFTER_SECS,
+        DraftListResponse, GmailLabelStats, SendAttempt, GMAIL_GET_MAX_RETRY_AFTER_SECS,
     };
     use reqwest::{Client, StatusCode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn drafts_allow_an_empty_recipient_but_validate_non_empty_values() {
+        assert!(validate_optional_recipient_header("").is_ok());
+        assert!(validate_optional_recipient_header("person@example.test").is_ok());
+        assert!(validate_optional_recipient_header("not-an-address").is_err());
+    }
+
+    #[test]
+    fn draft_list_keeps_pagination_and_message_ids() {
+        let page: DraftListResponse = serde_json::from_str(
+            r#"{"drafts":[{"id":"draft-1","message":{"id":"message-1"}}],"nextPageToken":"next-page"}"#,
+        )
+        .expect("parse draft page");
+
+        assert_eq!(page.next_page_token.as_deref(), Some("next-page"));
+        let draft = page.drafts.expect("drafts").remove(0);
+        assert_eq!(draft.id, "draft-1");
+        assert_eq!(draft.message.expect("draft message").id, "message-1");
+    }
 
     #[test]
     fn gmail_trash_post_has_explicit_zero_content_length() {
@@ -2231,7 +2794,10 @@ mod tests {
         .expect("build trash request");
 
         assert_eq!(
-            request.headers().get(reqwest::header::CONTENT_LENGTH).unwrap(),
+            request
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .unwrap(),
             "0"
         );
     }
@@ -2243,16 +2809,12 @@ mod tests {
             .expect("bind fake Gmail endpoint");
         let address = listener.local_addr().expect("read fake endpoint address");
         let server = tokio::spawn(async move {
-            for status_line in [
-                "HTTP/1.1 503 Service Unavailable",
-                "HTTP/1.1 200 OK",
-            ] {
+            for status_line in ["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"] {
                 let (mut socket, _) = listener.accept().await.expect("accept request");
                 let mut request = [0_u8; 1024];
                 socket.read(&mut request).await.expect("read request");
-                let response = format!(
-                    "{status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                );
+                let response =
+                    format!("{status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 socket
                     .write_all(response.as_bytes())
                     .await
@@ -2351,11 +2913,13 @@ mod tests {
 
     #[test]
     fn mailbox_failures_distinguish_rate_limits_and_relogin() {
-        let (rate_limited, retry_after) = mailbox_failure_status("Gmail API Error: 429 rateLimitExceeded");
+        let (rate_limited, retry_after) =
+            mailbox_failure_status("Gmail API Error: 429 rateLimitExceeded");
         assert_eq!(rate_limited, "rate_limited");
         assert!(retry_after.is_some());
 
-        let (relogin_required, retry_after) = mailbox_failure_status("Gmail API Error: 401 unauthenticated");
+        let (relogin_required, retry_after) =
+            mailbox_failure_status("Gmail API Error: 401 unauthenticated");
         assert_eq!(relogin_required, "relogin_required");
         assert_eq!(retry_after, None);
 
@@ -2366,10 +2930,9 @@ mod tests {
 
     #[test]
     fn inbox_label_stats_keep_message_and_thread_counts_distinct() {
-        let stats: GmailLabelStats = serde_json::from_str(
-            r#"{"messagesUnread": 1046, "threadsUnread": 810}"#,
-        )
-        .expect("parse Gmail inbox label stats");
+        let stats: GmailLabelStats =
+            serde_json::from_str(r#"{"messagesUnread": 1046, "threadsUnread": 810}"#)
+                .expect("parse Gmail inbox label stats");
 
         assert_eq!(stats.messages_unread, 1046);
         assert_eq!(stats.threads_unread, 810);
@@ -2377,20 +2940,31 @@ mod tests {
 
     #[test]
     fn attachment_filename_drops_path_components() {
-        assert_eq!(safe_attachment_filename(r"..\..\Desktop\report.pdf"), "report.pdf");
-        assert_eq!(safe_attachment_filename(r"C:\Windows\System32\hosts"), "hosts");
+        assert_eq!(
+            safe_attachment_filename(r"..\..\Desktop\report.pdf"),
+            "report.pdf"
+        );
+        assert_eq!(
+            safe_attachment_filename(r"C:\Windows\System32\hosts"),
+            "hosts"
+        );
     }
 
     #[test]
     fn attachment_filename_replaces_windows_unsafe_characters() {
-        assert_eq!(safe_attachment_filename("invoice:2026?.pdf"), "invoice_2026_.pdf");
+        assert_eq!(
+            safe_attachment_filename("invoice:2026?.pdf"),
+            "invoice_2026_.pdf"
+        );
         assert_eq!(safe_attachment_filename("NUL.txt"), "NUL_file.txt");
         assert_eq!(safe_attachment_filename("..."), "attachment");
     }
 
     #[test]
     fn outbound_headers_reject_line_break_injection() {
-        assert!(validate_recipient_header("alice@example.test\r\nBcc: hidden@example.test").is_err());
+        assert!(
+            validate_recipient_header("alice@example.test\r\nBcc: hidden@example.test").is_err()
+        );
     }
 
     #[test]
@@ -2432,7 +3006,13 @@ pub async fn fetch_attachment_data(
 ) -> Result<String, String> {
     crate::require_command_window(&window, &["main"])?;
     let access_token = crate::db::load_account_access_token(&account_id)?;
-    let (bytes, _filename, _mime) =
-        get_attachment_bytes(&app, &email_id, &account_id, &attachment_db_id, &access_token).await?;
+    let (bytes, _filename, _mime) = get_attachment_bytes(
+        &app,
+        &email_id,
+        &account_id,
+        &attachment_db_id,
+        &access_token,
+    )
+    .await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }

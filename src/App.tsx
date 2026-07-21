@@ -1224,7 +1224,15 @@ function App() {
             <ToolbarTip label={tr.actions.newEmail}>
               <button
                 type="button"
-                onClick={() => { setComposeAccountId(activeAccountId ?? accounts[0]?.id ?? null); setShowCompose(true); }}
+                onClick={() => {
+                  setComposeTo("");
+                  setComposeSubject("");
+                  setComposeBody("");
+                  setComposeHtmlAppend("");
+                  setComposeSendError(null);
+                  setComposeAccountId(activeAccountId ?? accounts[0]?.id ?? null);
+                  setShowCompose(true);
+                }}
                 className="w-12 h-12 rounded-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--color-text-on-accent)] flex items-center justify-center shadow-[var(--shadow-accent-lg)] transition-all hover:scale-105 active:scale-95"
               >
                 <Edit3 className="w-5 h-5" />
@@ -1242,7 +1250,19 @@ function App() {
             isSending={isSending}
             sendError={composeSendError}
             onSend={handleComposeSend}
-            onClose={() => { setShowCompose(false); setComposeHtmlAppend(""); setComposeSendError(null); }}
+            onClose={(saved) => {
+              setShowCompose(false);
+              setComposeTo("");
+              setComposeSubject("");
+              setComposeBody("");
+              setComposeHtmlAppend("");
+              setComposeSendError(null);
+              if (saved) showToast(tr.compose.draftSaved, "success");
+            }}
+            onClear={() => {
+              setComposeHtmlAppend("");
+              setComposeSendError(null);
+            }}
             accounts={accounts}
             composeAccountId={composeAccountId}
             setComposeAccountId={setComposeAccountId}

@@ -1,8 +1,8 @@
-import { X, RefreshCw, Send, ChevronDown, AlertCircle, Paperclip, FileText, Image, File, Type, Link2, List, ListOrdered, Undo2, Redo2 } from "lucide-react";
+import { X, RefreshCw, Send, ChevronDown, AlertCircle, Paperclip, FileText, Image, File, Type, Link2, List, ListOrdered, Undo2, Redo2, Trash2, Clock3 } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useLocale } from "../i18n";
 import { ui } from "../theme";
-import type { Account, AttachmentPayload } from "../types";
+import type { Account, AttachmentPayload, DraftSummary } from "../types";
 import { tauriApi, type ContactSuggestion } from "../tauriApi";
 import { normalizeComposerLinkUrl, sanitizeComposerHtml } from "../utils";
 
@@ -26,8 +26,9 @@ interface ComposeModalProps {
   composeHtmlAppend: string;
   isSending: boolean;
   sendError: string | null;
-  onSend: (attachments: AttachmentPayload[], body: string) => void;
-  onClose: () => void;
+  onSend: (attachments: AttachmentPayload[], body: string, draftId: string | null, verificationMessageId: string | null) => Promise<boolean>;
+  onClose: (saved: boolean) => void;
+  onClear: () => void;
   accounts: Account[];
   composeAccountId: string | null;
   setComposeAccountId: (id: string) => void;
@@ -64,7 +65,8 @@ export function ComposeModal({
   isSending,
   sendError,
   onSend,
-  onClose,
+    onClose,
+    onClear,
   accounts,
   composeAccountId,
   setComposeAccountId,
@@ -84,6 +86,14 @@ export function ComposeModal({
   const [bodyEmpty, setBodyEmpty] = useState(true);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [hasMoreDrafts, setHasMoreDrafts] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [draftActionPending, setDraftActionPending] = useState(false);
   const fromRef = useRef<HTMLDivElement>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const suggRef = useRef<HTMLDivElement>(null);
@@ -92,8 +102,112 @@ export function ComposeModal({
   const savedRangeRef = useRef<Range | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contactSearchRequestIdRef = useRef(0);
+  const draftIdRef = useRef<string | null>(null);
+  const draftVerificationMessageIdRef = useRef<string | null>(null);
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftSaveQueueRef = useRef<Promise<string | null>>(Promise.resolve(null));
+  const draftListRequestIdRef = useRef(0);
+  const draftListLoadingRef = useRef(false);
+  const nextDraftPageTokenRef = useRef<string | null>(null);
+  const draftCreateOutcomeUnknownRef = useRef<string | null>(null);
 
   const activeAccount = accounts.find(a => a.id === composeAccountId) ?? accounts[0];
+
+  const bodyText = useCallback((html: string) => {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return doc.body.textContent?.trim() ?? "";
+  }, []);
+
+  const hasDraftContent = useCallback((body = composeBody, items = attachments) =>
+    Boolean(composeTo.trim() || composeSubject.trim() || bodyText(body) || items.length > 0),
+  [attachments, bodyText, composeBody, composeSubject, composeTo]);
+
+  const updateDraftSummary = useCallback((id: string, updatedAt: number, body: string) => {
+    const summary: DraftSummary = {
+      id,
+      messageId: "",
+      to: composeTo,
+      subject: composeSubject,
+      snippet: bodyText(body).slice(0, 120),
+      updatedAt,
+    };
+    setDrafts(previous => [summary, ...previous.filter(item => item.id !== id)]
+      .sort((left, right) => right.updatedAt - left.updatedAt));
+  }, [bodyText, composeSubject, composeTo]);
+
+  const persistDraft = useCallback((body: string, items: AttachmentItem[]) => {
+    const existingDraftId = draftIdRef.current;
+    if (!activeAccount?.id || pendingAttachmentReads > 0 || (!hasDraftContent(body, items) && !existingDraftId)) {
+      return draftSaveQueueRef.current;
+    }
+    if (!existingDraftId && draftCreateOutcomeUnknownRef.current) {
+      return Promise.reject(new Error(draftCreateOutcomeUnknownRef.current));
+    }
+    setDraftStatus("saving");
+    setDraftError(null);
+    const snapshot = {
+      accountId: activeAccount.id,
+      to: composeTo,
+      subject: composeSubject,
+      body: sanitizeComposerHtml(body),
+      attachments: items.map(({ filename, mimeType, data }) => ({ filename, mimeType, data })),
+    };
+    draftSaveQueueRef.current = draftSaveQueueRef.current
+      .catch(() => null)
+      .then(async () => {
+        const saved = await tauriApi.saveDraft({
+          ...snapshot,
+          draftId: draftIdRef.current,
+          attachments: snapshot.attachments.length > 0 ? snapshot.attachments : null,
+        });
+        draftIdRef.current = saved.id;
+        draftVerificationMessageIdRef.current = saved.verificationMessageId;
+        draftCreateOutcomeUnknownRef.current = null;
+        setDraftId(saved.id);
+        setDraftStatus("saved");
+        updateDraftSummary(saved.id, saved.updatedAt, snapshot.body);
+        return saved.id;
+      })
+      .catch(error => {
+        const message = String(error).replace(/^Error:\s*/i, "");
+        if (!draftIdRef.current && /outcome is unknown/i.test(message)) {
+          draftCreateOutcomeUnknownRef.current = message;
+        }
+        setDraftStatus("error");
+        setDraftError(message);
+        throw error;
+      });
+    return draftSaveQueueRef.current;
+  }, [activeAccount?.id, composeSubject, composeTo, hasDraftContent, pendingAttachmentReads, updateDraftSummary]);
+
+  const loadDrafts = useCallback(async (reset: boolean) => {
+    const accountId = activeAccount?.id;
+    if (!accountId || draftListLoadingRef.current) return;
+    const pageToken = reset ? null : nextDraftPageTokenRef.current;
+    if (!reset && !pageToken) return;
+    draftListLoadingRef.current = true;
+    setDraftsLoading(true);
+    const requestId = ++draftListRequestIdRef.current;
+    try {
+      const page = await tauriApi.listDrafts(accountId, pageToken);
+      if (requestId !== draftListRequestIdRef.current) return;
+      setDrafts(previous => {
+        if (reset) return page.drafts;
+        const known = new Set(previous.map(item => item.id));
+        return [...previous, ...page.drafts.filter(item => !known.has(item.id))];
+      });
+      nextDraftPageTokenRef.current = page.nextPageToken;
+      setHasMoreDrafts(Boolean(page.nextPageToken));
+    } catch (error) {
+      if (requestId !== draftListRequestIdRef.current) return;
+      setDraftError(String(error).replace(/^Error:\s*/i, ""));
+    } finally {
+      if (requestId === draftListRequestIdRef.current) {
+        draftListLoadingRef.current = false;
+        setDraftsLoading(false);
+      }
+    }
+  }, [activeAccount?.id]);
 
   useEffect(() => {
     if (!fromOpen) return;
@@ -121,6 +235,33 @@ export function ComposeModal({
     setSuggestions([]);
     setSuggOpen(false);
   }, [activeAccount?.id]);
+
+  useEffect(() => {
+    draftIdRef.current = null;
+    draftVerificationMessageIdRef.current = null;
+    draftCreateOutcomeUnknownRef.current = null;
+    draftListRequestIdRef.current += 1;
+    draftListLoadingRef.current = false;
+    nextDraftPageTokenRef.current = null;
+    setDraftId(null);
+    setDrafts([]);
+    setHasMoreDrafts(false);
+    setDraftStatus("idle");
+    setDraftError(null);
+    void loadDrafts(true);
+  }, [activeAccount?.id, loadDrafts]);
+
+  useEffect(() => {
+    if ((!hasDraftContent() && !draftIdRef.current) || pendingAttachmentReads > 0 || draftActionPending || isSending) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = setTimeout(() => {
+      const html = bodyEditableRef.current?.innerHTML ?? composeBody;
+      void persistDraft(html, attachments).catch(() => undefined);
+    }, 1000);
+    return () => {
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    };
+  }, [attachments, composeBody, composeSubject, composeTo, draftActionPending, hasDraftContent, isSending, pendingAttachmentReads, persistDraft]);
 
   const searchContacts = useCallback((q: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -270,14 +411,18 @@ export function ComposeModal({
     setBodyEmpty(false);
   }, [composeHtmlAppend]);
 
-  // Clear contenteditable when body state is reset to ""
+  // Keep externally loaded draft HTML and the editor in sync without moving
+  // the caret during ordinary typing.
   useEffect(() => {
     if (composeBody === "" && bodyEditableRef.current) {
       bodyEditableRef.current.innerHTML = "";
       setBodyEmpty(true);
-    } else if (composeBody && bodyEditableRef.current && !bodyEditableRef.current.textContent) {
-      bodyEditableRef.current.textContent = composeBody;
-      setBodyEmpty(false);
+    } else if (composeBody && bodyEditableRef.current) {
+      const safeBody = sanitizeComposerHtml(composeBody);
+      if (bodyEditableRef.current.innerHTML !== safeBody) {
+        bodyEditableRef.current.innerHTML = safeBody;
+      }
+      setBodyEmpty(!(bodyEditableRef.current.innerText.trim()));
     }
   }, [composeBody]);
 
@@ -339,20 +484,183 @@ export function ComposeModal({
     setLinkUrl("");
   };
 
+  const handleClose = async () => {
+    if (draftActionPending || pendingAttachmentReads > 0) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    try {
+      if (hasDraftContent() || draftIdRef.current) {
+        await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
+        onClose(true);
+      } else {
+        onClose(false);
+      }
+    } catch {
+      // Keep the composer open: closing after a failed save would lose work.
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    try {
+      await draftSaveQueueRef.current.catch(() => null);
+      const discardedDraftId = draftIdRef.current;
+      if (discardedDraftId && activeAccount?.id) {
+        await tauriApi.deleteDraft(activeAccount.id, discardedDraftId);
+        setDrafts(previous => previous.filter(item => item.id !== discardedDraftId));
+      }
+      draftIdRef.current = null;
+      draftVerificationMessageIdRef.current = null;
+      draftCreateOutcomeUnknownRef.current = null;
+      setDraftId(null);
+      setComposeTo("");
+      setComposeSubject("");
+      setComposeBody("");
+      setAttachments([]);
+      setAttachError(null);
+      setDraftStatus("idle");
+      setDraftError(null);
+      if (bodyEditableRef.current) bodyEditableRef.current.innerHTML = "";
+      setBodyEmpty(true);
+      onClear();
+    } catch (error) {
+      setDraftStatus("error");
+      setDraftError(String(error).replace(/^Error:\s*/i, ""));
+    } finally {
+      setConfirmDiscard(false);
+      setDraftActionPending(false);
+    }
+  };
+
+  const handleSend = async () => {
+    if (!canSend) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    try {
+      const body = bodyEditableRef.current?.innerHTML ?? composeBody;
+      await persistDraft(body, attachments);
+      await onSend(
+        attachments.map(({ filename, mimeType, data }) => ({ filename, mimeType, data })),
+        body,
+        draftIdRef.current,
+        draftVerificationMessageIdRef.current,
+      );
+    } catch {
+      // persistDraft already exposes the save error and keeps the composer open.
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
+
+  const openDraft = async (selectedId: string) => {
+    if (!activeAccount?.id || selectedId === draftIdRef.current || draftActionPending) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    setDraftError(null);
+    try {
+      if (hasDraftContent() || draftIdRef.current) {
+        await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
+      }
+      const selected = await tauriApi.getDraft(activeAccount.id, selectedId);
+      draftIdRef.current = selected.id;
+      draftVerificationMessageIdRef.current = null;
+      setDraftId(selected.id);
+      setComposeTo(selected.to);
+      setComposeSubject(selected.subject);
+      setComposeBody(sanitizeComposerHtml(selected.body));
+      setAttachments(selected.attachments.map(attachment => ({
+        ...attachment,
+        size: Math.floor(attachment.data.length * 0.75),
+      })));
+      setDraftStatus("saved");
+    } catch (error) {
+      setDraftStatus("error");
+      setDraftError(String(error).replace(/^Error:\s*/i, ""));
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
+
+  const startNewDraft = async () => {
+    if (draftActionPending) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    try {
+      if (hasDraftContent() || draftIdRef.current) {
+        await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
+      }
+      draftIdRef.current = null;
+      draftVerificationMessageIdRef.current = null;
+      draftCreateOutcomeUnknownRef.current = null;
+      setDraftId(null);
+      setComposeTo("");
+      setComposeSubject("");
+      setComposeBody("");
+      setAttachments([]);
+      setDraftStatus("idle");
+      setDraftError(null);
+    } catch {
+      // The save error is already displayed by persistDraft.
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
+
+  const changeComposeAccount = async (accountId: string) => {
+    if (accountId === activeAccount?.id || draftActionPending) {
+      setFromOpen(false);
+      return;
+    }
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    setDraftActionPending(true);
+    try {
+      if (hasDraftContent() || draftIdRef.current) {
+        await persistDraft(bodyEditableRef.current?.innerHTML ?? composeBody, attachments);
+      }
+      setComposeAccountId(accountId);
+      setFromOpen(false);
+    } catch {
+      // Keep the current account selected when its draft could not be saved.
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
+
+  const formatDraftTime = (timestamp: number) => {
+    const date = new Date(timestamp);
+    const today = new Date();
+    if (date.toDateString() === today.toDateString()) {
+      return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+    }
+    return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short" }).format(date);
+  };
+
   const canSend = composeTo.trim().length > 0
     && composeSubject.trim().length > 0
     && !isSending
+    && !draftActionPending
     && pendingAttachmentReads === 0
     && (!bodyEmpty || attachments.length > 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg bg-[var(--color-surface-panel)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] shadow-2xl flex flex-col overflow-hidden" style={{ height: "min(560px, 90vh)" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-3">
+      <div className="w-full max-w-4xl bg-[var(--color-surface-panel)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] shadow-[var(--shadow-panel)] flex overflow-hidden" style={{ height: "min(600px, 92vh)" }}>
+        <div className="min-w-0 flex-1 flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-          <h3 className="text-sm font-semibold text-zinc-200">{composeHtmlAppend ? tr.mail.forward : tr.compose.title}</h3>
-          <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-zinc-400 transition-colors">
-            <X className="w-4 h-4" />
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-subtle)]">
+          <div className="flex items-center gap-3 min-w-0">
+            <h3 className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)] truncate">{composeHtmlAppend ? tr.mail.forward : tr.compose.title}</h3>
+            {draftStatus !== "idle" && (
+              <span className={`text-[length:var(--font-size-caption)] ${draftStatus === "error" ? "text-[var(--color-status-danger)]" : "text-[var(--color-text-disabled)]"}`}>
+                {draftStatus === "saving" ? tr.compose.savingDraft : draftStatus === "saved" ? tr.compose.draftSaved : tr.compose.draftSaveFailed}
+              </span>
+            )}
+          </div>
+          <button type="button" onClick={() => void handleClose()} disabled={draftActionPending || pendingAttachmentReads > 0} title={tr.compose.saveAndClose} className={ui.iconButton}>
+            {draftActionPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
           </button>
         </div>
 
@@ -381,7 +689,7 @@ export function ComposeModal({
                 <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] shadow-xl overflow-hidden">
                   {accounts.map(acc => (
                     <button key={acc.id} type="button"
-                      onClick={() => { setComposeAccountId(acc.id); setFromOpen(false); }}
+                      onClick={() => void changeComposeAccount(acc.id)}
                       className={`w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-white/5 transition-colors text-left ${acc.id === composeAccountId ? "bg-white/[0.04]" : ""}`}
                     >
                       {acc.picture ? (
@@ -473,6 +781,7 @@ export function ComposeModal({
                 onPaste={handleBodyPaste}
                 onInput={() => {
                   setBodyEmpty(!(bodyEditableRef.current?.innerText.trim()));
+                  setComposeBody(sanitizeComposerHtml(bodyEditableRef.current?.innerHTML ?? ""));
                   syncUndoRedo();
                 }}
                 className="outline-none text-sm text-zinc-200 [&_a]:text-blue-400 [&_a]:underline [&_b]:font-bold [&_strong]:font-bold [&_i]:italic [&_em]:italic [&_u]:underline [&_s]:line-through [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5"
@@ -584,20 +893,21 @@ export function ComposeModal({
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-white/5 space-y-2">
-          {sendError && (
+          {(sendError || draftError) && (
             <div className="flex items-center gap-2 text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              <span className="min-w-0 break-words">{sendError}</span>
+              <span className="min-w-0 break-words">{sendError || draftError}</span>
             </div>
           )}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button onClick={onClose} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
-                {tr.compose.discard}
+              <button type="button" onClick={() => setConfirmDiscard(true)} disabled={draftActionPending || isSending} title={tr.compose.deleteDraft} className="flex items-center gap-1.5 text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)] hover:text-[var(--color-status-danger)] transition-colors disabled:opacity-50">
+                <Trash2 className="w-3.5 h-3.5" />
+                {tr.compose.deleteDraft}
               </button>
             </div>
             <button
-              onClick={() => onSend(attachments, bodyEditableRef.current?.innerHTML ?? "")}
+              onClick={() => void handleSend()}
               disabled={!canSend}
               className={`px-5 py-1.5 text-white text-xs font-medium rounded-lg transition-all flex items-center gap-2 ${
                 isSending
@@ -612,7 +922,91 @@ export function ComposeModal({
             </button>
           </div>
         </div>
+        </div>
+
+        {!composeHtmlAppend && (
+          <aside className="hidden sm:flex w-72 shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-surface-app)]">
+            <div className="px-4 py-3 border-b border-[var(--color-border-subtle)] flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[length:var(--font-size-compact)] font-semibold text-[var(--color-text-secondary)]">{tr.compose.recentDrafts}</div>
+                <div className="text-[length:var(--font-size-caption)] text-[var(--color-text-disabled)]">{activeAccount?.email}</div>
+              </div>
+              <button type="button" onClick={() => void startNewDraft()} className="text-[length:var(--font-size-caption)] text-[var(--app-accent)] hover:text-[var(--app-accent-hover)] transition-colors">
+                {tr.compose.newDraft}
+              </button>
+            </div>
+
+            <div
+              className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2"
+              onScroll={event => {
+                const element = event.currentTarget;
+                if (hasMoreDrafts && !draftsLoading && element.scrollHeight - element.scrollTop - element.clientHeight < 160) {
+                  void loadDrafts(false);
+                }
+              }}
+            >
+              {draftsLoading && drafts.length === 0 && (
+                <div className="h-full flex items-center justify-center text-[var(--color-text-disabled)]">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                </div>
+              )}
+              {!draftsLoading && drafts.length === 0 && (
+                <div className="h-full flex flex-col items-center justify-center text-center px-4">
+                  <Clock3 className="w-5 h-5 text-[var(--color-text-disabled)] mb-2" />
+                  <p className="text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)]">{tr.compose.noDrafts}</p>
+                </div>
+              )}
+              {drafts.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => void openDraft(item.id)}
+                  disabled={draftActionPending}
+                  className={`w-full text-left rounded-[var(--radius-md)] border p-3 transition-colors disabled:opacity-60 ${item.id === draftId ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]" : "border-[var(--color-border-subtle)] bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-hover)] hover:border-[var(--color-border-default)]"}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 truncate text-[length:var(--font-size-compact)] font-semibold text-[var(--color-text-secondary)]">
+                      {item.subject.trim() || tr.compose.noSubject}
+                    </span>
+                    <span className="shrink-0 text-[length:var(--font-size-micro)] text-[var(--color-text-disabled)]">{formatDraftTime(item.updatedAt)}</span>
+                  </div>
+                  <div className="mt-1 truncate text-[length:var(--font-size-caption)] text-[var(--color-text-subtle)]">
+                    {item.to.trim() || tr.compose.noRecipient}
+                  </div>
+                  <div className="mt-1 truncate text-[length:var(--font-size-caption)] text-[var(--color-text-disabled)]">
+                    {item.snippet.trim() || tr.compose.emptyDraft}
+                  </div>
+                </button>
+              ))}
+              {draftsLoading && drafts.length > 0 && (
+                <div className="flex justify-center py-3 text-[var(--color-text-disabled)]">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
       </div>
+
+      {confirmDiscard && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setConfirmDiscard(false)}>
+          <div className={`${ui.modal} w-full max-w-sm p-5`} onClick={event => event.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 bg-[var(--color-status-danger-soft)] text-[var(--color-status-danger)]">
+                <Trash2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)]">{tr.compose.deleteDraftTitle}</h4>
+                <p className="mt-1 text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)]">{tr.compose.deleteDraftConfirm}</p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmDiscard(false)} className={ui.buttonSecondary}>{tr.common.cancel}</button>
+              <button type="button" onClick={() => void handleDiscard()} className="rounded-[var(--radius-md)] bg-[var(--color-action-danger)] px-4 py-2 text-[length:var(--font-size-compact)] font-semibold text-[var(--color-text-on-accent)] hover:bg-[var(--color-action-danger-hover)] transition-colors">{tr.compose.deleteDraft}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
