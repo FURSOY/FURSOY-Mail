@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical, ExternalLink, ShieldCheck, Mail } from "lucide-react";
+import { RefreshCw, DownloadCloud, Menu, LogOut, Plus, GripVertical, ExternalLink, ShieldCheck, Mail, ArrowUp, ArrowDown } from "lucide-react";
 import { useLocale, type AppLanguage } from "../i18n";
 import { themePresets, typography, ui, type ThemePresetName } from "../theme";
 import { tauriApi } from "../tauriApi";
@@ -105,6 +105,14 @@ export function SettingsPanel({
     setDragOverIndex(null);
   }, []);
 
+  const moveAccount = useCallback((from: number, to: number) => {
+    if (to < 0 || to >= accounts.length || from === to) return;
+    const reordered = [...accounts];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved);
+    onReorderAccounts(reordered.map(account => account.id));
+  }, [accounts, onReorderAccounts]);
+
   useEffect(() => {
     if (dragIndex === null) return;
     const handleMove = (e: PointerEvent) => {
@@ -121,10 +129,7 @@ export function SettingsPanel({
     const handleUp = () => {
       const { from, over } = dragStateRef.current;
       if (from !== null && over !== null && from !== over) {
-        const reordered = [...accounts];
-        const [moved] = reordered.splice(from, 1);
-        reordered.splice(over, 0, moved);
-        onReorderAccounts(reordered.map(a => a.id));
+        moveAccount(from, over);
       }
       dragStateRef.current = { from: null, over: null };
       setDragIndex(null);
@@ -136,7 +141,7 @@ export function SettingsPanel({
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
     };
-  }, [dragIndex, accounts, onReorderAccounts]);
+  }, [dragIndex, moveAccount]);
 
   return (
     <section
@@ -169,7 +174,6 @@ export function SettingsPanel({
                 <div
                   key={acc.id}
                   data-account-idx={i}
-                  onPointerDown={(e) => { e.preventDefault(); startDrag(i); }}
                   className={`flex items-center gap-3 p-3 rounded-lg border transition-all select-none ${
                     dragOverIndex === i && dragIndex !== i
                       ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
@@ -178,7 +182,14 @@ export function SettingsPanel({
                       : "border-white/5 bg-white/[0.02]"
                   }`}
                 >
-                  <GripVertical className={`w-4 h-4 text-zinc-600 shrink-0 ${dragIndex === i ? "cursor-grabbing" : "cursor-grab"}`} />
+                  <button
+                    type="button"
+                    onPointerDown={(event) => { event.preventDefault(); startDrag(i); }}
+                    aria-label={`${acc.email}: ${tr.accounts.description}`}
+                    className={`shrink-0 rounded p-1 text-zinc-600 hover:bg-white/5 hover:text-zinc-300 ${dragIndex === i ? "cursor-grabbing" : "cursor-grab"}`}
+                  >
+                    <GripVertical className="w-4 h-4" />
+                  </button>
                   {acc.picture ? (
                     <img src={acc.picture} alt={acc.email} className="w-8 h-8 rounded-full object-cover shrink-0" />
                   ) : (
@@ -193,7 +204,28 @@ export function SettingsPanel({
                       <div className="text-[10px] text-[var(--app-accent)] font-medium mt-0.5">{tr.accounts.primary}</div>
                     )}
                   </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => moveAccount(i, i - 1)}
+                      disabled={i === 0}
+                      aria-label={`${tr.accounts.moveUp}: ${acc.email}`}
+                      className="rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-zinc-200 disabled:opacity-25"
+                    >
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveAccount(i, i + 1)}
+                      disabled={i === accounts.length - 1}
+                      aria-label={`${tr.accounts.moveDown}: ${acc.email}`}
+                      className="rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-zinc-200 disabled:opacity-25"
+                    >
+                      <ArrowDown className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                   <button
+                    type="button"
                     onClick={() => onLogoutAccount(acc.id)}
                     className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors shrink-0"
                   >

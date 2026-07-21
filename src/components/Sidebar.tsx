@@ -43,7 +43,9 @@ export function Sidebar({
 
   const navItem = (tab: TabName, icon: React.ReactNode, label: string, badge?: React.ReactNode) => (
     <button
+      type="button"
       onClick={() => goToTab(tab)}
+      aria-current={activeTab === tab ? "page" : undefined}
       className={`w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
         activeTab === tab
           ? "bg-[var(--app-accent-soft)] text-zinc-100 shadow-[inset_2px_0_0_var(--app-accent)]"
@@ -124,6 +126,7 @@ export function Sidebar({
             <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/relogin">
               <button
                 type="button"
+                aria-label={tr.accounts.reauthenticate}
                 onClick={(e) => { e.stopPropagation(); onLogin(); }}
                 className="p-1 rounded hover:bg-white/10 text-orange-500 hover:text-orange-300 transition-all"
               >
@@ -137,6 +140,7 @@ export function Sidebar({
             <div className="absolute right-1.5 top-1/2 -translate-y-1/2 group/logout">
               <button
                 type="button"
+                aria-label={`${tr.accounts.signOut}: ${email}`}
                 onClick={(e) => { e.stopPropagation(); onLogoutAccount(accountId); }}
                 className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-red-400 transition-all"
               >

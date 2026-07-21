@@ -96,8 +96,6 @@ export const tauriApi = {
     invoke<void>("trash_email", { accountId, messageId }),
   moveToInbox: (accountId: string, messageId: string) =>
     invoke<void>("move_to_inbox", { accountId, messageId }),
-  permanentlyDelete: (accountId: string, messageId: string) =>
-    invoke<void>("permanently_delete", { accountId, messageId }),
   sendReply: (input: {
     accountId: string;
     to: string;
@@ -110,6 +108,8 @@ export const tauriApi = {
   sendEmail: (input: {
     accountId: string;
     to: string;
+    cc: string;
+    bcc: string;
     subject: string;
     body: string;
     attachments: AttachmentPayload[] | null;
@@ -122,6 +122,8 @@ export const tauriApi = {
     accountId: string;
     draftId: string | null;
     to: string;
+    cc: string;
+    bcc: string;
     subject: string;
     body: string;
     attachments: AttachmentPayload[] | null;

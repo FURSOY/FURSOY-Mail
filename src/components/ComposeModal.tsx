@@ -26,7 +26,7 @@ interface ComposeModalProps {
   composeHtmlAppend: string;
   isSending: boolean;
   sendError: string | null;
-  onSend: (attachments: AttachmentPayload[], body: string, draftId: string | null, verificationMessageId: string | null) => Promise<boolean>;
+  onSend: (cc: string, bcc: string, attachments: AttachmentPayload[], body: string, draftId: string | null, verificationMessageId: string | null) => Promise<boolean>;
   onClose: (saved: boolean) => void;
   onClear: () => void;
   accounts: Account[];
@@ -93,7 +93,13 @@ export function ComposeModal({
   const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [confirmSubjectless, setConfirmSubjectless] = useState(false);
+  const [composeCc, setComposeCc] = useState("");
+  const [composeBcc, setComposeBcc] = useState("");
+  const [showCc, setShowCc] = useState(false);
+  const [showBcc, setShowBcc] = useState(false);
   const [draftActionPending, setDraftActionPending] = useState(false);
+  const modalRef = useRef<HTMLDivElement>(null);
   const fromRef = useRef<HTMLDivElement>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const suggRef = useRef<HTMLDivElement>(null);
@@ -119,21 +125,23 @@ export function ComposeModal({
   }, []);
 
   const hasDraftContent = useCallback((body = composeBody, items = attachments) =>
-    Boolean(composeTo.trim() || composeSubject.trim() || bodyText(body) || items.length > 0),
-  [attachments, bodyText, composeBody, composeSubject, composeTo]);
+    Boolean(composeTo.trim() || composeCc.trim() || composeBcc.trim() || composeSubject.trim() || bodyText(body) || items.length > 0),
+  [attachments, bodyText, composeBcc, composeBody, composeCc, composeSubject, composeTo]);
 
   const updateDraftSummary = useCallback((id: string, updatedAt: number, body: string) => {
     const summary: DraftSummary = {
       id,
       messageId: "",
       to: composeTo,
+      cc: composeCc,
+      bcc: composeBcc,
       subject: composeSubject,
       snippet: bodyText(body).slice(0, 120),
       updatedAt,
     };
     setDrafts(previous => [summary, ...previous.filter(item => item.id !== id)]
       .sort((left, right) => right.updatedAt - left.updatedAt));
-  }, [bodyText, composeSubject, composeTo]);
+  }, [bodyText, composeBcc, composeCc, composeSubject, composeTo]);
 
   const persistDraft = useCallback((body: string, items: AttachmentItem[]) => {
     const existingDraftId = draftIdRef.current;
@@ -148,6 +156,8 @@ export function ComposeModal({
     const snapshot = {
       accountId: activeAccount.id,
       to: composeTo,
+      cc: composeCc,
+      bcc: composeBcc,
       subject: composeSubject,
       body: sanitizeComposerHtml(body),
       attachments: items.map(({ filename, mimeType, data }) => ({ filename, mimeType, data })),
@@ -178,7 +188,7 @@ export function ComposeModal({
         throw error;
       });
     return draftSaveQueueRef.current;
-  }, [activeAccount?.id, composeSubject, composeTo, hasDraftContent, pendingAttachmentReads, updateDraftSummary]);
+  }, [activeAccount?.id, composeBcc, composeCc, composeSubject, composeTo, hasDraftContent, pendingAttachmentReads, updateDraftSummary]);
 
   const loadDrafts = useCallback(async (reset: boolean) => {
     const accountId = activeAccount?.id;
@@ -208,6 +218,10 @@ export function ComposeModal({
       }
     }
   }, [activeAccount?.id]);
+
+  useEffect(() => {
+    window.setTimeout(() => toRef.current?.focus(), 0);
+  }, []);
 
   useEffect(() => {
     if (!fromOpen) return;
@@ -261,7 +275,7 @@ export function ComposeModal({
     return () => {
       if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     };
-  }, [attachments, composeBody, composeSubject, composeTo, draftActionPending, hasDraftContent, isSending, pendingAttachmentReads, persistDraft]);
+  }, [attachments, composeBcc, composeBody, composeCc, composeSubject, composeTo, draftActionPending, hasDraftContent, isSending, pendingAttachmentReads, persistDraft]);
 
   const searchContacts = useCallback((q: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -316,7 +330,7 @@ export function ComposeModal({
       return BLOCKED_EXTENSIONS.has(ext);
     });
     if (blocked.length > 0) {
-      setAttachError(`Blocked file type: ${blocked.map(f => f.name).join(", ")}`);
+      setAttachError(tr.compose.blockedFileType.replace("{files}", blocked.map(f => f.name).join(", ")));
       return;
     }
 
@@ -325,7 +339,7 @@ export function ComposeModal({
     const newBytes = files.reduce((s, f) => s + f.size, 0);
     if (existingBytes + newBytes > MAX_TOTAL_BYTES) {
       const remainingMB = ((MAX_TOTAL_BYTES - existingBytes) / (1024 * 1024)).toFixed(1);
-      setAttachError(`Total attachment size cannot exceed 20 MB. Remaining: ${remainingMB} MB`);
+      setAttachError(tr.compose.attachmentRemaining.replace("{remaining}", remainingMB));
       return;
     }
 
@@ -517,6 +531,10 @@ export function ComposeModal({
       draftCreateOutcomeUnknownRef.current = null;
       setDraftId(null);
       setComposeTo("");
+      setComposeCc("");
+      setComposeBcc("");
+      setShowCc(false);
+      setShowBcc(false);
       setComposeSubject("");
       setComposeBody("");
       setAttachments([]);
@@ -535,14 +553,15 @@ export function ComposeModal({
     }
   };
 
-  const handleSend = async () => {
-    if (!canSend) return;
+  const sendNow = async () => {
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     setDraftActionPending(true);
     try {
       const body = bodyEditableRef.current?.innerHTML ?? composeBody;
       await persistDraft(body, attachments);
       await onSend(
+        composeCc,
+        composeBcc,
         attachments.map(({ filename, mimeType, data }) => ({ filename, mimeType, data })),
         body,
         draftIdRef.current,
@@ -553,6 +572,39 @@ export function ComposeModal({
     } finally {
       setDraftActionPending(false);
     }
+  };
+
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (confirmSubjectless) setConfirmSubjectless(false);
+      else if (confirmDiscard) setConfirmDiscard(false);
+      else void handleClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(modalRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
+    ) ?? []).filter(element => element.offsetParent !== null);
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  const handleSend = async () => {
+    if (!canSend) return;
+    if (!composeSubject.trim()) {
+      setConfirmSubjectless(true);
+      return;
+    }
+    await sendNow();
   };
 
   const openDraft = async (selectedId: string) => {
@@ -569,6 +621,10 @@ export function ComposeModal({
       draftVerificationMessageIdRef.current = null;
       setDraftId(selected.id);
       setComposeTo(selected.to);
+      setComposeCc(selected.cc);
+      setComposeBcc(selected.bcc);
+      setShowCc(Boolean(selected.cc.trim()));
+      setShowBcc(Boolean(selected.bcc.trim()));
       setComposeSubject(selected.subject);
       setComposeBody(sanitizeComposerHtml(selected.body));
       setAttachments(selected.attachments.map(attachment => ({
@@ -597,6 +653,10 @@ export function ComposeModal({
       draftCreateOutcomeUnknownRef.current = null;
       setDraftId(null);
       setComposeTo("");
+      setComposeCc("");
+      setComposeBcc("");
+      setShowCc(false);
+      setShowBcc(false);
       setComposeSubject("");
       setComposeBody("");
       setAttachments([]);
@@ -639,7 +699,6 @@ export function ComposeModal({
   };
 
   const canSend = composeTo.trim().length > 0
-    && composeSubject.trim().length > 0
     && !isSending
     && !draftActionPending
     && pendingAttachmentReads === 0
@@ -647,19 +706,27 @@ export function ComposeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-3">
-      <div className="w-full max-w-4xl bg-[var(--color-surface-panel)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] shadow-[var(--shadow-panel)] flex overflow-hidden" style={{ height: "min(600px, 92vh)" }}>
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compose-dialog-title"
+        onKeyDown={handleDialogKeyDown}
+        className="w-full max-w-4xl bg-[var(--color-surface-panel)] border border-[var(--color-border-default)] rounded-[var(--radius-lg)] shadow-[var(--shadow-panel)] flex overflow-hidden"
+        style={{ height: "min(600px, 92vh)" }}
+      >
         <div className="min-w-0 flex-1 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-subtle)]">
           <div className="flex items-center gap-3 min-w-0">
-            <h3 className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)] truncate">{composeHtmlAppend ? tr.mail.forward : tr.compose.title}</h3>
+            <h3 id="compose-dialog-title" className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)] truncate">{composeHtmlAppend ? tr.mail.forward : tr.compose.title}</h3>
             {draftStatus !== "idle" && (
               <span className={`text-[length:var(--font-size-caption)] ${draftStatus === "error" ? "text-[var(--color-status-danger)]" : "text-[var(--color-text-disabled)]"}`}>
                 {draftStatus === "saving" ? tr.compose.savingDraft : draftStatus === "saved" ? tr.compose.draftSaved : tr.compose.draftSaveFailed}
               </span>
             )}
           </div>
-          <button type="button" onClick={() => void handleClose()} disabled={draftActionPending || pendingAttachmentReads > 0} title={tr.compose.saveAndClose} className={ui.iconButton}>
+          <button type="button" onClick={() => void handleClose()} disabled={draftActionPending || pendingAttachmentReads > 0} title={tr.compose.saveAndClose} aria-label={tr.compose.saveAndClose} className={ui.iconButton}>
             {draftActionPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
           </button>
         </div>
@@ -715,8 +782,9 @@ export function ComposeModal({
           {/* To */}
           <div className="relative">
             <div className="relative flex items-center">
-              <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.toLabelShort}</span>
+              <label htmlFor="compose-to" className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.toLabelShort}</label>
               <input
+                id="compose-to"
                 ref={toRef}
                 value={composeTo}
                 onChange={e => handleToChange(e.target.value)}
@@ -725,8 +793,30 @@ export function ComposeModal({
                 placeholder="example@gmail.com"
                 autoComplete="off"
                 spellCheck={false}
-                className={`${ui.input} pl-12`}
+                className={`${ui.input} pl-12 pr-20`}
               />
+              <div className="absolute right-3 flex items-center gap-2 text-[length:var(--font-size-caption)]">
+                <button
+                  type="button"
+                  aria-expanded={showCc}
+                  aria-controls="compose-cc-field"
+                  aria-label={showCc ? tr.compose.hideCc : tr.compose.showCc}
+                  onClick={() => setShowCc(open => !open)}
+                  className={showCc ? "text-[var(--app-accent)]" : "text-[var(--color-text-subtle)] hover:text-[var(--color-text-secondary)]"}
+                >
+                  {tr.compose.cc}
+                </button>
+                <button
+                  type="button"
+                  aria-expanded={showBcc}
+                  aria-controls="compose-bcc-field"
+                  aria-label={showBcc ? tr.compose.hideBcc : tr.compose.showBcc}
+                  onClick={() => setShowBcc(open => !open)}
+                  className={showBcc ? "text-[var(--app-accent)]" : "text-[var(--color-text-subtle)] hover:text-[var(--color-text-secondary)]"}
+                >
+                  {tr.compose.bcc}
+                </button>
+              </div>
             </div>
             {suggOpen && suggestions.length > 0 && (
               <div ref={suggRef} className="absolute left-0 right-0 top-full mt-1 z-20 bg-[var(--color-surface-popover)] border border-[var(--color-border-default)] rounded-[var(--radius-md)] shadow-xl overflow-hidden">
@@ -754,10 +844,41 @@ export function ComposeModal({
             )}
           </div>
 
+          {showCc && (
+            <div id="compose-cc-field" className="relative flex items-center">
+              <label htmlFor="compose-cc" className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.cc}</label>
+              <input
+                id="compose-cc"
+                value={composeCc}
+                onChange={event => setComposeCc(event.target.value)}
+                placeholder="example@gmail.com"
+                autoComplete="off"
+                spellCheck={false}
+                className={`${ui.input} pl-12`}
+              />
+            </div>
+          )}
+
+          {showBcc && (
+            <div id="compose-bcc-field" className="relative flex items-center">
+              <label htmlFor="compose-bcc" className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.bcc}</label>
+              <input
+                id="compose-bcc"
+                value={composeBcc}
+                onChange={event => setComposeBcc(event.target.value)}
+                placeholder="example@gmail.com"
+                autoComplete="off"
+                spellCheck={false}
+                className={`${ui.input} pl-12`}
+              />
+            </div>
+          )}
+
           {/* Subject */}
           <div className="relative flex items-center">
-            <span className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.subject}</span>
+            <label htmlFor="compose-subject" className="absolute left-3 text-[10px] text-zinc-600 pointer-events-none">{tr.compose.subject}</label>
             <input
+              id="compose-subject"
               value={composeSubject}
               onChange={e => setComposeSubject(e.target.value)}
               placeholder={tr.compose.subjectPlaceholder}
@@ -777,6 +898,9 @@ export function ComposeModal({
               <div
                 ref={bodyEditableRef}
                 contentEditable
+                role="textbox"
+                aria-multiline="true"
+                aria-label={tr.compose.body}
                 suppressContentEditableWarning
                 onPaste={handleBodyPaste}
                 onInput={() => {
@@ -797,7 +921,7 @@ export function ComposeModal({
                     <span className="shrink-0 text-zinc-500">{fileIcon(att.mimeType)}</span>
                     <span className="text-[11px] truncate min-w-0">{att.filename}</span>
                     <span className="text-[10px] text-zinc-600 shrink-0">{formatBytes(att.size)}</span>
-                    <button type="button" onClick={() => removeAttachment(idx)} className="shrink-0 ml-0.5 text-zinc-600 hover:text-zinc-300 transition-colors">
+                    <button type="button" aria-label={`${tr.compose.removeAttachment}: ${att.filename}`} onClick={() => removeAttachment(idx)} className="shrink-0 ml-0.5 text-zinc-600 hover:text-zinc-300 transition-colors">
                       <X className="w-3 h-3" />
                     </button>
                   </div>
@@ -810,7 +934,7 @@ export function ComposeModal({
               <div className="mx-3 mb-1.5 shrink-0 flex items-center gap-2 text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-2.5 py-1.5">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span className="min-w-0">{attachError}</span>
-                <button type="button" onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-red-400/60 hover:text-red-400"><X className="w-3 h-3" /></button>
+                <button type="button" aria-label={tr.common.close} onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-red-400/60 hover:text-red-400"><X className="w-3 h-3" /></button>
               </div>
             )}
 
@@ -833,11 +957,11 @@ export function ComposeModal({
                     </div>
                   </div>
                 )}
-                <button type="button" title={tr.compose.undo} disabled={!canUndo} onMouseDown={e => { e.preventDefault(); applyFormat("undo"); }}
+                <button type="button" title={tr.compose.undo} aria-label={tr.compose.undo} disabled={!canUndo} onMouseDown={e => { e.preventDefault(); applyFormat("undo"); }}
                   className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${canUndo ? "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] cursor-pointer" : "text-zinc-700 cursor-default"}`}>
                   <Undo2 className="w-3.5 h-3.5" />
                 </button>
-                <button type="button" title={tr.compose.redo} disabled={!canRedo} onMouseDown={e => { e.preventDefault(); applyFormat("redo"); }}
+                <button type="button" title={tr.compose.redo} aria-label={tr.compose.redo} disabled={!canRedo} onMouseDown={e => { e.preventDefault(); applyFormat("redo"); }}
                   className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${canRedo ? "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] cursor-pointer" : "text-zinc-700 cursor-default"}`}>
                   <Redo2 className="w-3.5 h-3.5" />
                 </button>
@@ -848,25 +972,25 @@ export function ComposeModal({
                   { cmd: "underline",     label: "U", cls: "underline",    title: tr.compose.underline },
                   { cmd: "strikeThrough", label: "S", cls: "line-through", title: tr.compose.strikethrough },
                 ] as { cmd: string; label: string; cls: string; title: string }[]).map(({ cmd, label, cls, title }) => (
-                  <button key={cmd} type="button" title={title}
+                  <button key={cmd} type="button" title={title} aria-label={title}
                     onMouseDown={e => { e.preventDefault(); applyFormat(cmd); }}
                     className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] text-xs transition-colors">
                     <span className={cls}>{label}</span>
                   </button>
                 ))}
                 <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
-                <button type="button" title={tr.compose.insertLink}
+                <button type="button" title={tr.compose.insertLink} aria-label={tr.compose.insertLink}
                   onMouseDown={e => { e.preventDefault(); saveSelection(); setLinkUrl(""); setLinkPopover(v => !v); }}
                   className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${linkPopover ? "text-blue-400 bg-blue-500/10" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"}`}>
                   <Link2 className="w-3.5 h-3.5" />
                 </button>
                 <div className="w-px h-4 bg-white/10 mx-1 shrink-0" />
-                <button type="button" title={tr.compose.numberedList}
+                <button type="button" title={tr.compose.numberedList} aria-label={tr.compose.numberedList}
                   onMouseDown={e => { e.preventDefault(); applyFormat("insertOrderedList"); }}
                   className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors">
                   <ListOrdered className="w-3.5 h-3.5" />
                 </button>
-                <button type="button" title={tr.compose.bulletList}
+                <button type="button" title={tr.compose.bulletList} aria-label={tr.compose.bulletList}
                   onMouseDown={e => { e.preventDefault(); applyFormat("insertUnorderedList"); }}
                   className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors">
                   <List className="w-3.5 h-3.5" />
@@ -876,12 +1000,12 @@ export function ComposeModal({
 
             {/* Bottom bar — paperclip + format toggle */}
             <div className="px-2 py-1.5 border-t border-white/[0.06] flex items-center gap-1 shrink-0">
-              <button type="button" title={tr.compose.attachFile} onClick={() => fileInputRef.current?.click()}
+              <button type="button" title={tr.compose.attachFile} aria-label={tr.compose.attachFile} onClick={() => fileInputRef.current?.click()}
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors">
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
               <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
-              <button type="button" title={tr.compose.formatting}
+              <button type="button" title={tr.compose.formatting} aria-label={tr.compose.formatting}
                 onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                 className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"}`}>
                 <Type className="w-3.5 h-3.5" />
@@ -990,19 +1114,46 @@ export function ComposeModal({
 
       {confirmDiscard && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setConfirmDiscard(false)}>
-          <div className={`${ui.modal} w-full max-w-sm p-5`} onClick={event => event.stopPropagation()}>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="discard-draft-title" aria-describedby="discard-draft-description" className={`${ui.modal} w-full max-w-sm p-5`} onClick={event => event.stopPropagation()}>
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 bg-[var(--color-status-danger-soft)] text-[var(--color-status-danger)]">
                 <Trash2 className="w-4 h-4" />
               </div>
               <div>
-                <h4 className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)]">{tr.compose.deleteDraftTitle}</h4>
-                <p className="mt-1 text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)]">{tr.compose.deleteDraftConfirm}</p>
+                <h4 id="discard-draft-title" className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)]">{tr.compose.deleteDraftTitle}</h4>
+                <p id="discard-draft-description" className="mt-1 text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)]">{tr.compose.deleteDraftConfirm}</p>
               </div>
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" onClick={() => setConfirmDiscard(false)} className={ui.buttonSecondary}>{tr.common.cancel}</button>
               <button type="button" onClick={() => void handleDiscard()} className="rounded-[var(--radius-md)] bg-[var(--color-action-danger)] px-4 py-2 text-[length:var(--font-size-compact)] font-semibold text-[var(--color-text-on-accent)] hover:bg-[var(--color-action-danger-hover)] transition-colors">{tr.compose.deleteDraft}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmSubjectless && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setConfirmSubjectless(false)}>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="subjectless-title" aria-describedby="subjectless-description" className={`${ui.modal} w-full max-w-sm p-5`} onClick={event => event.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 bg-[var(--color-status-warning-soft)] text-[var(--color-status-warning)]">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 id="subjectless-title" className="text-[length:var(--font-size-body)] font-semibold text-[var(--color-text-primary)]">{tr.compose.sendWithoutSubjectTitle}</h4>
+                <p id="subjectless-description" className="mt-1 text-[length:var(--font-size-compact)] text-[var(--color-text-subtle)]">{tr.compose.sendWithoutSubjectMessage}</p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmSubjectless(false)} className={ui.buttonSecondary}>{tr.common.cancel}</button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => { setConfirmSubjectless(false); void sendNow(); }}
+                className="rounded-[var(--radius-md)] bg-[var(--app-accent)] px-4 py-2 text-[length:var(--font-size-compact)] font-semibold text-[var(--color-text-on-accent)] hover:bg-[var(--app-accent-hover)] transition-colors"
+              >
+                {tr.compose.sendWithoutSubject}
+              </button>
             </div>
           </div>
         </div>

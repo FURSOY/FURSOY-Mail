@@ -162,25 +162,6 @@ export function useMailActions(options: UseMailActionsOptions) {
     }
   }, [activeTabRef, adjustUnreadBadge, getTokenForEmail, loadEmails, locale, refreshUnreadCount, runAuthenticatedAction, setEmails, setSelectedMail, showToast]);
 
-  const handlePermanentDelete = useCallback((mail: EmailSummary) => {
-    if (!getTokenForEmail(mail)) return;
-    setConfirmModal({
-      message: locale.messages.permanentDeleteConfirm,
-      onConfirm: async () => {
-        setEmails(previous => previous.filter(email => !sameEmail(email, mail)));
-        setSelectedMail(null);
-        try {
-          await runAuthenticatedAction(mail, () => tauriApi.permanentlyDelete(mail.account_id, mail.id));
-          showToast(locale.messages.permanentlyDeleted, "success");
-        } catch (error) {
-          console.error("Permanently delete email failed:", error);
-          showToast(actionFailureMessage(locale.messages.deleteFailed, error), "error");
-          void loadEmails(activeTabRef.current);
-        }
-      },
-    });
-  }, [activeTabRef, getTokenForEmail, loadEmails, locale, runAuthenticatedAction, setEmails, setSelectedMail, showToast]);
-
   const handleReply = useCallback(async (attachments: AttachmentPayload[] = [], body = "") => {
     if (!activeMail || (!body.trim() && attachments.length === 0)) return;
     const accessToken = getTokenForEmail(activeMail);
@@ -236,12 +217,14 @@ export function useMailActions(options: UseMailActionsOptions) {
   }, [activeMail, getTokenForEmail, locale, replyMode, selectedMailBody, setThreadRefreshKey, showToast]);
 
   const handleComposeSend = useCallback(async (
+    cc: string,
+    bcc: string,
     attachments: AttachmentPayload[],
     body: string,
     draftId: string | null,
     verificationMessageId: string | null,
   ): Promise<boolean> => {
-    if (!composeTo.trim() || !composeSubject.trim()) return false;
+    if (!composeTo.trim()) return false;
     const sendFromId = composeAccountId ?? activeAccountId ?? accounts[0]?.id;
     if (!sendFromId) {
       setComposeSendError(locale.messages.noSendAccount);
@@ -269,6 +252,8 @@ export function useMailActions(options: UseMailActionsOptions) {
         : await tauriApi.sendEmail({
             accountId: sendFromId,
             to: composeTo,
+            cc,
+            bcc,
             subject: composeSubject,
             body: body + composeHtmlAppend,
             attachments: attachments.length > 0 ? attachments : null,
@@ -347,7 +332,7 @@ export function useMailActions(options: UseMailActionsOptions) {
     composeTo, setComposeTo, composeSubject, setComposeSubject, composeBody, setComposeBody,
     composeHtmlAppend, setComposeHtmlAppend, composeAccountId, setComposeAccountId,
     composeSendError, setComposeSendError,
-    handleArchive, handleTrash, handleMoveToInbox, handlePermanentDelete,
+    handleArchive, handleTrash, handleMoveToInbox,
     handleReply, handleComposeSend, handleMarkAsUnread, handleForward,
   };
 }

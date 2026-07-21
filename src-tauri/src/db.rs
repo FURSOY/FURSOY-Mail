@@ -1377,14 +1377,6 @@ pub fn update_email_label(app: &AppHandle, id: &str, account_id: &str, label: &s
     Ok(())
 }
 
-pub fn delete_email_from_db(app: &AppHandle, id: &str, account_id: &str) -> Result<(), String> {
-    let db_path = get_db_path(app);
-    let mut conn = Connection::open(db_path).map_err(database_error)?;
-    delete_emails_by_ids_from_conn(&mut conn, account_id, &[id.to_string()])
-        .map_err(database_error)?;
-    Ok(())
-}
-
 #[tauri::command]
 pub fn get_inbox_unread_count(
     window: tauri::WebviewWindow,

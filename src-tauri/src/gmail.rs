@@ -1307,49 +1307,6 @@ pub async fn move_to_inbox(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn permanently_delete(
-    window: tauri::WebviewWindow,
-    app: AppHandle,
-    account_id: String,
-    message_id: String,
-) -> Result<(), String> {
-    crate::require_command_window(&window, &["main"])?;
-    let access_token = crate::db::load_account_access_token(&account_id)?;
-    validate_gmail_identifier("message ID", &message_id)?;
-    // Permanently delete from Gmail before changing the local cache.
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_default();
-    let url = format!(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
-        message_id
-    );
-
-    let res = client
-        .delete(&url)
-        .bearer_auth(&access_token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() && res.status() != StatusCode::NOT_FOUND {
-        return Err(format!("Gmail delete error (HTTP {}).", res.status()));
-    }
-
-    if let Err(error) = crate::db::delete_email_from_db(&app, &message_id, &account_id) {
-        if let Err(sync_error) = sync_emails(window, app, account_id, Some(true)).await {
-            eprintln!("[MAIL_CACHE] delete reconciliation failed: {sync_error}");
-        }
-        return Err(format!(
-            "İleti Gmail'den silindi ancak yerel önbellek güncellenemedi: {error}"
-        ));
-    }
-
-    Ok(())
-}
-
 const MAX_OUTBOUND_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_RECIPIENT_HEADER_BYTES: usize = 8 * 1024;
 const MAX_SUBJECT_BYTES: usize = 4 * 1024;
@@ -1405,6 +1362,8 @@ pub struct DraftSummary {
     id: String,
     message_id: String,
     to: String,
+    cc: String,
+    bcc: String,
     subject: String,
     snippet: String,
     updated_at: i64,
@@ -1423,6 +1382,8 @@ pub struct DraftContent {
     id: String,
     message_id: String,
     to: String,
+    cc: String,
+    bcc: String,
     subject: String,
     body: String,
     updated_at: i64,
@@ -1795,6 +1756,8 @@ pub async fn send_email(
     app: tauri::AppHandle,
     account_id: String,
     to: String,
+    cc: String,
+    bcc: String,
     subject: String,
     body: String,
     attachments: Option<Vec<AttachmentPayload>>,
@@ -1807,18 +1770,21 @@ pub async fn send_email(
         .map_err(|_| "Gmail send client could not be created.".to_string())?;
     let atts = attachments.unwrap_or_default();
     validate_recipient_header(&to)?;
+    validate_optional_recipient_header(&cc)?;
+    validate_optional_recipient_header(&bcc)?;
     validate_header_value("Subject", &subject, MAX_SUBJECT_BYTES)?;
     let outbound_message_id = generate_outbound_message_id();
 
-    let raw_email = build_raw_mime(
-        &[
-            ("To", to),
-            ("Subject", mime_encode_header(&subject)),
-            ("Message-ID", outbound_message_id.clone()),
-        ],
-        &body,
-        &atts,
-    )?;
+    let mut headers = vec![("To", to)];
+    if !cc.trim().is_empty() {
+        headers.push(("Cc", cc));
+    }
+    if !bcc.trim().is_empty() {
+        headers.push(("Bcc", bcc));
+    }
+    headers.push(("Subject", mime_encode_header(&subject)));
+    headers.push(("Message-ID", outbound_message_id.clone()));
+    let raw_email = build_raw_mime(&headers, &body, &atts)?;
 
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_email.as_bytes());
 
@@ -1899,6 +1865,8 @@ fn draft_summary(draft: &GmailDraft) -> DraftSummary {
         id: draft.id.clone(),
         message_id: draft.message.id.clone(),
         to: draft_header(&draft.message, "to"),
+        cc: draft_header(&draft.message, "cc"),
+        bcc: draft_header(&draft.message, "bcc"),
         subject: draft_header(&draft.message, "subject"),
         snippet: draft.message.snippet.clone(),
         updated_at: draft.message.internal_date.parse::<i64>().unwrap_or(0),
@@ -2097,6 +2065,8 @@ pub async fn get_draft(
         id: draft.id,
         message_id: draft.message.id.clone(),
         to: draft_header(&draft.message, "to"),
+        cc: draft_header(&draft.message, "cc"),
+        bcc: draft_header(&draft.message, "bcc"),
         subject: draft_header(&draft.message, "subject"),
         body: draft_body(&draft.message),
         updated_at: draft.message.internal_date.parse::<i64>().unwrap_or(0),
@@ -2110,12 +2080,16 @@ pub async fn save_draft(
     account_id: String,
     draft_id: Option<String>,
     to: String,
+    cc: String,
+    bcc: String,
     subject: String,
     body: String,
     attachments: Option<Vec<AttachmentPayload>>,
 ) -> Result<SavedDraft, String> {
     crate::require_command_window(&window, &["main"])?;
     validate_optional_recipient_header(&to)?;
+    validate_optional_recipient_header(&cc)?;
+    validate_optional_recipient_header(&bcc)?;
     validate_header_value("Subject", &subject, MAX_SUBJECT_BYTES)?;
     if let Some(id) = &draft_id {
         validate_gmail_identifier("draft ID", id)?;
@@ -2126,15 +2100,16 @@ pub async fn save_draft(
         .build()
         .map_err(|_| "Gmail draft client could not be created.".to_string())?;
     let verification_message_id = generate_outbound_message_id();
-    let raw_email = build_raw_mime(
-        &[
-            ("To", to),
-            ("Subject", mime_encode_header(&subject)),
-            ("Message-ID", verification_message_id.clone()),
-        ],
-        &body,
-        &attachments.unwrap_or_default(),
-    )?;
+    let mut headers = vec![("To", to)];
+    if !cc.trim().is_empty() {
+        headers.push(("Cc", cc));
+    }
+    if !bcc.trim().is_empty() {
+        headers.push(("Bcc", bcc));
+    }
+    headers.push(("Subject", mime_encode_header(&subject)));
+    headers.push(("Message-ID", verification_message_id.clone()));
+    let raw_email = build_raw_mime(&headers, &body, &attachments.unwrap_or_default())?;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_email.as_bytes());
     let payload = serde_json::json!({ "message": { "raw": encoded } });
     let existing_draft_id = draft_id.clone();
@@ -2965,6 +2940,24 @@ mod tests {
         assert!(
             validate_recipient_header("alice@example.test\r\nBcc: hidden@example.test").is_err()
         );
+    }
+
+    #[test]
+    fn outbound_mime_keeps_cc_and_bcc_headers() {
+        let raw = build_raw_mime(
+            &[
+                ("To", "to@example.test".to_string()),
+                ("Cc", "copy@example.test".to_string()),
+                ("Bcc", "hidden@example.test".to_string()),
+                ("Subject", "Status".to_string()),
+            ],
+            "<p>Hello</p>",
+            &[],
+        )
+        .expect("build MIME with optional recipients");
+
+        assert!(raw.contains("\r\nCc: copy@example.test\r\n"));
+        assert!(raw.contains("\r\nBcc: hidden@example.test\r\n"));
     }
 
     #[test]

@@ -236,12 +236,10 @@ interface EmailReaderProps {
   showArchiveBtn: boolean;
   showRestoreBtn: boolean;
   showTrashToBinBtn: boolean;
-  showDeleteForeverBtn: boolean;
 
   onArchive: () => void;
   onTrash: () => void;
   onMoveToInbox: () => void;
-  onPermanentDelete: () => void;
   onMarkAsUnread: () => void;
   onForward: () => void;
   onOpenUrl: (url: string) => void;
@@ -263,8 +261,8 @@ export function EmailReader({
   readingToolsOpen, setReadingToolsOpen, renderMode, setRenderMode,
   remoteImagesAllowedForEmail, onLoadRemoteImages, onTrustRemoteImages,
   verificationCode, verificationCopyState, setVerificationCopyState,
-  showArchiveBtn, showRestoreBtn, showTrashToBinBtn, showDeleteForeverBtn,
-  onArchive, onTrash, onMoveToInbox, onPermanentDelete, onMarkAsUnread, onForward,
+  showArchiveBtn, showRestoreBtn, showTrashToBinBtn,
+  onArchive, onTrash, onMoveToInbox, onMarkAsUnread, onForward,
   onOpenUrl, mailScrollRef, relayoutKey, threadEmails, accessToken, showToast,
 }: EmailReaderProps) {
   const tr = useLocale();
@@ -436,11 +434,15 @@ export function EmailReader({
     if (!files.length) return;
     setReplyAttachError(null);
     const blocked = files.filter(f => BLOCKED_EXT.has(f.name.split(".").pop()?.toLowerCase() ?? ""));
-    if (blocked.length) { setReplyAttachError(`Blocked file type: ${blocked.map(f => f.name).join(", ")}`); return; }
+    if (blocked.length) {
+      setReplyAttachError(tr.compose.blockedFileType.replace("{files}", blocked.map(f => f.name).join(", ")));
+      return;
+    }
     const existingBytes = replyAttachments.reduce((s, a) => s + a.size, 0);
     const newBytes = files.reduce((s, f) => s + f.size, 0);
     if (existingBytes + newBytes > MAX_ATT_BYTES) {
-      setReplyAttachError(`Total attachment size cannot exceed 20 MB.`); return;
+      setReplyAttachError(tr.compose.attachmentTooLarge);
+      return;
     }
     setPendingReplyAttachmentReads(prev => prev + files.length);
     files.forEach(file => {
@@ -531,6 +533,7 @@ export function EmailReader({
             <button
               type="button"
               onClick={closeReader}
+              aria-label={tr.common.close}
               className="mr-1 shrink-0 rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
             >
               <CornerUpLeft className="h-3.5 w-3.5" />
@@ -595,13 +598,6 @@ export function EmailReader({
           {showTrashToBinBtn && (
             <ToolbarTip label={tr.actions.moveTrash}>
               <button type="button" onClick={onTrash} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-red-400 transition-colors">
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </ToolbarTip>
-          )}
-          {showDeleteForeverBtn && (
-            <ToolbarTip label={tr.actions.deleteForever}>
-              <button type="button" onClick={onPermanentDelete} className="p-2 rounded-md hover:bg-white/5 text-zinc-400 hover:text-red-500 transition-colors">
                 <Trash2 className="w-4 h-4" />
               </button>
             </ToolbarTip>
@@ -836,13 +832,6 @@ export function EmailReader({
                 </button>
               </ToolbarTip>
             )}
-            {showDeleteForeverBtn && (
-              <ToolbarTip label={tr.mail.delete}>
-                <button type="button" onClick={onPermanentDelete} className="p-2 rounded-md hover:bg-white/5 text-zinc-400">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </ToolbarTip>
-            )}
           </div>
 
           {/* Reply Box */}
@@ -873,6 +862,9 @@ export function EmailReader({
                 <div
                   ref={replyEditableRef}
                   contentEditable
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-label={tr.mail.writeReply}
                   suppressContentEditableWarning
                   onPaste={handleReplyPaste}
                   onInput={() => {
@@ -928,11 +920,11 @@ export function EmailReader({
                   )}
 
                   {/* Format buttons */}
-                  <button type="button" title={tr.compose.undo} disabled={!canUndo} onMouseDown={e => { e.preventDefault(); applyFormat("undo"); }}
+                  <button type="button" title={tr.compose.undo} aria-label={tr.compose.undo} disabled={!canUndo} onMouseDown={e => { e.preventDefault(); applyFormat("undo"); }}
                     className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${canUndo ? "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] cursor-pointer" : "text-zinc-700 cursor-default"}`}>
                     <Undo2 className="w-3.5 h-3.5" />
                   </button>
-                  <button type="button" title={tr.compose.redo} disabled={!canRedo} onMouseDown={e => { e.preventDefault(); applyFormat("redo"); }}
+                  <button type="button" title={tr.compose.redo} aria-label={tr.compose.redo} disabled={!canRedo} onMouseDown={e => { e.preventDefault(); applyFormat("redo"); }}
                     className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${canRedo ? "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] cursor-pointer" : "text-zinc-700 cursor-default"}`}>
                     <Redo2 className="w-3.5 h-3.5" />
                   </button>
@@ -947,6 +939,7 @@ export function EmailReader({
                       key={cmd}
                       type="button"
                       title={title}
+                      aria-label={title}
                       onMouseDown={e => { e.preventDefault(); applyFormat(cmd); }}
                       className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] text-xs transition-colors"
                     >
@@ -959,6 +952,7 @@ export function EmailReader({
                   <button
                     type="button"
                     title={tr.compose.insertLink}
+                    aria-label={tr.compose.insertLink}
                     onMouseDown={e => {
                       e.preventDefault();
                       saveSelection();
@@ -977,6 +971,7 @@ export function EmailReader({
                   <button
                     type="button"
                     title={tr.compose.numberedList}
+                    aria-label={tr.compose.numberedList}
                     onMouseDown={e => { e.preventDefault(); applyFormat("insertOrderedList"); }}
                     className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors"
                   >
@@ -985,6 +980,7 @@ export function EmailReader({
                   <button
                     type="button"
                     title={tr.compose.bulletList}
+                    aria-label={tr.compose.bulletList}
                     onMouseDown={e => { e.preventDefault(); applyFormat("insertUnorderedList"); }}
                     className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors"
                   >
@@ -1001,7 +997,7 @@ export function EmailReader({
                       <AttachmentIcon mimeType={att.mimeType} />
                       <span className="text-[11px] truncate min-w-0">{att.filename}</span>
                       <span className="text-[10px] text-zinc-600 shrink-0">{formatBytes(att.size)}</span>
-                      <button type="button" onClick={() => setReplyAttachments(p => p.filter((_, i) => i !== idx))} className="shrink-0 text-zinc-600 hover:text-zinc-300 transition-colors">
+                      <button type="button" aria-label={`${tr.compose.removeAttachment}: ${att.filename}`} onClick={() => setReplyAttachments(p => p.filter((_, i) => i !== idx))} className="shrink-0 text-zinc-600 hover:text-zinc-300 transition-colors">
                         <X className="w-3 h-3" />
                       </button>
                     </div>
@@ -1011,7 +1007,7 @@ export function EmailReader({
               {replyAttachError && (
                 <div className="mx-3 mb-1.5 flex items-center gap-2 text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-2.5 py-1.5">
                   <span className="min-w-0">{replyAttachError}</span>
-                  <button type="button" onClick={() => setReplyAttachError(null)} className="ml-auto shrink-0 text-red-400/60 hover:text-red-400"><X className="w-3 h-3" /></button>
+                  <button type="button" aria-label={tr.common.close} onClick={() => setReplyAttachError(null)} className="ml-auto shrink-0 text-red-400/60 hover:text-red-400"><X className="w-3 h-3" /></button>
                 </div>
               )}
 
@@ -1022,6 +1018,7 @@ export function EmailReader({
                   <button
                     type="button"
                     title={tr.compose.attachFile}
+                    aria-label={tr.compose.attachFile}
                     onClick={() => replyFileInputRef.current?.click()}
                     className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors"
                   >
@@ -1033,6 +1030,7 @@ export function EmailReader({
                   <button
                     type="button"
                     title={tr.compose.formatting}
+                    aria-label={tr.compose.formatting}
                     onClick={() => { setShowFormatBar(v => !v); setLinkPopover(false); }}
                     className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors ${
                       showFormatBar ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"

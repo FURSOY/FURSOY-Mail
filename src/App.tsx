@@ -987,7 +987,7 @@ function App() {
     composeTo, setComposeTo, composeSubject, setComposeSubject, composeBody, setComposeBody,
     composeHtmlAppend, setComposeHtmlAppend, composeAccountId, setComposeAccountId,
     composeSendError, setComposeSendError,
-    handleArchive, handleTrash, handleMoveToInbox, handlePermanentDelete,
+    handleArchive, handleTrash, handleMoveToInbox,
     handleReply, handleComposeSend, handleMarkAsUnread, handleForward,
   } = useMailActions({
     locale: tr,
@@ -1146,7 +1146,6 @@ function App() {
   const showArchiveBtn = activeMailTab === "inbox" || activeMailTab === "sent";
   const showRestoreBtn = activeMailTab === "trash" || activeMailTab === "spam" || activeMailTab === "archive";
   const showTrashToBinBtn = activeMailTab !== "trash";
-  const showDeleteForeverBtn = activeMailTab === "trash";
   const isCompactSidebarMode =
     mailViewPreference === "single-toggle" ||
     (mailViewPreference === "auto" && windowWidth >= 900 && windowWidth < 1280);
@@ -1367,11 +1366,9 @@ function App() {
                 showArchiveBtn={showArchiveBtn}
                 showRestoreBtn={showRestoreBtn}
                 showTrashToBinBtn={showTrashToBinBtn}
-                showDeleteForeverBtn={showDeleteForeverBtn}
                 onArchive={() => handleArchive(activeMail)}
                 onTrash={() => handleTrash(activeMail)}
                 onMoveToInbox={() => handleMoveToInbox(activeMail)}
-                onPermanentDelete={() => handlePermanentDelete(activeMail)}
                 onMarkAsUnread={() => handleMarkAsUnread(activeMail)}
                 onForward={() => handleForward(activeMail)}
                 onOpenUrl={openExternalMailUrl}

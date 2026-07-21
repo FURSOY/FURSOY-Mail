@@ -22,13 +22,11 @@ describe("typed Tauri boundary", () => {
     ]);
   });
 
-  it("scopes destructive mail actions to both account and message", async () => {
+  it("scopes trash actions to both account and message", async () => {
     await tauriApi.trashEmail("account-a", "shared-message-id");
-    await tauriApi.permanentlyDelete("account-b", "shared-message-id");
 
     expect(invokeMock.mock.calls).toEqual([
       ["trash_email", { accountId: "account-a", messageId: "shared-message-id" }],
-      ["permanently_delete", { accountId: "account-b", messageId: "shared-message-id" }],
     ]);
   });
 
@@ -61,6 +59,28 @@ describe("typed Tauri boundary", () => {
     expect(invokeMock).toHaveBeenCalledWith("verify_sent_message", {
       accountId: "account-a",
       messageId: "<fursoy-0123456789abcdef@mail.invalid>",
+    });
+  });
+
+  it("passes optional Cc and Bcc recipients through the typed send boundary", async () => {
+    await tauriApi.sendEmail({
+      accountId: "account-a",
+      to: "to@example.test",
+      cc: "copy@example.test",
+      bcc: "hidden@example.test",
+      subject: "Status",
+      body: "<p>Hello</p>",
+      attachments: null,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("send_email", {
+      accountId: "account-a",
+      to: "to@example.test",
+      cc: "copy@example.test",
+      bcc: "hidden@example.test",
+      subject: "Status",
+      body: "<p>Hello</p>",
+      attachments: null,
     });
   });
 });

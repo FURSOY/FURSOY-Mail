@@ -61,6 +61,8 @@ export interface DraftSummary {
   id: string;
   messageId: string;
   to: string;
+  cc: string;
+  bcc: string;
   subject: string;
   snippet: string;
   updatedAt: number;

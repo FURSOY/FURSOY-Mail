@@ -381,7 +381,6 @@ pub fn run() {
             gmail::archive_email,
             gmail::trash_email,
             gmail::move_to_inbox,
-            gmail::permanently_delete,
             gmail::send_reply,
             gmail::send_email,
             gmail::list_drafts,

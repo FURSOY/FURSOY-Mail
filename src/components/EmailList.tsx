@@ -44,6 +44,13 @@ export function EmailList({
   accounts, activeAccountId,
 }: EmailListProps) {
   const tr = useLocale();
+  const activeFolderLabel = ({
+    inbox: tr.nav.inbox,
+    sent: tr.nav.sent,
+    archive: tr.nav.archive,
+    spam: tr.nav.spam,
+    trash: tr.nav.trash,
+  } as Record<string, string>)[activeTab] ?? activeTab;
   const showAccountBadge = activeAccountId === null && (accounts?.length ?? 0) > 1;
   const listRef = useRef<HTMLDivElement>(null);
   const pendingLoadScrollTop = useRef<number | null>(null);
@@ -102,17 +109,18 @@ export function EmailList({
             <button
               type="button"
               onClick={onMenuOpen}
+              aria-label={tr.settings.openMenu}
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
             >
               <Menu className="h-4 w-4" />
             </button>
           )}
-          <h2 className="min-w-0 truncate font-semibold text-zinc-100 text-sm capitalize" title={activeTab}>
-            {activeTab}
+          <h2 className="min-w-0 truncate font-semibold text-zinc-100 text-sm" title={activeFolderLabel}>
+            {activeFolderLabel}
           </h2>
           {isUserSyncing && (
             <span className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">
-              Syncing…
+              {tr.messages.syncing}
             </span>
           )}
           {isBackgroundSyncing && !isUserSyncing && (
@@ -168,11 +176,14 @@ export function EmailList({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={tr.mail.searchPlaceholder}
+            aria-label={tr.mail.searchPlaceholder}
             className="w-full bg-white/[0.03] border border-white/5 rounded-lg pl-8 pr-7 py-1.5 text-xs outline-none focus:border-blue-500/40 focus:bg-white/[0.02] transition-colors text-zinc-200 placeholder:text-zinc-600 select-text"
           />
           {searchQuery && (
             <button
+              type="button"
               onClick={() => setSearchQuery("")}
+              aria-label={tr.common.clear}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-zinc-500 hover:text-zinc-300 rounded hover:bg-white/10 transition-colors"
             >
               <X className="w-3 h-3" />
@@ -210,18 +221,20 @@ export function EmailList({
           const mail = group.latestEmail;
           const isSelected = selectedMail === `${mail.account_id}\u0000${mail.id}`;
           const senderDisplay = activeTab === "sent"
-            ? `To: ${(mail.recipient || "").split("<")[0].replace(/"/g, "").trim() || mail.recipient}`
+            ? `${tr.compose.toLabelShort}: ${(mail.recipient || "").split("<")[0].replace(/"/g, "").trim() || mail.recipient}`
             : group.participants.slice(0, 3).join(", ");
           const snippetPrefix = group.count > 1
             ? `${mail.sender.split("<")[0].replace(/"/g, "").trim()}: `
             : "";
 
           return (
-            <div
+            <button
+              type="button"
               key={`${mail.account_id}\u0000${mail.thread_id || mail.id}`}
               data-mail-selected={isSelected ? "true" : undefined}
               onClick={() => onMailClick(mail)}
-              className={`px-4 py-[var(--mail-row-py)] border-b border-white/[0.03] cursor-pointer transition-all duration-200 relative ${
+              aria-pressed={isSelected}
+              className={`block w-full text-left px-4 py-[var(--mail-row-py)] border-b border-white/[0.03] cursor-pointer transition-all duration-200 relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-accent)] ${
                 isSelected
                   ? "bg-[var(--app-accent-soft)] border-l-2 border-l-[var(--app-accent)]"
                   : "hover:bg-white/[0.02] border-l-2 border-l-transparent"
@@ -280,7 +293,7 @@ export function EmailList({
                   </div>
                 );
               })()}
-            </div>
+            </button>
           );
         })}
         {(threadGroups.length > 0 || ["error", "paused", "relogin_required", "rate_limited"].includes(mailboxDownloadState)) && (
