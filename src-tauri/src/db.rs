@@ -1776,6 +1776,8 @@ pub fn get_thread_emails(
     app: tauri::AppHandle,
     thread_id: String,
     account_id: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<Vec<EmailSummary>, String> {
     crate::require_command_window(&window, &["main"])?;
     if thread_id.is_empty() {
@@ -1783,12 +1785,18 @@ pub fn get_thread_emails(
     }
     let db_path = get_db_path(&app);
     let conn = Connection::open(db_path).map_err(database_error)?;
+    let limit = i64::from(limit.unwrap_or(20).clamp(1, 50));
+    let offset = i64::from(offset.unwrap_or(0));
     let sql = format!(
-        "SELECT {SUMMARY_COLS} FROM emails WHERE thread_id = ?1 AND account_id = ?2 ORDER BY date ASC"
+        "SELECT {SUMMARY_COLS} FROM emails WHERE thread_id = ?1 AND account_id = ?2 \
+         ORDER BY date DESC, id ASC LIMIT ?3 OFFSET ?4"
     );
     let mut stmt = conn.prepare(&sql).map_err(database_error)?;
     let rows: Vec<EmailSummary> = stmt
-        .query_map(params![thread_id, account_id], map_summary_row)
+        .query_map(
+            params![thread_id, account_id, limit, offset],
+            map_summary_row,
+        )
         .map_err(database_error)?
         .filter_map(|r| r.ok())
         .collect();

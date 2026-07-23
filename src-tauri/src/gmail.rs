@@ -243,105 +243,92 @@ async fn get_inbox_unread_stats(
 }
 
 // ── Fetch history changes since a given historyId ──
-async fn fetch_history(
+struct HistoryPage {
+    fetch_ids: Vec<String>,
+    delete_ids: Vec<String>,
+    next_page_token: Option<String>,
+    latest_history_id: Option<String>,
+}
+
+async fn fetch_history_page(
     client: &Client,
     access_token: &str,
     start_history_id: &str,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>, String), String> {
-    // Returns: (added_ids, deleted_ids, changed_ids, new_history_id)
+    page_token: Option<&str>,
+) -> Result<HistoryPage, String> {
     let mut added_ids = std::collections::HashSet::new();
     let mut deleted_ids = std::collections::HashSet::new();
     let mut changed_ids = std::collections::HashSet::new();
-    let mut latest_history_id = start_history_id.to_string();
-    let mut page_token: Option<String> = None;
-
-    loop {
-        validate_gmail_identifier("history ID", start_history_id)?;
-        let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/history")
-            .map_err(|e| e.to_string())?;
-        {
-            let mut params = url.query_pairs_mut();
-            params
-                .append_pair("startHistoryId", start_history_id)
-                .append_pair("maxResults", "500");
-            if let Some(ref token) = page_token {
-                params.append_pair("pageToken", token);
-            }
+    validate_gmail_identifier("history ID", start_history_id)?;
+    let mut url = reqwest::Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/history")
+        .map_err(|e| e.to_string())?;
+    {
+        let mut params = url.query_pairs_mut();
+        params
+            .append_pair("startHistoryId", start_history_id)
+            .append_pair("maxResults", "500");
+        if let Some(token) = page_token {
+            params.append_pair("pageToken", token);
         }
-
-        let res =
-            gmail_get_with_retry(client, access_token, url.to_string(), "History fetch error")
-                .await?;
-
-        let status = res.status();
-        if status.as_u16() == 404 {
-            return Err("HISTORY_EXPIRED".to_string());
-        }
-        if !status.is_success() {
-            let body = res.text().await.unwrap_or_default();
-            if body.contains("notFound") || body.contains("Start history id is too old") {
-                return Err("HISTORY_EXPIRED".to_string());
-            }
-            return Err(format!("History API error (HTTP {status})"));
-        }
-
-        let data: HistoryListResponse = res.json().await.map_err(|e| e.to_string())?;
-
-        if let Some(hid) = &data.history_id {
-            latest_history_id = hid.clone();
-        }
-
-        if let Some(records) = data.history {
-            for record in records {
-                if let Some(added) = record.messages_added {
-                    for msg in added {
-                        added_ids.insert(msg.message.id);
-                    }
-                }
-                if let Some(deleted) = record.messages_deleted {
-                    for msg in deleted {
-                        deleted_ids.insert(msg.message.id);
-                    }
-                }
-                if let Some(label_adds) = record.labels_added {
-                    for change in label_adds {
-                        changed_ids.insert(change.message.id);
-                    }
-                }
-                if let Some(label_removes) = record.labels_removed {
-                    for change in label_removes {
-                        changed_ids.insert(change.message.id);
-                    }
-                }
-            }
-        }
-
-        if data.next_page_token.is_none() {
-            break;
-        }
-        page_token = data.next_page_token;
     }
 
-    // Remove deleted from added/changed (if a message was added then deleted)
+    let res =
+        gmail_get_with_retry(client, access_token, url.to_string(), "History fetch error").await?;
+
+    let status = res.status();
+    if status.as_u16() == 404 {
+        return Err("HISTORY_EXPIRED".to_string());
+    }
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        if body.contains("notFound") || body.contains("Start history id is too old") {
+            return Err("HISTORY_EXPIRED".to_string());
+        }
+        return Err(format!("History API error (HTTP {status})"));
+    }
+
+    let data: HistoryListResponse = res.json().await.map_err(|e| e.to_string())?;
+    let latest_history_id = data.history_id.clone();
+
+    if let Some(records) = data.history {
+        for record in records {
+            if let Some(added) = record.messages_added {
+                for msg in added {
+                    added_ids.insert(msg.message.id);
+                }
+            }
+            if let Some(deleted) = record.messages_deleted {
+                for msg in deleted {
+                    deleted_ids.insert(msg.message.id);
+                }
+            }
+            if let Some(label_adds) = record.labels_added {
+                for change in label_adds {
+                    changed_ids.insert(change.message.id);
+                }
+            }
+            if let Some(label_removes) = record.labels_removed {
+                for change in label_removes {
+                    changed_ids.insert(change.message.id);
+                }
+            }
+        }
+    }
+
     for did in &deleted_ids {
         added_ids.remove(did);
         changed_ids.remove(did);
     }
 
-    // Merge added + changed (both need a full fetch)
     let mut fetch_ids: Vec<String> = added_ids.into_iter().collect();
-    for cid in changed_ids {
-        if !fetch_ids.contains(&cid) {
-            fetch_ids.push(cid);
-        }
-    }
+    fetch_ids.extend(changed_ids);
 
-    Ok((
+    Ok(HistoryPage {
         fetch_ids,
-        deleted_ids.into_iter().collect(),
-        vec![], // unused
+        delete_ids: deleted_ids.into_iter().collect(),
+        next_page_token: data.next_page_token,
         latest_history_id,
-    ))
+    })
 }
 
 // ── Incremental sync using History API ──
@@ -357,79 +344,70 @@ async fn do_incremental_sync(
         .build()
         .unwrap_or_default();
 
-    let (fetch_ids, delete_ids, _, new_history_id) =
-        fetch_history(&client, access_token, start_history_id).await?;
+    const DETAIL_BATCH_SIZE: usize = 10;
+    const DELETE_BATCH_SIZE: usize = 400;
+    let mut page_token: Option<String> = None;
+    let mut seen_page_tokens = std::collections::HashSet::new();
+    let mut total_fetched = 0usize;
+    let mut total_deleted = 0usize;
+    let mut latest_history_id: Option<String> = None;
 
-    eprintln!(
-        "[SYNC] incremental: {} to fetch, {} to delete",
-        fetch_ids.len(),
-        delete_ids.len()
-    );
+    let new_history_id = loop {
+        let page = fetch_history_page(
+            &client,
+            access_token,
+            start_history_id,
+            page_token.as_deref(),
+        )
+        .await?;
+        if page.latest_history_id.is_some() {
+            latest_history_id = page.latest_history_id.clone();
+        }
+        total_fetched += page.fetch_ids.len();
+        total_deleted += page.delete_ids.len();
 
-    // Fetch details for new/changed messages
-    if !fetch_ids.is_empty() {
-        let parsed: Vec<(Email, Vec<crate::db::Attachment>)> = stream::iter(fetch_ids)
-            .map(|id| {
-                let client = &client;
-                let token = access_token;
-                async move {
-                    fetch_message_detail(client, token, &id)
-                        .await
-                        .map(parse_message_detail)
-                }
-            })
-            .buffer_unordered(10)
-            .try_collect()
+        for ids in page.fetch_ids.chunks(DETAIL_BATCH_SIZE) {
+            cache_message_details(
+                app,
+                account_id,
+                &client,
+                access_token,
+                ids.iter().cloned().map(|id| MessageId { id }).collect(),
+                None,
+                account_generation,
+            )
             .await
-            .map_err(|e| {
+            .map_err(|error| {
                 format!(
-                    "Incremental sync detail fetch failed; history checkpoint was not advanced: {}",
-                    e
+                    "Incremental sync detail fetch failed; history checkpoint was not advanced: {error}"
                 )
             })?;
+        }
 
-        if !parsed.is_empty() {
-            let acct = account_id.to_string();
-            let (emails, mut all_attachments): (Vec<Email>, Vec<Vec<crate::db::Attachment>>) =
-                parsed.into_iter().unzip();
-            // Backfill account_id into attachments (parse_message_detail doesn't know it)
-            let atts_flat: Vec<crate::db::Attachment> = all_attachments
-                .iter_mut()
-                .flat_map(|v| {
-                    v.iter_mut().map(|a| {
-                        a.account_id = acct.clone();
-                        a.clone()
-                    })
-                })
-                .collect();
+        for ids in page.delete_ids.chunks(DELETE_BATCH_SIZE) {
             let app_clone = app.clone();
-            let acct2 = acct.clone();
+            let account_for_delete = account_id.to_string();
+            let ids = ids.to_vec();
             tokio::task::spawn_blocking(move || {
-                upsert_sync_mail_batch(
-                    &app_clone,
-                    &acct2,
-                    account_generation,
-                    None,
-                    emails,
-                    atts_flat,
-                )
-                .map_err(|e| e.to_string())
+                delete_emails_by_ids(&app_clone, &account_for_delete, account_generation, &ids)
             })
             .await
-            .map_err(|e| format!("DB upsert task failed: {}", e))??;
+            .map_err(|e| format!("DB delete task failed: {e}"))??;
         }
-    }
 
-    // Only remove local messages after every changed message was fetched and saved.
-    if !delete_ids.is_empty() {
-        let app_clone = app.clone();
-        let account_id = account_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            delete_emails_by_ids(&app_clone, &account_id, account_generation, &delete_ids)
-        })
-        .await
-        .map_err(|e| format!("DB delete task failed: {}", e))??;
-    }
+        let Some(next_page_token) = page.next_page_token else {
+            break latest_history_id.unwrap_or_else(|| start_history_id.to_string());
+        };
+        if !seen_page_tokens.insert(next_page_token.clone()) {
+            return Err("Gmail history pagination cursor repeated".to_string());
+        }
+        page_token = Some(next_page_token);
+    };
+
+    eprintln!(
+        "[SYNC] incremental: {} fetched, {} deleted",
+        total_fetched, total_deleted
+    );
 
     // Advancing this checkpoint is the final step: a failed sync must be retried
     // from the same history ID so Gmail does not permanently skip any change.

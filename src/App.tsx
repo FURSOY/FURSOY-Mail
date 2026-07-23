@@ -18,10 +18,11 @@ import {
 import { useMemo } from "react";
 import {
   MAIL_TABS, STARTUP_NETWORK_DELAY_MS,
-  MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
+  MAX_ACTIVE_EMAILS, MAX_LABEL_CACHE, MAIL_PAGE_SIZE, ZOOM_STEPS,
   isAuthFailure, extractVerificationCode,
   readMailZoom, readThemePreset, getAutoMailViewMode, parseMailtoUrl,
 } from "./utils";
+import { addBoundedSetValue, MAX_RECENTLY_READ_EMAILS, MAX_REMOTE_IMAGE_EMAILS } from "./boundedSet";
 
 import { Sidebar } from "./components/Sidebar";
 import { Onboarding } from "./components/Onboarding";
@@ -439,7 +440,8 @@ function App() {
         setEmails(previous => {
           if (!options?.append) return adjusted;
           const seen = new Set(previous.map(emailKey));
-          return [...previous, ...adjusted.filter(email => !seen.has(emailKey(email)))];
+          return [...previous, ...adjusted.filter(email => !seen.has(emailKey(email)))]
+            .slice(0, MAX_ACTIVE_EMAILS);
         });
         if (options?.append && adjusted.length > 0) {
           setMailAppendVersion(version => version + 1);
@@ -463,7 +465,7 @@ function App() {
   const loadOlderEmails = async () => {
     const label = activeTabRef.current;
     const accountId = activeAccountIdRef.current;
-    if (!MAIL_TABS.has(label) || !hasMoreEmails || isLoadingMoreEmailsRef.current) return false;
+    if (!MAIL_TABS.has(label) || !hasMoreEmails || emails.length >= MAX_ACTIVE_EMAILS || isLoadingMoreEmailsRef.current) return false;
 
     isLoadingMoreEmailsRef.current = true;
     setIsLoadingMoreEmails(true);
@@ -487,7 +489,8 @@ function App() {
       setIsMailboxBackfilling(status.running);
       setMailboxDownloadPending(status.pending);
       setMailboxDownloadState(status.state);
-      setHasMoreEmails(page.length === MAIL_PAGE_SIZE || status.running || status.pending);
+      const reachedMemoryLimit = emails.length + page.length >= MAX_ACTIVE_EMAILS;
+      setHasMoreEmails(!reachedMemoryLimit && (page.length === MAIL_PAGE_SIZE || status.running || status.pending));
       return page.length > 0;
     } catch (error) {
       console.error("Failed to load older emails:", error);
@@ -927,7 +930,7 @@ function App() {
     setShowReply(false);
     setReplyText("");
     if (mail.unread) {
-      recentlyReadRef.current.add(emailKey(mail));
+      addBoundedSetValue(recentlyReadRef.current, emailKey(mail), MAX_RECENTLY_READ_EMAILS);
       setEmails(prev => prev.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m));
       setSearchResults(prev => prev?.map(m => sameEmail(m, mail) ? { ...m, unread: false } : m) ?? null);
       adjustUnreadBadge(mail.account_id, -1);
@@ -937,6 +940,7 @@ function App() {
           emailKey(mail),
           () => tauriApi.markAsRead(mail.account_id, mail.id),
         );
+        recentlyReadRef.current.delete(emailKey(mail));
       } catch (e) {
         console.error("Failed to mark as read:", e);
         if (!recentlyReadRef.current.has(emailKey(mail))) return;
@@ -961,7 +965,11 @@ function App() {
   }, [loadedRemoteImageEmails, remoteImageMode, trustedImageSenders]);
 
   const handleLoadRemoteImages = useCallback((emailId: string) => {
-    setLoadedRemoteImageEmails(previous => new Set(previous).add(emailId));
+    setLoadedRemoteImageEmails(previous => {
+      const next = new Set(previous);
+      addBoundedSetValue(next, emailId, MAX_REMOTE_IMAGE_EMAILS);
+      return next;
+    });
   }, []);
 
   const handleTrustRemoteImages = useCallback((mail: EmailSummary) => {
@@ -993,6 +1001,10 @@ function App() {
     isBodyLoading,
     bodyError,
     threadEmails,
+    hasMoreThreadEmails,
+    isLoadingOlderThread,
+    threadMemoryLimitReached,
+    loadOlderThreadEmails,
     setThreadEmails,
     setThreadRefreshKey,
   } = useMailReader({
@@ -1354,6 +1366,7 @@ function App() {
               onRefresh={handleRefresh}
               onLoadMore={loadOlderEmails}
               hasMoreEmails={hasSearchQuery ? false : hasMoreEmails}
+              mailMemoryLimitReached={!hasSearchQuery && emails.length >= MAX_ACTIVE_EMAILS}
               isLoadingMoreEmails={isLoadingMoreEmails}
               mailAppendVersion={mailAppendVersion}
               notificationFocusVersion={notificationFocusVersion}
@@ -1405,6 +1418,10 @@ function App() {
                 mailScrollRef={mailScrollRef}
                 relayoutKey={`${mailViewMode}|${singlePanelView}|${windowWidth}`}
                 threadEmails={threadEmails}
+                hasMoreThreadEmails={hasMoreThreadEmails}
+                isLoadingOlderThread={isLoadingOlderThread}
+                threadMemoryLimitReached={threadMemoryLimitReached}
+                onLoadOlderThread={() => { void loadOlderThreadEmails(); }}
                 accessToken={getTokenForEmail(activeMail) ?? null}
                 showToast={showToast}
               />

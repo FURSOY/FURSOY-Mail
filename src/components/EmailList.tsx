@@ -23,6 +23,7 @@ interface EmailListProps {
   onRefresh: () => void;
   onLoadMore: () => Promise<boolean>;
   hasMoreEmails: boolean;
+  mailMemoryLimitReached: boolean;
   isLoadingMoreEmails: boolean;
   mailAppendVersion: number;
   notificationFocusVersion: number;
@@ -40,7 +41,7 @@ export function EmailList({
   searchQuery, setSearchQuery, searchInputRef,
   activeTab, usesOverlaySidebar, onMenuOpen,
   mailViewPreference, onViewPreferenceChange,
-  onRefresh, onLoadMore, hasMoreEmails, isLoadingMoreEmails, mailAppendVersion, notificationFocusVersion, isMailboxBackfilling, mailboxDownloadPending, mailboxDownloadState, accessToken,
+  onRefresh, onLoadMore, hasMoreEmails, mailMemoryLimitReached, isLoadingMoreEmails, mailAppendVersion, notificationFocusVersion, isMailboxBackfilling, mailboxDownloadPending, mailboxDownloadState, accessToken,
   accounts, activeAccountId,
 }: EmailListProps) {
   const tr = useLocale();
@@ -122,9 +123,6 @@ export function EmailList({
             <span className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-blue-500 font-semibold animate-pulse">
               {tr.messages.syncing}
             </span>
-          )}
-          {isBackgroundSyncing && !isUserSyncing && (
-            <span className="text-[length:var(--font-size-caption)] text-zinc-600 font-medium">{tr.mail.updatingInBackground}</span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -310,6 +308,8 @@ export function EmailList({
               <span>{tr.mail.historyDownloadFailed}</span>
             ) : mailboxDownloadPending ? (
               <span>{tr.mail.historyDownloadPending}</span>
+            ) : mailMemoryLimitReached ? (
+              <span>{tr.mail.loadedMemoryLimit}</span>
             ) : hasMoreEmails ? (
               <button
                 type="button"

@@ -115,9 +115,6 @@ export function EmailHtmlView({
 
       doc.fonts?.ready.then(remeasure).catch(() => {});
 
-      // Shared animation state attached to the outer element so multiple
-      // iframes in a thread don't fight each other with competing animations.
-      type ScrollExt = { _raf?: number; _target?: number };
       const handleWheel = (e: WheelEvent) => {
         const outer = scrollRef?.current;
         if (!outer) return;
@@ -125,26 +122,9 @@ export function EmailHtmlView({
         const dx = e.deltaX;
         if (e.deltaMode === 1) { dy *= 40; }
         else if (e.deltaMode === 2) { dy *= outer.clientHeight; }
-        const ext = outer as HTMLElement & ScrollExt;
-        if (ext._target === undefined) ext._target = outer.scrollTop;
         const maxScroll = outer.scrollHeight - outer.clientHeight;
-        ext._target = Math.max(0, Math.min(maxScroll, ext._target + dy));
+        outer.scrollTop = Math.max(0, Math.min(maxScroll, outer.scrollTop + dy));
         if (dx !== 0) outer.scrollLeft += dx;
-        if (!ext._raf) {
-          const step = () => {
-            const target = ext._target ?? 0;
-            const diff = target - outer.scrollTop;
-            if (Math.abs(diff) < 0.5) {
-              outer.scrollTop = target;
-              ext._raf = 0;
-              ext._target = undefined;
-              return;
-            }
-            outer.scrollTop += diff * 0.2;
-            ext._raf = requestAnimationFrame(step);
-          };
-          ext._raf = requestAnimationFrame(step);
-        }
       };
       doc.addEventListener("wheel", handleWheel, { passive: true });
 
@@ -187,11 +167,6 @@ export function EmailHtmlView({
 
       innerCleanup = () => {
         active = false;
-        const outer = scrollRef?.current;
-        if (outer) {
-          const ext = outer as HTMLElement & ScrollExt;
-          if (ext._raf) { cancelAnimationFrame(ext._raf); ext._raf = 0; ext._target = undefined; }
-        }
         images.forEach((img) => img.removeEventListener("load", remeasure));
         doc.removeEventListener("wheel", handleWheel);
         doc.removeEventListener("click", handleClick, true);

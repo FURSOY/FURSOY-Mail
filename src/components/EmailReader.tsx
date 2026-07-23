@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, type CSSProperties } from "react";
+import { useRef, useState, useEffect, useLayoutEffect, type CSSProperties } from "react";
 import {
   CornerUpLeft, Inbox, Send, Archive, ShieldAlert, Trash2,
   Users, Forward, Eye, RotateCcw, Minus, Plus, Maximize2,
@@ -246,6 +246,10 @@ interface EmailReaderProps {
   mailScrollRef: React.RefObject<HTMLDivElement | null>;
   relayoutKey: string;
   threadEmails: EmailSummary[];
+  hasMoreThreadEmails: boolean;
+  isLoadingOlderThread: boolean;
+  threadMemoryLimitReached: boolean;
+  onLoadOlderThread: () => void;
   accessToken: string | null;
   showToast: (msg: string, kind: "success" | "error" | "info") => void;
 }
@@ -263,7 +267,8 @@ export function EmailReader({
   verificationCode, verificationCopyState, setVerificationCopyState,
   showArchiveBtn, showRestoreBtn, showTrashToBinBtn,
   onArchive, onTrash, onMoveToInbox, onMarkAsUnread, onForward,
-  onOpenUrl, mailScrollRef, relayoutKey, threadEmails, accessToken, showToast,
+  onOpenUrl, mailScrollRef, relayoutKey, threadEmails, hasMoreThreadEmails, isLoadingOlderThread,
+  threadMemoryLimitReached, onLoadOlderThread, accessToken, showToast,
 }: EmailReaderProps) {
   const tr = useLocale();
   const replyEditableRef = useRef<HTMLDivElement>(null);
@@ -280,6 +285,13 @@ export function EmailReader({
   const pendingReplyAttachmentBytesRef = useRef(0);
   const replyFocusTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
+  const autoScrolledMailRef = useRef<string | null>(null);
+  const threadScrollSnapshotRef = useRef<{
+    activeMailId: string;
+    firstEmailKey: string;
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
   const mountedRef = useRef(true);
   const [replyAttachments, setReplyAttachments] = useState<(AttachmentPayload & { size: number })[]>([]);
   const [replyAttachError, setReplyAttachError] = useState<string | null>(null);
@@ -309,9 +321,39 @@ export function EmailReader({
     setReplyAttachments([]);
   }, [activeMail.id]);
 
-  // Scroll to active card when thread loads (active email may not be the last in thread)
+  const firstThreadEmailKey = threadEmails[0]
+    ? `${threadEmails[0].account_id}\u0000${threadEmails[0].id}`
+    : "";
+
+  // Preserve the visible message when older thread items are prepended above it.
+  useLayoutEffect(() => {
+    const container = mailScrollRef.current;
+    if (!container) return;
+    const previous = threadScrollSnapshotRef.current;
+    if (
+      previous &&
+      previous.activeMailId === activeMail.id &&
+      previous.firstEmailKey &&
+      firstThreadEmailKey &&
+      previous.firstEmailKey !== firstThreadEmailKey
+    ) {
+      const addedHeight = container.scrollHeight - previous.scrollHeight;
+      if (addedHeight > 0) container.scrollTop = previous.scrollTop + addedHeight;
+    }
+    return () => {
+      threadScrollSnapshotRef.current = {
+        activeMailId: activeMail.id,
+        firstEmailKey: firstThreadEmailKey,
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+      };
+    };
+  }, [activeMail.id, firstThreadEmailKey, mailScrollRef]);
+
+  // Scroll to the active card once when a thread first loads. Later thread
+  // updates must not override a user's manual scroll position.
   useEffect(() => {
-    if (threadEmails.length <= 1) return;
+    if (threadEmails.length <= 1 || autoScrolledMailRef.current === activeMail.id) return;
     const timer = setTimeout(() => {
       const card = document.getElementById(`tc-${activeMail.id}`);
       const container = mailScrollRef.current;
@@ -320,6 +362,7 @@ export function EmailReader({
       if (cardTop > container.clientHeight * 0.5) {
         container.scrollTop = Math.max(0, cardTop - 72);
       }
+      autoScrolledMailRef.current = activeMail.id;
     }, 120);
     return () => clearTimeout(timer);
   }, [threadEmails, activeMail.id, mailScrollRef]);
@@ -826,6 +869,20 @@ export function EmailReader({
 
           {/* Thread stack — all emails chronologically, latest (activeMail) expanded */}
           <div className="space-y-2">
+            {threadMemoryLimitReached ? (
+              <div className="py-2 text-center text-xs text-zinc-600">{tr.mail.threadMemoryLimit}</div>
+            ) : hasMoreThreadEmails ? (
+              <div className="flex justify-center py-2">
+                <button
+                  type="button"
+                  onClick={onLoadOlderThread}
+                  disabled={isLoadingOlderThread}
+                  className="rounded-md px-3 py-1.5 text-xs text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-300 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isLoadingOlderThread ? tr.mail.loadingOlderThread : tr.mail.loadOlderThread}
+                </button>
+              </div>
+            ) : null}
             {allEmails.map((email) => {
               const isActive = email.id === activeMail.id;
               return (

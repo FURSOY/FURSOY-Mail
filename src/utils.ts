@@ -8,6 +8,7 @@ export const FIXED_LAYOUT_MIN_WIDTH = 460;
 export const IMAGE_PROXY_BASE = "http://mailimg.localhost/?url=";
 export const MAX_LABEL_CACHE = 5;
 export const MAIL_PAGE_SIZE = 100;
+export const MAX_ACTIVE_EMAILS = 2_000;
 export const STARTUP_NETWORK_DELAY_MS = 5000;
 export const STARTUP_UPDATE_DELAY_MS = 9000;
 export const MAIL_TABS = new Set(["inbox", "sent", "archive", "spam", "trash"]);

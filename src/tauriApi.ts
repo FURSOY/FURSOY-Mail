@@ -84,8 +84,8 @@ export const tauriApi = {
     invoke<SavedAttachment>("save_and_reveal_attachment", { emailId, accountId, attachmentDbId }),
   refreshEmailFromGmail: (accountId: string, messageId: string) =>
     invoke<void>("refresh_email_from_gmail", { accountId, messageId }),
-  getThreadEmails: (threadId: string, accountId: string) =>
-    invoke<EmailSummary[]>("get_thread_emails", { threadId, accountId }),
+  getThreadEmails: (threadId: string, accountId: string, limit = 20, offset = 0) =>
+    invoke<EmailSummary[]>("get_thread_emails", { threadId, accountId, limit, offset }),
   markAsRead: (accountId: string, messageId: string) =>
     invoke<void>("mark_as_read", { accountId, messageId }),
   markAsUnread: (accountId: string, messageId: string) =>

@@ -1,8 +1,12 @@
-import { useEffect, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
 import type { AppLocale } from "../i18n";
 import type { EmailSummary } from "../types";
 import { tauriApi } from "../tauriApi";
 import { enqueueMailMutation, type MailMutationQueue } from "../mailActionState";
+import { addBoundedSetValue, MAX_RECENTLY_READ_EMAILS } from "../boundedSet";
+
+const THREAD_PAGE_SIZE = 20;
+const MAX_THREAD_EMAILS = 200;
 
 interface UseMailReaderOptions {
   selectedMail: string | null;
@@ -38,6 +42,11 @@ export function useMailReader(options: UseMailReaderOptions) {
   const [bodyError, setBodyError] = useState<string | null>(null);
   const [threadEmails, setThreadEmails] = useState<EmailSummary[]>([]);
   const [threadRefreshKey, setThreadRefreshKey] = useState(0);
+  const [hasMoreThreadEmails, setHasMoreThreadEmails] = useState(false);
+  const [isLoadingOlderThread, setIsLoadingOlderThread] = useState(false);
+  const [threadMemoryLimitReached, setThreadMemoryLimitReached] = useState(false);
+  const threadOffsetRef = useRef(0);
+  const threadRequestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,42 +92,88 @@ export function useMailReader(options: UseMailReaderOptions) {
   }, [activeMailKey]);
 
   const selectedMailThreadId = activeMail?.thread_id;
+
+  const markThreadEmailsAsRead = (loadedEmails: EmailSummary[]) => {
+    for (const email of loadedEmails) {
+      if (!email.unread || recentlyReadRef.current.has(emailKey(email))) continue;
+      addBoundedSetValue(recentlyReadRef.current, emailKey(email), MAX_RECENTLY_READ_EMAILS);
+      setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: false } : item));
+      setSearchResults(previous => previous?.map(item => sameEmail(item, email) ? { ...item, unread: false } : item) ?? null);
+      adjustUnreadBadge(email.account_id, -1);
+      const token = getTokenForEmail(email);
+      if (!token) continue;
+      enqueueMailMutation(
+        mailMutationQueueRef.current,
+        emailKey(email),
+        () => tauriApi.markAsRead(email.account_id, email.id),
+      ).then(() => {
+        recentlyReadRef.current.delete(emailKey(email));
+      }).catch(error => {
+        console.error("Failed to mark thread email as read:", error);
+        if (!recentlyReadRef.current.has(emailKey(email))) return;
+        recentlyReadRef.current.delete(emailKey(email));
+        setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));
+        setSearchResults(previous => previous?.map(item => sameEmail(item, email) ? { ...item, unread: true } : item) ?? null);
+        setThreadEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));
+        adjustUnreadBadge(email.account_id, 1);
+      });
+    }
+  };
+
   useEffect(() => {
     if (!selectedMail || !selectedMailThreadId || !activeMail) {
       setThreadEmails([]);
+      setHasMoreThreadEmails(false);
+      setThreadMemoryLimitReached(false);
       return;
     }
     let cancelled = false;
-    tauriApi.getThreadEmails(selectedMailThreadId, activeMail.account_id)
+    const requestId = ++threadRequestIdRef.current;
+    setIsLoadingOlderThread(false);
+    setThreadMemoryLimitReached(false);
+    tauriApi.getThreadEmails(selectedMailThreadId, activeMail.account_id, THREAD_PAGE_SIZE + 1, 0)
       .then(all => {
-        if (cancelled) return;
-        setThreadEmails(all);
-        for (const email of all) {
-          if (!email.unread || recentlyReadRef.current.has(emailKey(email))) continue;
-          recentlyReadRef.current.add(emailKey(email));
-          setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: false } : item));
-          setSearchResults(previous => previous?.map(item => sameEmail(item, email) ? { ...item, unread: false } : item) ?? null);
-          adjustUnreadBadge(email.account_id, -1);
-          const token = getTokenForEmail(email);
-          if (!token) continue;
-          enqueueMailMutation(
-            mailMutationQueueRef.current,
-            emailKey(email),
-            () => tauriApi.markAsRead(email.account_id, email.id),
-          ).catch(error => {
-            console.error("Failed to mark thread email as read:", error);
-            if (!recentlyReadRef.current.has(emailKey(email))) return;
-            recentlyReadRef.current.delete(emailKey(email));
-            setEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));
-            setSearchResults(previous => previous?.map(item => sameEmail(item, email) ? { ...item, unread: true } : item) ?? null);
-            setThreadEmails(previous => previous.map(item => sameEmail(item, email) ? { ...item, unread: true } : item));
-            adjustUnreadBadge(email.account_id, 1);
-          });
-        }
+        if (cancelled || requestId !== threadRequestIdRef.current) return;
+        const page = all.slice(0, THREAD_PAGE_SIZE).reverse();
+        threadOffsetRef.current = page.length;
+        const withActive = page.some(email => sameEmail(email, activeMail))
+          ? page
+          : [...page, activeMail].sort((left, right) => left.date - right.date);
+        setThreadEmails(withActive);
+        setHasMoreThreadEmails(all.length > THREAD_PAGE_SIZE);
+        markThreadEmailsAsRead(withActive);
       })
       .catch(() => { if (!cancelled) setThreadEmails([]); });
     return () => { cancelled = true; };
   }, [selectedMail, selectedMailThreadId, threadRefreshKey]);
+
+  const loadOlderThreadEmails = async () => {
+    if (!selectedMailThreadId || !activeMail || isLoadingOlderThread || !hasMoreThreadEmails || threadMemoryLimitReached) return;
+    const requestId = threadRequestIdRef.current;
+    setIsLoadingOlderThread(true);
+    try {
+      const all = await tauriApi.getThreadEmails(
+        selectedMailThreadId,
+        activeMail.account_id,
+        THREAD_PAGE_SIZE + 1,
+        threadOffsetRef.current,
+      );
+      if (requestId !== threadRequestIdRef.current) return;
+      const page = all.slice(0, THREAD_PAGE_SIZE).reverse();
+      threadOffsetRef.current += page.length;
+      const seen = new Set(threadEmails.map(emailKey));
+      const available = Math.max(0, MAX_THREAD_EMAILS - threadEmails.length);
+      const candidates = page.filter(email => !seen.has(emailKey(email)));
+      const accepted = available > 0 ? candidates.slice(-available) : [];
+      setThreadEmails(previous => [...accepted, ...previous].sort((left, right) => left.date - right.date));
+      markThreadEmailsAsRead(accepted);
+      const reachedLimit = threadEmails.length + accepted.length >= MAX_THREAD_EMAILS;
+      setThreadMemoryLimitReached(reachedLimit);
+      setHasMoreThreadEmails(!reachedLimit && all.length > THREAD_PAGE_SIZE);
+    } finally {
+      if (requestId === threadRequestIdRef.current) setIsLoadingOlderThread(false);
+    }
+  };
 
   return {
     selectedMailBody,
@@ -128,6 +183,10 @@ export function useMailReader(options: UseMailReaderOptions) {
     isBodyLoading,
     bodyError,
     threadEmails,
+    hasMoreThreadEmails,
+    isLoadingOlderThread,
+    threadMemoryLimitReached,
+    loadOlderThreadEmails,
     setThreadEmails,
     setThreadRefreshKey,
   };
