@@ -1,16 +1,9 @@
 ## Improvements
 
-- Improved background synchronization, notifications, attachment handling, and settings updates under concurrent activity.
-- Added bounded processing for remote email images, pending notifications, and long-lived mail caches.
+- Reduced memory growth during long mail sessions by bounding cached message and reader state.
+- Improved thread scrolling stability while messages load, selections change, and thread content updates.
 
-## Reliability
+## Reliability and Security
 
-- Prevented duplicate sends and conflicting read/unread, sync, and settings operations.
-- Cancelled obsolete account backfills, attachment reads, timers, and event listeners when their owners close or change.
-- Guaranteed temporary-file cleanup errors are reported and limited resource queues to prevent runaway memory or task growth.
-
-## Fixes
-
-- Fixed stale attachment previews and notification-window startup races.
-- Fixed repeated attachment selections bypassing total-size checks; messages now allow up to 100 attachments.
-- Fixed delayed window-state saves accumulating during rapid resize and state transitions.
+- Prevented stale reader work from accumulating or updating mail state after the active message changes.
+- Removed the unused shadcn CLI and its transitive packages from production dependencies, reducing the install and audit surface without changing the interface.
