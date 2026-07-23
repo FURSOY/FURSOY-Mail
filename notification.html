@@ -412,7 +412,7 @@
         const copyBtnHtml = n.code
           ? `<button class="code-btn" data-id="${n.id}" data-code="${escAttr(n.code || '')}">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Kopyala (${esc(n.code || '')})
+              ${esc(n.copyLabel)} (${esc(n.code || '')})
              </button>`
           : '';
 
@@ -466,6 +466,9 @@
         accountId: data.accountId || null,
         accountPicture: data.accountPicture || null,
         multiAccount: !!data.multiAccount,
+        copyLabel: data.copyLabel || 'Copy',
+        copiedLabel: data.copiedLabel || 'Copied',
+        copyFailedLabel: data.copyFailedLabel || 'Could not copy · Try again',
       });
       render();
 
@@ -536,6 +539,7 @@
     async function copyAndDismiss(id, code) {
       const button = document.querySelector(`.code-btn[data-id="${id}"]`);
       if (!button || !code || button.dataset.copyState === 'copying' || button.dataset.copyState === 'copied') return;
+      const notification = notifications.find(n => n.id === id);
 
       button.dataset.copyState = 'copying';
       button.disabled = true;
@@ -549,7 +553,7 @@
         button.classList.add('copied');
         button.innerHTML = `
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-          <span>Kopyalandı</span>
+          <span>${esc(notification?.copiedLabel || 'Copied')}</span>
         `;
         scheduleTransient(() => dismissById(id), 700);
       } catch (error) {
@@ -560,7 +564,7 @@
         button.classList.add('copy-error');
         button.innerHTML = `
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-          <span>Kopyalanamadı · Tekrar dene</span>
+          <span>${esc(notification?.copyFailedLabel || 'Could not copy · Try again')}</span>
         `;
         if (timerDuration > 0) extendTimer(5000);
         await resizeWindow();

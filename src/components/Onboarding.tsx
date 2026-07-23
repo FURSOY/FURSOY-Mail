@@ -1,5 +1,6 @@
-import { Mail, ShieldCheck, Cpu, Zap } from "lucide-react";
+import { ShieldCheck, Cpu, Zap } from "lucide-react";
 import { useLocale } from "../i18n";
+import { typography, ui } from "../theme";
 import { WindowTitlebar } from "./WindowTitlebar";
 
 interface OnboardingProps {
@@ -29,27 +30,29 @@ export function Onboarding({
 
           {/* Logo */}
           <div className="flex flex-col items-center gap-3">
-            <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-900/40">
-              <Mail className="w-7 h-7 text-white" />
-            </div>
+            <img
+              src="/logo.svg"
+              className="h-14 w-14 rounded-[var(--radius-xl)] shadow-[var(--shadow-accent-lg)]"
+              alt={tr.app.name}
+            />
             <div className="text-center">
-              <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">FURSOY Mail</h1>
-              <p className="text-sm text-zinc-500 mt-0.5">{tr.onboarding.tagline}</p>
+              <h1 className={`${typography.title} tracking-tight`}>{tr.app.name}</h1>
+              <p className={`${typography.bodyMuted} mt-0.5`}>{tr.onboarding.tagline}</p>
             </div>
           </div>
 
           {/* Features */}
           <div className="w-full flex flex-col gap-3">
-            <Feature icon={<Zap className="w-4 h-4 text-blue-400" />} text={tr.onboarding.otpFeature} />
-            <Feature icon={<ShieldCheck className="w-4 h-4 text-blue-400" />} text={tr.onboarding.privacyFeature} />
-            <Feature icon={<Cpu className="w-4 h-4 text-blue-400" />} text={tr.onboarding.performanceFeature} />
+            <Feature icon={<Zap className="h-4 w-4 text-[var(--app-accent)]" />} text={tr.onboarding.otpFeature} />
+            <Feature icon={<ShieldCheck className="h-4 w-4 text-[var(--app-accent)]" />} text={tr.onboarding.privacyFeature} />
+            <Feature icon={<Cpu className="h-4 w-4 text-[var(--app-accent)]" />} text={tr.onboarding.performanceFeature} />
           </div>
 
           {/* CTA */}
           <div className="w-full flex flex-col items-center gap-3">
             <button
               onClick={isConnecting ? onCancelConnect : onConnect}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
+              className={`${ui.buttonPrimary} flex w-full items-center justify-center gap-2 py-2.5`}
             >
               {isConnecting ? tr.auth.cancelSignIn : (
                 <>
@@ -58,7 +61,7 @@ export function Onboarding({
                 </>
               )}
             </button>
-            <p className="text-xs text-zinc-600 text-center">
+            <p className={`${typography.bodyMuted} text-center`}>
               {tr.onboarding.privacy}
             </p>
           </div>
@@ -70,9 +73,9 @@ export function Onboarding({
 
 function Feature({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-white/[0.03] border border-white/5">
+    <div className={`${ui.card} flex items-center gap-3 px-4 py-3`}>
       <div className="shrink-0">{icon}</div>
-      <span className="text-sm text-zinc-400">{text}</span>
+      <span className={typography.body}>{text}</span>
     </div>
   );
 }

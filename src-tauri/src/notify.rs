@@ -25,6 +25,12 @@ pub struct NotificationPayload {
     pub account_picture: Option<String>,
     #[serde(rename = "multiAccount")]
     pub multi_account: Option<bool>,
+    #[serde(rename = "copyLabel")]
+    pub copy_label: Option<String>,
+    #[serde(rename = "copiedLabel")]
+    pub copied_label: Option<String>,
+    #[serde(rename = "copyFailedLabel")]
+    pub copy_failed_label: Option<String>,
 }
 
 pub struct PendingNotification {
@@ -125,6 +131,9 @@ pub async fn show_custom_notification(
     account_id: Option<String>,
     account_picture: Option<String>,
     multi_account: Option<bool>,
+    copy_label: Option<String>,
+    copied_label: Option<String>,
+    copy_failed_label: Option<String>,
 ) -> Result<(), String> {
     crate::require_command_window(&window, &["main"])?;
     if kind.as_deref() == Some("mail") {
@@ -160,6 +169,9 @@ pub async fn show_custom_notification(
         account_id,
         account_picture,
         multi_account,
+        copy_label,
+        copied_label,
+        copy_failed_label,
     };
     let state = app.state::<PendingNotification>();
     let _lifecycle_guard = state.lifecycle.lock().await;
@@ -297,6 +309,9 @@ mod tests {
             account_id: None,
             account_picture: None,
             multi_account: None,
+            copy_label: None,
+            copied_label: None,
+            copy_failed_label: None,
         }
     }
 

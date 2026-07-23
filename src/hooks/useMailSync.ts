@@ -158,6 +158,9 @@ export function useMailSync(options: UseMailSyncOptions) {
           accountId: email.account_id || null,
           accountPicture: account?.picture || null,
           multiAccount: accountsRef.current.length > 1,
+          copyLabel: locale.common.copy,
+          copiedLabel: locale.common.copied,
+          copyFailedLabel: locale.common.copyFailedRetry,
         });
       }
     } catch (error) {

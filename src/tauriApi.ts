@@ -46,6 +46,9 @@ export interface CustomNotificationInput {
   accountId?: string | null;
   accountPicture?: string | null;
   multiAccount?: boolean;
+  copyLabel?: string;
+  copiedLabel?: string;
+  copyFailedLabel?: string;
 }
 
 export const tauriApi = {
