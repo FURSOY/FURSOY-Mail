@@ -56,6 +56,14 @@ FURSOY Mail connects directly to Google services and does not operate a server t
 
 See the full [Privacy Policy](PRIVACY.md) for details.
 
+## License
+
+FURSOY Mail is free software licensed under the [GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`). You may use, study, modify, and redistribute it under the terms of that license. Distributed modified versions must remain under GPLv3 and make their corresponding source code available.
+
+Copyright (C) 2026 FURSOY.
+
+Licenses and copyright notices for bundled dependencies are available in the [npm](THIRD_PARTY_LICENSES_NPM.html) and [Rust](THIRD_PARTY_LICENSES_RUST.html) third-party license documents.
+
 ## Google permissions
 
 FURSOY Mail requests:

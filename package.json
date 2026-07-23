@@ -1,7 +1,8 @@
 {
   "name": "fursoy-mail",
   "private": true,
-  "version": "1.10.2",
+  "version": "1.10.3",
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
